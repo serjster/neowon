@@ -144,6 +144,18 @@ pub trait Backend: Send {
         Ok(())
     }
 
+    /// Select a named stimulus/scenario on backends that generate their own
+    /// signal (the simulator; a future AWG). Returns false if unknown or
+    /// unsupported.
+    fn set_stimulus(&mut self, _name: &str) -> Result<bool, BackendError> {
+        Ok(false)
+    }
+
+    /// Stimulus names this backend accepts (empty = none).
+    fn stimuli(&self) -> Vec<&'static str> {
+        Vec::new()
+    }
+
     /// Probe the signal and pick sensible settings. Returns the new config
     /// (already applied to the instrument) or `None` if unsupported / no
     /// signal found.

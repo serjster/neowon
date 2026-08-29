@@ -21,6 +21,8 @@ pub enum Command {
     AutoSet,
     Multi(MultiMode),
     PassFail(bool),
+    /// Select a named stimulus on generating backends (sim, AWG).
+    Stimulus(String),
     Shutdown,
 }
 
@@ -166,6 +168,7 @@ fn run(
             let mut do_autoset = false;
             let mut multi: Option<MultiMode> = None;
             let mut pass_fail: Option<bool> = None;
+            let mut stimulus: Option<String> = None;
             loop {
                 match commands.try_recv() {
                     Ok(Command::Apply(cfg)) => newest = Some(cfg),
@@ -173,6 +176,7 @@ fn run(
                     Ok(Command::AutoSet) => do_autoset = true,
                     Ok(Command::Multi(m)) => multi = Some(m),
                     Ok(Command::PassFail(level)) => pass_fail = Some(level),
+                    Ok(Command::Stimulus(name)) => stimulus = Some(name),
                     Ok(Command::Shutdown) => break 'outer,
                     Err(TryRecvError::Empty) => break,
                     Err(TryRecvError::Disconnected) => break 'outer,
@@ -210,6 +214,18 @@ fn run(
                 && let Err(e) = backend.set_pass_fail_output(level)
             {
                 let _ = events.try_send(Event::Error(e.to_string()));
+            }
+            if let Some(name) = stimulus {
+                match backend.set_stimulus(&name) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        let _ = events
+                            .try_send(Event::Error(format!("unknown stimulus {name:?}")));
+                    }
+                    Err(e) => {
+                        let _ = events.try_send(Event::Error(e.to_string()));
+                    }
+                }
             }
             if do_autoset {
                 match backend.autoset() {
