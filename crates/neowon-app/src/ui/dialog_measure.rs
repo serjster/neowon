@@ -33,28 +33,28 @@ pub fn show(ui: &mut egui::Ui, meas: &mut MeasureState) {
                         ui.label(egui::RichText::new(*name).strong());
                     }
                 }
-                let s = meas.stats_slot;
-                for h in ["mean", "min", "max", "σ"] {
-                    ui.label(egui::RichText::new(format!("{h} ({})", SLOT_NAMES[s])).weak());
-                }
                 ui.end_row();
+                // Compact: values only; hover a value for its running
+                // statistics (mean/min/max/sigma/n).
                 for (i, (name, get, unit)) in METRICS.iter().enumerate() {
                     ui.label(*name);
                     for slot in 0..SLOTS {
-                        if let Some(m) = &meas.latest[slot] {
-                            ui.label(get(m).map_or("—".into(), |v| fmt(v, *unit)));
+                        if meas.latest[slot].is_none() {
+                            continue;
                         }
-                    }
-                    if !meas.stats.is_empty() {
-                        let t = &meas.stats[meas.stats_slot][i];
-                        if t.count > 0 {
-                            ui.label(fmt(t.mean, *unit));
-                            ui.label(fmt(t.min, *unit));
-                            ui.label(fmt(t.max, *unit));
-                            ui.label(fmt(t.std_dev(), *unit));
-                        } else {
-                            for _ in 0..4 {
-                                ui.label("—");
+                        let m = meas.latest[slot].unwrap();
+                        let cell = ui.label(get(&m).map_or("—".into(), |v| fmt(v, *unit)));
+                        if !meas.stats.is_empty() {
+                            let t = &meas.stats[slot][i];
+                            if t.count > 0 {
+                                cell.on_hover_text(format!(
+                                    "mean {}\nmin  {}\nmax  {}\nσ    {}\nn    {}",
+                                    fmt(t.mean, *unit),
+                                    fmt(t.min, *unit),
+                                    fmt(t.max, *unit),
+                                    fmt(t.std_dev(), *unit),
+                                    t.count,
+                                ));
                             }
                         }
                     }
