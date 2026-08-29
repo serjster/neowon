@@ -30,20 +30,16 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, T
 use bevy_egui::input::EguiWantsInput;
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
 use gpu::{PLOT_H, PLOT_W, Persistence, Phosphor, PhosphorPlugin, TraceMode};
-
-/// World-space offset of the plot center, leaving room for the side and
-/// bottom egui panels.
-pub const PLOT_OFFSET: Vec2 = Vec2::new(120.0, 90.0);
-
 use neowon_backend::{Backend, Capabilities, Command, Event, MultiMode, ScopeConfig, Supervisor};
 use neowon_core::{AcqMode, Coupling, SharedFrame, Slope, Sweep, TriggerKind};
 use neowon_dsp::{basic_stats, estimate_frequency};
+/// Screen geometry follows the reference scope: 10 horizontal x 8
+/// vertical divisions (docs/ui-ux-research.md §6).
+use ui::layout::{DIV_X, DIV_Y, H_DIVS, V_DIVS};
 
-/// Screen geometry follows scope convention: 20 horizontal x 10 vertical
-/// divisions.
-const DIV_PX: f32 = 50.0;
-const H_DIVS: i32 = 20;
-const V_DIVS: i32 = 10;
+/// World-space offset of the plot center — fixed by the scope-grade
+/// screen layout (`ui::layout`).
+pub const PLOT_OFFSET: Vec2 = ui::layout::PLOT_CENTER;
 
 #[derive(Resource)]
 pub struct Link {
@@ -411,26 +407,25 @@ fn flush(mut link: ResMut<Link>) {
 }
 
 fn draw_graticule(mut gizmos: Gizmos) {
-    let w = H_DIVS as f32 * DIV_PX;
-    let h = V_DIVS as f32 * DIV_PX;
+    let w = H_DIVS as f32 * DIV_X;
+    let h = V_DIVS as f32 * DIV_Y;
     let o = PLOT_OFFSET;
     let dim = Color::srgba(0.5, 0.55, 0.6, 0.25);
     let axis = Color::srgba(0.6, 0.65, 0.7, 0.6);
     for i in 0..=H_DIVS {
-        let x = o.x - w / 2.0 + i as f32 * DIV_PX;
+        let x = o.x - w / 2.0 + i as f32 * DIV_X;
         let c = if i == H_DIVS / 2 { axis } else { dim };
         gizmos.line_2d(Vec2::new(x, o.y - h / 2.0), Vec2::new(x, o.y + h / 2.0), c);
     }
     for i in 0..=V_DIVS {
-        let y = o.y - h / 2.0 + i as f32 * DIV_PX;
+        let y = o.y - h / 2.0 + i as f32 * DIV_Y;
         let c = if i == V_DIVS / 2 { axis } else { dim };
         gizmos.line_2d(Vec2::new(o.x - w / 2.0, y), Vec2::new(o.x + w / 2.0, y), c);
     }
 }
 
 fn draw_trigger(link: Res<Link>, mut gizmos: Gizmos) {
-    let w = H_DIVS as f32 * DIV_PX;
-    let h = V_DIVS as f32 * DIV_PX;
+    let w = H_DIVS as f32 * DIV_X;
     let src = link
         .config
         .trigger
@@ -438,8 +433,9 @@ fn draw_trigger(link: Res<Link>, mut gizmos: Gizmos) {
         .min(link.config.channels.len() - 1);
     let ch = &link.config.channels[src];
     let range = ch.volts_div * 10.0 * ch.probe;
-    let frac = (link.config.trigger.level / range + ch.offset).clamp(-0.55, 0.55);
-    let y = PLOT_OFFSET.y + frac as f32 * h;
+    // Fraction of full (10 div) range; the display window is +-4 div.
+    let frac = (link.config.trigger.level / range + ch.offset).clamp(-0.44, 0.44);
+    let y = PLOT_OFFSET.y + frac as f32 * 10.0 * DIV_Y;
     gizmos.line_2d(
         Vec2::new(PLOT_OFFSET.x - w / 2.0, y),
         Vec2::new(PLOT_OFFSET.x + w / 2.0, y),
@@ -453,13 +449,13 @@ fn draw_pf_mask(pf: Res<derived::PfState>, mut gizmos: Gizmos) {
     if !pf.enabled || mask.lo.is_empty() {
         return;
     }
-    let w = H_DIVS as f32 * DIV_PX;
-    let h = V_DIVS as f32 * DIV_PX;
+    let w = H_DIVS as f32 * DIV_X;
     let n = mask.lo.len();
     // Decimate so the gizmo stays cheap on a 5000-sample record.
     let step = (n / 500).max(1);
     let x_at = |i: usize| PLOT_OFFSET.x - w / 2.0 + i as f32 / (n - 1).max(1) as f32 * w;
-    let y_at = |raw: i8| PLOT_OFFSET.y + raw as f32 / 250.0 * h;
+    // The display window is +-100 counts (+-4 div); pin beyond that.
+    let y_at = |raw: i8| PLOT_OFFSET.y + raw.clamp(-100, 100) as f32 * (PLOT_H as f32 / 200.0);
     let color = Color::srgba(0.2, 0.6, 0.3, 0.6);
     for bounds in [&mask.lo, &mask.hi] {
         let points: Vec<Vec2> = (0..n)

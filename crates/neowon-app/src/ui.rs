@@ -1,5 +1,7 @@
 //! egui control panel, measurement table, and spectrum window.
 
+pub mod layout;
+
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
 use neowon_backend::{Command, MultiMode};

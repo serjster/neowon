@@ -81,7 +81,8 @@ fn lit(px: &[[u8; 3]], w: usize) -> Vec<(usize, usize)> {
 #[ignore = "needs a window; run with -- --ignored"]
 fn dc_level_renders_at_expected_row() {
     // 1 V DC on a 0.5 V/div range (5 V full scale): raw = 50 counts above
-    // center -> row (0.5 - 50/250) * (H-1) ~= 150.
+    // center. Display window is +-4 div = +-100 counts -> row
+    // (0.5 - 50/200) * (H-1) ~= 125.
     let shots = run_script(
         "dc",
         r#"
@@ -99,7 +100,7 @@ fn dc_level_renders_at_expected_row() {
     let lit = lit(&px, w);
     assert!(lit.len() > 500, "only {} lit pixels", lit.len());
     let mean_row = lit.iter().map(|&(_, y)| y as f64).sum::<f64>() / lit.len() as f64;
-    let expect = (0.5 - 50.0 / 250.0) * (PLOT_H as f64 - 1.0);
+    let expect = (0.5 - 50.0 / 200.0) * (PLOT_H as f64 - 1.0);
     assert!(
         (mean_row - expect).abs() < 5.0,
         "trace at row {mean_row:.1}, expected {expect:.1}"
@@ -118,8 +119,9 @@ fn dc_level_renders_at_expected_row() {
 #[test]
 #[ignore = "needs a window; run with -- --ignored"]
 fn square_renders_two_bands() {
-    // probe-comp: 0..5 V square on CH1. 2 V/div (20 V FS): 5 V -> 62.5 raw
-    // -> row ~125; 0 V -> row ~250.
+    // probe-comp: 0..5 V square on CH1. 2 V/div (20 V FS): 5 V -> 62.5 raw.
+    // Display window +-100 counts -> row (0.5 - 62.5/200)*(H-1) ~= 94;
+    // 0 V -> row ~250.
     let shots = run_script(
         "square",
         r#"
@@ -136,7 +138,7 @@ fn square_renders_two_bands() {
     let (w, _h, px) = load_ppm(&shots[0]);
     let lit = lit(&px, w);
     assert!(lit.len() > 1000, "only {} lit pixels", lit.len());
-    let top_expect = (0.5 - 62.5 / 250.0) * (PLOT_H as f64 - 1.0); // ~124.8
+    let top_expect = (0.5 - 62.5 / 200.0) * (PLOT_H as f64 - 1.0); // ~93.6
     let bot_expect = 0.5 * (PLOT_H as f64 - 1.0); // ~249.5
     let near = |y: usize, e: f64| (y as f64 - e).abs() < 6.0;
     let top = lit.iter().filter(|&&(_, y)| near(y, top_expect)).count();
@@ -149,9 +151,10 @@ fn square_renders_two_bands() {
 #[test]
 #[ignore = "needs a window; run with -- --ignored"]
 fn xy_circle_renders_as_ellipse_ring() {
-    // xy-circle at 1.5 V amplitude on 0.5 V/div (5 V FS): radius 75 raw ->
-    // x semi-axis 75/250*(W-1) ~= 300 px, y semi-axis ~150 px (the plot is
-    // 2:1, so a circle in volts is a 2:1 ellipse in pixels).
+    // xy-circle at 1.5 V amplitude on 0.5 V/div (5 V FS): radius 75 raw.
+    // Display window +-100 counts -> x semi-axis 75/200*(W-1) ~= 375 px,
+    // y semi-axis ~187 px (the plot is 2:1, so a circle in volts is a 2:1
+    // ellipse in pixels).
     let shots = run_script(
         "xy",
         r#"
@@ -172,8 +175,8 @@ fn xy_circle_renders_as_ellipse_ring() {
     let cx = (PLOT_W as f64 - 1.0) / 2.0;
     let cy = (PLOT_H as f64 - 1.0) / 2.0;
     let (rx, ry) = (
-        75.0 / 250.0 * (PLOT_W as f64 - 1.0),
-        75.0 / 250.0 * (PLOT_H as f64 - 1.0),
+        75.0 / 200.0 * (PLOT_W as f64 - 1.0),
+        75.0 / 200.0 * (PLOT_H as f64 - 1.0),
     );
     let mut on_ring = 0usize;
     for &(x, y) in &lit {

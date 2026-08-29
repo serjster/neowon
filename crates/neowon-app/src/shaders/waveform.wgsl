@@ -48,10 +48,12 @@ fn decay(@builtin(global_invocation_id) id: vec3<u32>) {
     }
 }
 
-// Sample raw value (-125..=125) -> vertical pixel, +125 at the top row.
+// Sample raw value -> vertical pixel. The display window is +-100 counts
+// (+-4 divisions of the 8x10 graticule); +-125 (the ADC rails) pin at the
+// plot edge, like a real scope overdriving the graticule.
 fn sample_row(ch: u32, i: u32) -> f32 {
     let raw = f32(wave[ch * params.samples + i]);
-    let frac = clamp(0.5 - raw / 250.0, 0.0, 1.0);
+    let frac = clamp(0.5 - raw / 200.0, 0.0, 1.0);
     return frac * f32(params.height - 1u);
 }
 
@@ -72,8 +74,9 @@ fn raster(@builtin(global_invocation_id) id: vec3<u32>) {
         // Segments between consecutive points: a scope's beam is continuous,
         // and coherent sampling would otherwise splat the same few pixels.
         if (ch != 0u || params.en0 == 0u || params.en1 == 0u) { return; }
-        let fx0 = clamp(0.5 + f32(wave[i - 1u]) / 250.0, 0.0, 1.0);
-        let fx1 = clamp(0.5 + f32(wave[i]) / 250.0, 0.0, 1.0);
+        // Same +-4-division window as the vertical axis.
+        let fx0 = clamp(0.5 + f32(wave[i - 1u]) / 200.0, 0.0, 1.0);
+        let fx1 = clamp(0.5 + f32(wave[i]) / 200.0, 0.0, 1.0);
         let x0 = f32(u32(fx0 * f32(params.width - 1u)));
         let x1 = f32(u32(fx1 * f32(params.width - 1u)));
         let y0 = sample_row(1u, i - 1u);

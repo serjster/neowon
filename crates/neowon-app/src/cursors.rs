@@ -6,9 +6,11 @@ use bevy_egui::input::EguiWantsInput;
 
 use crate::PLOT_OFFSET;
 use crate::gpu::{PLOT_H, PLOT_W};
+use crate::ui::layout::DIV_Y;
 
 /// Cursor indices: 0/1 = time (x, fraction 0..1 of the record),
-/// 2/3 = amplitude (y, fraction -0.5..0.5 of full scale).
+/// 2/3 = amplitude (y, fraction -0.5..0.5 of full scale = +-5 divisions;
+/// the visible window is +-4 divisions).
 #[derive(Resource)]
 pub struct CursorState {
     pub time_on: bool,
@@ -34,7 +36,7 @@ impl CursorState {
     }
 
     fn y_world(&self, i: usize) -> f32 {
-        PLOT_OFFSET.y + self.pos[i] * PLOT_H as f32
+        PLOT_OFFSET.y + self.pos[i] * 10.0 * DIV_Y
     }
 }
 
@@ -80,7 +82,7 @@ pub fn cursor_input(
             if i < 2 {
                 cur.pos[i] = ((world.x - PLOT_OFFSET.x) / PLOT_W as f32 + 0.5).clamp(0.0, 1.0);
             } else {
-                cur.pos[i] = ((world.y - PLOT_OFFSET.y) / PLOT_H as f32).clamp(-0.5, 0.5);
+                cur.pos[i] = ((world.y - PLOT_OFFSET.y) / (10.0 * DIV_Y)).clamp(-0.4, 0.4);
             }
         }
     } else {
