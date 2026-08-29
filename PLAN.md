@@ -200,6 +200,36 @@ The phases-1–3 CPU polyline is replaced by the compute pipeline (§3 GPU strat
 
 Pulse/slope/video triggers and alternate mode (bit layouts from the Java app — note the Slope/Video code swap bug in vds1022.py: use Java's `Edge=0, Slope=1, Video=2, Pulse=3`). Width encoding per FPGA version (V3+: `t×1e8` split u16/u16). Pass/fail rule engine (up to 8 rules, per-channel h/v tolerance masks, GPU point-in-mask test is trivial in the rasterizer), MULTI port modes (trigger out / pass-fail out / trigger in).
 
+### Phase 6.5 — Virtual testbench & scope-grade UI (inserted 2026-08-29)
+
+The correctness backbone for everything after it. Four pillars:
+
+1. **Signal engine** (`neowon-sim`): component-based specs (sine/square/
+   triangle/ramp/trapezoid/DC/noise/chirp/AM/FM, summable), XY figure
+   generators (circle, Lissajous, rose, heart, butterfly), named scenario
+   presets addressable from UI and scripts (`stimulus xy-circle`), simulated
+   edge triggering so Normal/Single sweeps behave like hardware (including
+   starving on an impossible level).
+2. **Virtual testbench**: signal-verification integration tests for every DSP
+   operation — amplitudes (vpp/vrms per waveform), frequency accuracy across
+   decades, duty ladder, trapezoid rise time, FFT two-tone and AM sidebands,
+   math (d/dt amplitude, ∫ square→triangle), chirp, XY frequency ratios,
+   trigger alignment, determinism.
+3. **UI automation + rendering verification**: `NEOWON_SCRIPT` plain-text
+   action scripts drive every control; `shot` captures ROI crops of the plot
+   texture; pixel tests assert render geometry (DC trace row, square dwell
+   bands, XY ellipse ring). Full-window ROI grabs via `screencapture` for
+   layout checks.
+4. **Scope-grade UI**: restructure the panel to a high-end scope's screen
+   anatomy (top status bar, channel/trigger badges, contextual menu rail,
+   measurement strip), informed by researched conventions; features we lack
+   are omitted, features we add follow the same visual language. Fixed
+   layout geometry published as named ROIs for tests.
+
+**Done when:** testbench suite green; pixel tests green; UI matches the
+documented layout with every control reachable by script; no measurement or
+render path lacks a test.
+
 ### Phase 7 — Capture workflows
 
 - Segmented history browser (scrub through the frame ring, like modern scope history mode).
