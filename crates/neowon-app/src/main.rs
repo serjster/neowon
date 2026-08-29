@@ -26,7 +26,7 @@ fn main() {
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "neowon".into(),
-                resolution: (1200.0, 700.0).into(),
+                resolution: [1200, 700].into(),
                 ..default()
             }),
             ..default()
