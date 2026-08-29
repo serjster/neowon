@@ -15,9 +15,15 @@
 //!   [/]         CH1 vertical offset down/up
 //!   F           force trigger
 //!   A           auto-set
+//!   E           cycle persistence (off -> 0.2s -> 1s -> 5s -> infinite)
+//!   X           cycle trace mode (vectors -> dots -> XY)
 
-use bevy::color::palettes::css;
+mod gpu;
+
+use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
+use gpu::{Persistence, Phosphor, PhosphorPlugin, TraceMode, PLOT_H, PLOT_W};
 
 use neowon_backend::{Backend, Capabilities, Command, Event, ScopeConfig, Supervisor};
 use neowon_core::{AcqMode, Coupling, SharedFrame, Slope, Sweep};
@@ -75,6 +81,7 @@ fn main() {
             }),
             ..default()
         }))
+        .add_plugins(PhosphorPlugin)
         .insert_resource(Link {
             sup,
             caps: None,
@@ -84,17 +91,98 @@ fn main() {
             dirty: false,
             frames_seen: 0,
         })
+        .init_resource::<Phosphor>()
         .add_systems(Startup, setup)
         .add_systems(
             Update,
-            (ingest, input, flush, draw_graticule, draw_trigger, draw_trace, update_title)
+            (
+                clear_one_shot,
+                ingest,
+                input,
+                phosphor_input,
+                flush,
+                update_phosphor,
+                readback_hook,
+                draw_graticule,
+                draw_trigger,
+                update_title,
+            )
                 .chain(),
         )
         .run();
 }
 
-fn setup(mut commands: Commands) {
+fn setup(
+    mut commands: Commands,
+    mut images: ResMut<Assets<Image>>,
+    mut phosphor: ResMut<Phosphor>,
+) {
     commands.spawn(Camera2d);
+
+    // Display texture: written by the compose pass, shown via this sprite.
+    let mut image = Image::new(
+        Extent3d { width: PLOT_W, height: PLOT_H, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        vec![0; (PLOT_W * PLOT_H * 4) as usize],
+        TextureFormat::Rgba8Unorm,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    image.texture_descriptor.usage = TextureUsages::TEXTURE_BINDING
+        | TextureUsages::STORAGE_BINDING
+        | TextureUsages::COPY_DST
+        | TextureUsages::COPY_SRC;
+    let handle = images.add(image);
+    commands.spawn(Sprite::from_image(handle.clone()));
+    phosphor.display_image = handle;
+}
+
+/// One-shot flags live for exactly one frame (extracted at frame end,
+/// cleared at the start of the next).
+fn clear_one_shot(mut phosphor: ResMut<Phosphor>) {
+    phosphor.new_frame = false;
+}
+
+/// Headless verification: NEOWON_SHOT=<frames> reads the display texture back
+/// after that many records, writes /tmp/neowon-shot.ppm, and exits.
+fn readback_hook(mut commands: Commands, link: Res<Link>, phosphor: Res<Phosphor>) {
+    let Ok(shot) = std::env::var("NEOWON_SHOT").map(|v| v.parse::<u64>().unwrap_or(0)) else {
+        return;
+    };
+    if link.frames_seen == shot && phosphor.new_frame {
+        commands
+            .spawn(bevy::render::gpu_readback::Readback::texture(
+                phosphor.display_image.clone(),
+            ))
+            .observe(|event: On<bevy::render::gpu_readback::ReadbackComplete>| {
+                let rgba = &event.data;
+                // Readback rows are 256-byte aligned; strip the padding.
+                let stride = rgba.len() / PLOT_H as usize;
+                let mut ppm = format!("P6\n{PLOT_W} {PLOT_H}\n255\n").into_bytes();
+                for row in rgba.chunks_exact(stride) {
+                    for px in row[..(PLOT_W * 4) as usize].chunks_exact(4) {
+                        ppm.extend_from_slice(&px[..3]);
+                    }
+                }
+                match std::fs::write("/tmp/neowon-shot.ppm", &ppm) {
+                    Ok(()) => println!("readback: wrote /tmp/neowon-shot.ppm"),
+                    Err(e) => eprintln!("readback: could not write shot: {e}"),
+                }
+                std::process::exit(0);
+            });
+    }
+}
+
+fn update_phosphor(time: Res<Time>, link: Res<Link>, mut phosphor: ResMut<Phosphor>) {
+    if let Some(frame) = &link.latest
+        && phosphor.frame.as_ref().map(|f| f.seq) != Some(frame.seq)
+    {
+        phosphor.frame = Some(frame.clone());
+        phosphor.new_frame = true;
+    }
+    phosphor.decay = match phosphor.persistence {
+        Persistence::Off | Persistence::Infinite => 1.0,
+        Persistence::Seconds(s) => (-time.delta_secs() / s.max(1e-3)).exp(),
+    };
 }
 
 fn ingest(mut link: ResMut<Link>) {
@@ -236,6 +324,21 @@ fn input(keys: Res<ButtonInput<KeyCode>>, mut link: ResMut<Link>) {
     }
 }
 
+fn phosphor_input(keys: Res<ButtonInput<KeyCode>>, mut phosphor: ResMut<Phosphor>) {
+    if keys.just_pressed(KeyCode::KeyE) {
+        let ladder = Persistence::LADDER;
+        let i = ladder.iter().position(|p| *p == phosphor.persistence).unwrap_or(0);
+        phosphor.persistence = ladder[(i + 1) % ladder.len()];
+    }
+    if keys.just_pressed(KeyCode::KeyX) {
+        phosphor.mode = match phosphor.mode {
+            TraceMode::Vectors => TraceMode::Dots,
+            TraceMode::Dots => TraceMode::Xy,
+            TraceMode::Xy => TraceMode::Vectors,
+        };
+    }
+}
+
 fn flush(mut link: ResMut<Link>) {
     if link.dirty {
         link.dirty = false;
@@ -276,27 +379,6 @@ fn draw_trigger(link: Res<Link>, mut gizmos: Gizmos) {
     );
 }
 
-fn draw_trace(link: Res<Link>, mut gizmos: Gizmos) {
-    let Some(frame) = &link.latest else { return };
-    let w = H_DIVS as f32 * DIV_PX;
-    let h = V_DIVS as f32 * DIV_PX;
-    let colors = [css::YELLOW, css::DEEP_SKY_BLUE];
-    for cap in &frame.channels {
-        let n = cap.raw.len();
-        if n < 2 {
-            continue;
-        }
-        let color = colors[cap.ch % colors.len()];
-        let points = cap.raw.iter().enumerate().map(move |(i, &r)| {
-            Vec2::new(
-                -w / 2.0 + i as f32 / (n - 1) as f32 * w,
-                r as f32 / 250.0 * h,
-            )
-        });
-        gizmos.linestrip_2d(points, color);
-    }
-}
-
 fn format_rate(r: f64) -> String {
     if r >= 1e6 {
         format!("{} MS/s", r / 1e6)
@@ -307,7 +389,7 @@ fn format_rate(r: f64) -> String {
     }
 }
 
-fn update_title(link: Res<Link>, mut windows: Query<&mut Window>) {
+fn update_title(link: Res<Link>, phosphor: Res<Phosphor>, mut windows: Query<&mut Window>) {
     let Ok(mut window) = windows.single_mut() else { return };
     let run = if link.config.running { "RUN" } else { "STOP" };
     let ch = &link.config.channels[0];
@@ -334,11 +416,17 @@ fn update_title(link: Res<Link>, mut windows: Query<&mut Window>) {
         Coupling::Ac => "AC",
         Coupling::Gnd => "GND",
     };
+    let mode = match phosphor.mode {
+        TraceMode::Vectors => "",
+        TraceMode::Dots => "  dots",
+        TraceMode::Xy => "  XY",
+    };
     window.title = format!(
-        "neowon — {}  [{run}]  {} V/div {coupling}  {}  trig {:+.2} V {sweep}{acq}{meas}",
+        "neowon — {}  [{run}]  {} V/div {coupling}  {}  trig {:+.2} V {sweep}{acq}  P:{}{mode}{meas}",
         link.status,
         ch.volts_div,
         format_rate(link.config.sample_rate),
         link.config.trigger.level,
+        phosphor.persistence.label(),
     );
 }

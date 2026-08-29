@@ -15,4 +15,8 @@ neowon-sim.workspace = true
 neowon-backend.workspace = true
 neowon-vds1022.workspace = true
 bevy.workspace = true
+bytemuck = "1"
 tracing.workspace = true
+
+[dev-dependencies]
+naga = { version = "29", features = ["wgsl-in"] }
