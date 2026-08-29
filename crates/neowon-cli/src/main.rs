@@ -11,15 +11,13 @@ use neowon_core::{Coupling, Slope, Sweep};
 use neowon_dsp::{basic_stats, estimate_frequency};
 use neowon_vds1022::{ChannelSetup, Vds1022};
 
-/// Default FPGA bitstream location: the community OWON-VDS1022 checkout.
-const DEFAULT_FPGA_DIR: &str = "/Users/zenx/projects/owon/OWON-VDS1022/fwr";
-
 #[derive(Parser)]
 #[command(name = "neowon", about = "VDS1022 oscilloscope CLI")]
 struct Cli {
-    /// Directory containing VDS1022_FPGAV*.bin bitstreams
-    #[arg(long, global = true, env = "NEOWON_FPGA_DIR", default_value = DEFAULT_FPGA_DIR)]
-    fpga_dir: PathBuf,
+    /// Directory containing VDS1022_FPGAV*.bin bitstreams (default:
+    /// $NEOWON_FPGA_DIR, ./fwr, or ../OWON-VDS1022/fwr)
+    #[arg(long, global = true)]
+    fpga_dir: Option<PathBuf>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -122,8 +120,12 @@ fn main() -> Result<()> {
 
 fn autoset(cli: &Cli) -> Result<()> {
     use neowon_backend::Backend;
-    let mut be = neowon_vds1022::backend::Vds1022Backend::open(Some(&cli.fpga_dir))
-        .context("opening VDS1022")?;
+    let dir = cli
+        .fpga_dir
+        .clone()
+        .unwrap_or_else(neowon_vds1022::backend::default_fpga_dir);
+    let mut be =
+        neowon_vds1022::backend::Vds1022Backend::open(Some(&dir)).context("opening VDS1022")?;
     match be.autoset().map_err(|e| anyhow::anyhow!(e.to_string()))? {
         None => bail!("autoset found no signal"),
         Some(cfg) => {
@@ -144,7 +146,11 @@ fn autoset(cli: &Cli) -> Result<()> {
 }
 
 fn open(cli: &Cli) -> Result<Vds1022> {
-    Vds1022::open(Some(&cli.fpga_dir)).context("opening VDS1022")
+    let dir = cli
+        .fpga_dir
+        .clone()
+        .unwrap_or_else(neowon_vds1022::backend::default_fpga_dir);
+    Vds1022::open(Some(&dir)).context("opening VDS1022")
 }
 
 fn probe(cli: &Cli) -> Result<()> {

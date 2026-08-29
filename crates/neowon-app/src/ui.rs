@@ -191,7 +191,7 @@ fn spectrum_window(ctx: &egui::Context, fft: &mut FftState) {
                     ));
                     if let Some((f, a)) = s.peak() {
                         ui.label(format!(
-                            "   peak: {} at {} ({:.1} dBV)",
+                            "   peak: {} at {} ({:>6.1} dBV)",
                             fmt_si(a, "V"),
                             fmt_si(f, "Hz"),
                             20.0 * a.max(1e-12).log10()

@@ -282,7 +282,7 @@ pub fn compute_derived(
 /// Engineering formatting: value with SI prefix per unit.
 pub fn fmt(v: f64, unit: Unit) -> String {
     match unit {
-        Unit::Percent => format!("{:5.1} %", v * 100.0),
+        Unit::Percent => format!("{:>6.1} %", v * 100.0),
         Unit::Volt => fmt_si(v, "V"),
         Unit::Second => fmt_si(v, "s"),
         Unit::Hertz => fmt_si(v, "Hz"),
@@ -290,9 +290,11 @@ pub fn fmt(v: f64, unit: Unit) -> String {
 }
 
 /// Engineering notation the way a scope front panel writes it: an SI
-/// prefix putting the mantissa in [1, 1000) and a FIXED four significant
-/// digits — `200.0 mV`, `1.000 kHz`, `999.9 µs`. Constant width per
-/// magnitude band, so live readouts don't flicker as decimals come and go.
+/// prefix putting the mantissa in [1, 1000), a FIXED four significant
+/// digits, the mantissa right-aligned in a six-character field, and the
+/// prefix padded to one column — ` 200.0 mV`, ` 1.000 kHz`, ` 999.9  Hz`.
+/// In a monospace font every value of a given unit renders at a constant
+/// width, whatever its magnitude or sign, so live readouts never flicker.
 pub fn fmt_si(v: f64, unit: &str) -> String {
     let a = v.abs();
     let (scale, prefix) = if a >= 1e9 {
@@ -302,7 +304,7 @@ pub fn fmt_si(v: f64, unit: &str) -> String {
     } else if a >= 1e3 {
         (1e-3, "k")
     } else if a >= 1.0 || a == 0.0 {
-        (1.0, "")
+        (1.0, " ")
     } else if a >= 1e-3 {
         (1e3, "m")
     } else if a >= 1e-6 {
@@ -311,14 +313,14 @@ pub fn fmt_si(v: f64, unit: &str) -> String {
         (1e9, "n")
     };
     let m = v * scale;
-    let decimals = if m == 0.0 || m.abs() >= 100.0 {
+    let decimals = if m.abs() >= 100.0 {
         1
     } else if m.abs() >= 10.0 {
         2
     } else {
         3
     };
-    format!("{m:.decimals$} {prefix}{unit}")
+    format!("{m:>6.decimals$} {prefix}{unit}")
 }
 
 #[cfg(test)]
@@ -326,17 +328,29 @@ mod fmt_tests {
     use super::fmt_si;
 
     #[test]
-    fn fixed_significant_digits() {
-        assert_eq!(fmt_si(0.2, "V"), "200.0 mV");
-        assert_eq!(fmt_si(1000.0, "Hz"), "1.000 kHz");
-        assert_eq!(fmt_si(999.9, "Hz"), "999.9 Hz");
-        assert_eq!(fmt_si(0.0009999, "s"), "999.9 µs");
-        assert_eq!(fmt_si(250e3, "S/s"), "250.0 kS/s");
-        assert_eq!(fmt_si(1.032, "V"), "1.032 V");
-        assert_eq!(fmt_si(0.0, "V"), "0.0 V");
-        // Width is constant within a magnitude band: no flicker.
-        assert_eq!(fmt_si(999.8, "Hz").len(), fmt_si(999.9, "Hz").len());
-        assert_eq!(fmt_si(1000.4, "Hz").len(), fmt_si(1001.0, "Hz").len());
+    fn constant_width_engineering_numbers() {
+        assert_eq!(fmt_si(0.2, "V"), " 200.0 mV");
+        assert_eq!(fmt_si(1000.0, "Hz"), " 1.000 kHz");
+        assert_eq!(fmt_si(999.9, "Hz"), " 999.9  Hz");
+        assert_eq!(fmt_si(0.0009999, "s"), " 999.9 µs");
+        assert_eq!(fmt_si(250e3, "S/s"), " 250.0 kS/s");
+        assert_eq!(fmt_si(1.032, "V"), " 1.032  V");
+        assert_eq!(fmt_si(0.0, "V"), " 0.000  V");
+        assert_eq!(fmt_si(-0.2, "V"), "-200.0 mV");
+        // The whole point: width is constant across magnitude bands and
+        // sign, so a value hovering at 1 kHz cannot flicker the layout.
+        for (a, b) in [
+            (999.9, 1000.4),
+            (0.999, 1.001),
+            (-0.5, 0.5),
+            (0.000_999, 0.001_001),
+        ] {
+            assert_eq!(
+                fmt_si(a, "Hz").chars().count(),
+                fmt_si(b, "Hz").chars().count(),
+                "{a} vs {b}"
+            );
+        }
     }
 }
 

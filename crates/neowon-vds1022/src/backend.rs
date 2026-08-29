@@ -355,11 +355,20 @@ fn part_acq(c: &ScopeConfig) -> ScopeConfigPart {
     vec![matches!(c.acq, neowon_core::AcqMode::Peak) as u64]
 }
 
-/// Default bitstream location, overridable with `NEOWON_FPGA_DIR`.
+/// Default bitstream location: `NEOWON_FPGA_DIR`, else the first existing
+/// candidate — `./fwr`, or a sibling checkout of the community
+/// OWON-VDS1022 repo (`../OWON-VDS1022/fwr`).
 pub fn default_fpga_dir() -> PathBuf {
-    std::env::var_os("NEOWON_FPGA_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/Users/zenx/projects/owon/OWON-VDS1022/fwr"))
+    if let Some(dir) = std::env::var_os("NEOWON_FPGA_DIR") {
+        return PathBuf::from(dir);
+    }
+    for candidate in ["fwr", "../OWON-VDS1022/fwr"] {
+        let p = PathBuf::from(candidate);
+        if p.is_dir() {
+            return p;
+        }
+    }
+    PathBuf::from("fwr")
 }
 
 /// A supervisor factory that reconnects to whatever VDS1022 shows up.

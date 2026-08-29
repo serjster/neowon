@@ -138,7 +138,7 @@ fn measurement_overlay(ctx: &egui::Context, l: &Layout, meas: &MeasureState) {
                         fmt(m.vpp, crate::derived::Unit::Volt),
                     );
                     let (r, _) = ui.allocate_exact_size(
-                        egui::vec2(text.len() as f32 * 7.0 + 12.0, 22.0),
+                        egui::vec2(text.chars().count() as f32 * 7.0 + 12.0, 22.0),
                         egui::Sense::hover(),
                     );
                     ui.painter().rect(
