@@ -130,17 +130,18 @@ Gotchas already known from GoL: uniform struct field order must match WGSL; `NoA
 
 Each phase ends with something runnable and testable — most against the real scope on your desk (CH1 = 1 kHz 5 Vpp probe-comp signal).
 
-> **Status 2026-08-29:** Phases 0–4 are DONE and hardware-verified (unit
-> VDS1022I2324259, hw V5.0.1). CLI (`probe|dump|stream|smoke|autoset`) and the
-> Bevy app both run the live scope with full acquisition control
-> (Normal/Single gating, peak-detect, roll, holdoff, averaging, force trigger,
-> auto-set) and the GPU digital-phosphor engine (compute decay/raster/compose,
-> intensity grading, dots/XY, persistence ladder) — verified by GPU readback
-> screenshot of the live 1 kHz signal. Verified facts live in
+> **Status 2026-08-29:** Phases 0–5 are DONE and hardware-verified (unit
+> VDS1022I2324259, hw V5.0.1). The app is now a working oscilloscope: live
+> phosphor display (GPU decay/raster/compose, dots/XY, persistence), full
+> acquisition control (Normal/Single gating, peak, roll, holdoff, averaging,
+> force trigger, auto-set), egui control panel, 18 auto-measurements with
+> running statistics (σ(freq) = 1.1 mHz on the probe-comp signal), draggable
+> time/amplitude cursors, math channel (+,−,×,÷,d/dt,∫ as a third phosphor
+> layer), and a windowed FFT spectrum view. Verified facts live in
 > `docs/protocol-vds1022.md`. Still open: FPGA upload untested until a
-> power-cycle; roll-mode incremental streaming and sin(x)/x interpolation
-> deferred. Next: Phase 5 (measurements, cursors, math, FFT) — and a proper
-> egui UI to replace title-bar readouts.
+> power-cycle; roll-mode incremental streaming, sin(x)/x interpolation, GPU
+> FFT deferred. Next: Phase 6 (advanced triggers, pass/fail, MULTI port) or
+> Phase 7 (history/recording/export).
 
 ### Phase 0 — Scaffold + simulated trace (½ day)
 
