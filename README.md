@@ -1,5 +1,8 @@
 # neowon
 
+[![CI](https://github.com/serjster/neowon/actions/workflows/ci.yml/badge.svg)](https://github.com/serjster/neowon/actions/workflows/ci.yml)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
+
 A high-performance, scope-grade oscilloscope application in Rust, built on
 [Bevy](https://bevy.org) with a GPU digital-phosphor rendering pipeline and a
 modular acquisition-backend architecture. The first supported instrument is
