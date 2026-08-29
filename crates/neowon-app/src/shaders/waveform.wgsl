@@ -19,7 +19,7 @@ struct Params {
     en0: u32,
     en1: u32,
     en2: u32,
-    _pad0: u32,
+    crt: u32,
     _pad1: u32,
     _pad2: u32,
     col0: vec4f,
@@ -63,6 +63,11 @@ fn enabled_for(ch: u32) -> u32 {
     return params.en2;
 }
 
+// The visible window is +-100 counts; beyond it the beam is off the plot.
+fn off_screen(raw: i32) -> bool {
+    return raw > 100 || raw < -100;
+}
+
 @compute @workgroup_size(256, 1, 1)
 fn raster(@builtin(global_invocation_id) id: vec3<u32>) {
     let i = id.x;
@@ -74,6 +79,10 @@ fn raster(@builtin(global_invocation_id) id: vec3<u32>) {
         // Segments between consecutive points: a scope's beam is continuous,
         // and coherent sampling would otherwise splat the same few pixels.
         if (ch != 0u || params.en0 == 0u || params.en1 == 0u) { return; }
+        // No beam when the segment is entirely off the plot.
+        let out0 = off_screen(wave[i - 1u]) || off_screen(wave[params.samples + i - 1u]);
+        let out1 = off_screen(wave[i]) || off_screen(wave[params.samples + i]);
+        if (out0 && out1) { return; }
         // Same +-4-division window as the vertical axis.
         let fx0 = clamp(0.5 + f32(wave[i - 1u]) / 200.0, 0.0, 1.0);
         let fx1 = clamp(0.5 + f32(wave[i]) / 200.0, 0.0, 1.0);
@@ -100,9 +109,17 @@ fn raster(@builtin(global_invocation_id) id: vec3<u32>) {
 
     if (enabled_for(ch) == 0u) { return; }
 
+    // Off-screen suppression: when the signal is beyond the display window
+    // (over-ranged or ADC-clipped), a real scope shows the trace running off
+    // the plot edge — never a false line pinned along the border.
+    let r0 = wave[ch * params.samples + i - 1u];
+    let r1 = wave[ch * params.samples + i];
+    if ((r0 > 100 && r1 > 100) || (r0 < -100 && r1 < -100)) { return; }
+
     let x = i * (params.width - 1u) / (params.samples - 1u);
     let y1 = sample_row(ch, i);
     if (params.mode == 1u) {
+        if (off_screen(r1)) { return; }
         atomicAdd(&accum[accum_idx(ch, x, u32(y1))], u32(FIXED));
         return;
     }
@@ -118,15 +135,39 @@ fn raster(@builtin(global_invocation_id) id: vec3<u32>) {
     }
 }
 
+// Per-channel accumulated intensity at a (clamped) texel.
+fn amp3(x: i32, y: i32) -> vec3f {
+    let cx = u32(clamp(x, 0, i32(params.width) - 1));
+    let cy = u32(clamp(y, 0, i32(params.height) - 1));
+    return vec3f(
+        f32(atomicLoad(&accum[accum_idx(0u, cx, cy)])),
+        f32(atomicLoad(&accum[accum_idx(1u, cx, cy)])),
+        f32(atomicLoad(&accum[accum_idx(2u, cx, cy)])),
+    ) / FIXED;
+}
+
 @compute @workgroup_size(16, 16, 1)
 fn compose(@builtin(global_invocation_id) id: vec3<u32>) {
     if (id.x >= params.width || id.y >= params.height) { return; }
+    let x = i32(id.x);
+    let y = i32(id.y);
+    var a = amp3(x, y);
+    if (params.crt == 1u) {
+        // Phosphor halo: neighboring beam energy bleeds into this texel.
+        a += (amp3(x - 1, y) + amp3(x + 1, y) + amp3(x, y - 1) + amp3(x, y + 1)) * 0.22
+            + (amp3(x - 2, y) + amp3(x + 2, y) + amp3(x, y - 2) + amp3(x, y + 2)) * 0.08;
+    }
     var rgb = vec3f(0.008, 0.010, 0.014);
-    let a0 = f32(atomicLoad(&accum[accum_idx(0u, id.x, id.y)])) / FIXED;
-    let a1 = f32(atomicLoad(&accum[accum_idx(1u, id.x, id.y)])) / FIXED;
-    let a2 = f32(atomicLoad(&accum[accum_idx(2u, id.x, id.y)])) / FIXED;
-    rgb += params.col0.rgb * (1.0 - exp(-a0 * params.gain));
-    rgb += params.col1.rgb * (1.0 - exp(-a1 * params.gain));
-    rgb += params.col2.rgb * (1.0 - exp(-a2 * params.gain));
-    textureStore(display, vec2i(i32(id.x), i32(id.y)), vec4f(rgb, 1.0));
+    rgb += params.col0.rgb * (1.0 - exp(-a.x * params.gain));
+    rgb += params.col1.rgb * (1.0 - exp(-a.y * params.gain));
+    rgb += params.col2.rgb * (1.0 - exp(-a.z * params.gain));
+    if (params.crt == 1u) {
+        // Scanlines + gentle vignette; subtle enough to keep traces crisp.
+        let scan = 0.88 + 0.12 * cos(6.2831853 * f32(id.y) / 3.0);
+        let u = (f32(id.x) / f32(params.width) - 0.5) * 2.0;
+        let v = (f32(id.y) / f32(params.height) - 0.5) * 2.0;
+        let vig = 1.0 - 0.10 * (u * u + v * v);
+        rgb *= scan * vig;
+    }
+    textureStore(display, vec2i(x, y), vec4f(rgb, 1.0));
 }

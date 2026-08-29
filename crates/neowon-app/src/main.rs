@@ -32,7 +32,6 @@ use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
 use gpu::{PLOT_H, PLOT_W, Persistence, Phosphor, PhosphorPlugin, TraceMode};
 use neowon_backend::{Backend, Capabilities, Command, Event, MultiMode, ScopeConfig, Supervisor};
 use neowon_core::{AcqMode, Coupling, SharedFrame, Slope, Sweep, TriggerKind};
-use neowon_dsp::{basic_stats, estimate_frequency};
 /// Screen geometry follows the reference scope: 10 horizontal x 8
 /// vertical divisions (docs/ui-ux-research.md §6).
 use ui::layout::{DIV_X, DIV_Y, H_DIVS, V_DIVS};
@@ -134,6 +133,7 @@ fn main() {
                 draw_graticule,
                 draw_trigger,
                 draw_pf_mask,
+                draw_clip_warnings,
                 cursors::draw_cursors,
                 update_title,
             )
@@ -477,59 +477,53 @@ fn draw_pf_mask(pf: Res<derived::PfState>, mut gizmos: Gizmos) {
     }
 }
 
-fn format_rate(r: f64) -> String {
-    if r >= 1e6 {
-        format!("{} MS/s", r / 1e6)
-    } else if r >= 1e3 {
-        format!("{} kS/s", r / 1e3)
-    } else {
-        format!("{r} S/s")
-    }
-}
-
-fn update_title(link: Res<Link>, phosphor: Res<Phosphor>, mut windows: Query<&mut Window>) {
+fn update_title(link: Res<Link>, mut windows: Query<&mut Window>) {
     let Ok(mut window) = windows.single_mut() else {
         return;
     };
-    let run = if link.config.running { "RUN" } else { "STOP" };
-    let ch = &link.config.channels[0];
-    let mut meas = String::new();
-    if let Some(frame) = &link.latest
-        && let Some(cap) = frame.channels.first()
-    {
-        let vpp = basic_stats(cap).map_or(0.0, |s| s.vpp);
-        let freq = estimate_frequency(&cap.raw, frame.sample_rate).unwrap_or(0.0);
-        meas = format!(
-            "  |  CH1 {vpp:.3} Vpp  {freq:.1} Hz  [{}]",
-            link.frames_seen
-        );
+    // On-screen chrome carries the state; the OS title stays quiet.
+    let title = format!("neowon — {}", link.status);
+    if window.title != title {
+        window.title = title;
     }
-    let sweep = match link.config.trigger.sweep {
-        Sweep::Auto => "auto",
-        Sweep::Normal => "norm",
-        Sweep::Single => "single",
-    };
-    let acq = match link.config.acq {
-        AcqMode::Sample => String::new(),
-        AcqMode::Peak => "  peak".into(),
-        AcqMode::Average(n) => format!("  avg{n}"),
-    };
-    let coupling = match ch.coupling {
-        Coupling::Dc => "DC",
-        Coupling::Ac => "AC",
-        Coupling::Gnd => "GND",
-    };
-    let mode = match phosphor.mode {
-        TraceMode::Vectors => "",
-        TraceMode::Dots => "  dots",
-        TraceMode::Xy => "  XY",
-    };
-    window.title = format!(
-        "neowon — {}  [{run}]  {} V/div {coupling}  {}  trig {:+.2} V {sweep}{acq}  P:{}{mode}{meas}",
-        link.status,
-        ch.volts_div,
-        format_rate(link.config.sample_rate),
-        link.config.trigger.level,
-        phosphor.persistence.label(),
-    );
+}
+
+/// Red clip arrows at the plot edge when a channel's samples sit on the ADC
+/// rails — the honest companion to the shader's off-screen suppression.
+fn draw_clip_warnings(link: Res<Link>, mut gizmos: Gizmos) {
+    let Some(frame) = &link.latest else { return };
+    let w = ui::layout::PLOT_W;
+    let h = ui::layout::PLOT_H;
+    let o = PLOT_OFFSET;
+    let red = Color::srgb(1.0, 0.25, 0.2);
+    for cap in &frame.channels {
+        if !cap.clipped {
+            continue;
+        }
+        let (mut top, mut bottom) = (false, false);
+        for &r in &cap.raw {
+            top |= r >= 125;
+            bottom |= r <= -125;
+        }
+        let x = o.x + w / 2.0 - 26.0 - cap.ch as f32 * 22.0;
+        let mut arrow = |y: f32, dir: f32| {
+            gizmos.line_2d(Vec2::new(x, y), Vec2::new(x, y + 12.0 * dir), red);
+            gizmos.line_2d(
+                Vec2::new(x, y + 12.0 * dir),
+                Vec2::new(x - 4.0, y + 7.0 * dir),
+                red,
+            );
+            gizmos.line_2d(
+                Vec2::new(x, y + 12.0 * dir),
+                Vec2::new(x + 4.0, y + 7.0 * dir),
+                red,
+            );
+        };
+        if top {
+            arrow(o.y + h / 2.0 - 16.0, 1.0);
+        }
+        if bottom {
+            arrow(o.y - h / 2.0 + 16.0, -1.0);
+        }
+    }
 }

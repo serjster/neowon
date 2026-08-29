@@ -107,6 +107,7 @@ pub enum Action {
     Mode(TraceMode),
     Persist(Persistence),
     Gain(f32),
+    Crt(bool),
     Math(Option<MathOp>),
     Run(bool),
     Multi(MultiMode),
@@ -290,6 +291,7 @@ fn parse(text: &str) -> Result<VecDeque<(f64, Action)>, String> {
                 s => Persistence::Seconds(s.parse().map_err(|_| err("bad persistence"))?),
             }),
             "gain" => Action::Gain(rest()?.parse().map_err(|_| err("bad gain"))?),
+            "crt" => Action::Crt(rest()? == "1"),
             "math" => Action::Math(match rest()? {
                 "off" => None,
                 "add" => Some(MathOp::Add),
@@ -490,6 +492,7 @@ pub fn run_script(
             Action::Mode(m) => phosphor.mode = m,
             Action::Persist(p) => phosphor.persistence = p,
             Action::Gain(g) => phosphor.gain = g,
+            Action::Crt(on) => phosphor.crt = on,
             Action::Math(op) => match op {
                 None => math.enabled = false,
                 Some(op) => {

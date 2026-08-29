@@ -75,6 +75,8 @@ pub struct Phosphor {
     /// Decay factor for this render frame (computed main-side from dt).
     pub decay: f32,
     pub gain: f32,
+    /// CRT styling (phosphor halo, scanlines, vignette) in the compose pass.
+    pub crt: bool,
     /// One-shot: a new record arrived since the last render frame.
     pub new_frame: bool,
 }
@@ -88,6 +90,7 @@ impl Default for Phosphor {
             persistence: Persistence::Seconds(0.2),
             decay: 1.0,
             gain: 0.8,
+            crt: true,
             new_frame: false,
         }
     }
@@ -127,7 +130,7 @@ struct Params {
     en0: u32,
     en1: u32,
     en2: u32,
-    _pad0: u32,
+    crt: u32,
     _pad1: u32,
     _pad2: u32,
     col0: Vec4,
@@ -277,7 +280,7 @@ fn prepare_buffers(
         en0: en[0],
         en1: en[1],
         en2: en[2],
-        _pad0: 0,
+        crt: phosphor.crt as u32,
         _pad1: 0,
         _pad2: 0,
         col0: Vec4::new(1.0, 0.85, 0.1, 1.0),

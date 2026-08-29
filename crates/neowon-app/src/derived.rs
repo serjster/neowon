@@ -280,9 +280,14 @@ pub fn fmt(v: f64, unit: Unit) -> String {
     }
 }
 
+/// Engineering notation the way a scope front panel writes it: an SI prefix
+/// putting the mantissa in [1, 1000), at most 4 significant digits, no
+/// trailing zeros — `200 mV`, `2 ms`, `1.032 V`, `12.5 MS/s`.
 pub fn fmt_si(v: f64, unit: &str) -> String {
     let a = v.abs();
-    let (scale, prefix) = if a >= 1e6 {
+    let (scale, prefix) = if a >= 1e9 {
+        (1e-9, "G")
+    } else if a >= 1e6 {
         (1e-6, "M")
     } else if a >= 1e3 {
         (1e-3, "k")
@@ -295,7 +300,24 @@ pub fn fmt_si(v: f64, unit: &str) -> String {
     } else {
         (1e9, "n")
     };
-    format!("{:.4} {}{}", v * scale, prefix, unit)
+    let m = v * scale;
+    let decimals = if m == 0.0 || m.abs() >= 100.0 {
+        1
+    } else if m.abs() >= 10.0 {
+        2
+    } else {
+        3
+    };
+    let mut s = format!("{m:.decimals$}");
+    if s.contains('.') {
+        while s.ends_with('0') {
+            s.pop();
+        }
+        if s.ends_with('.') {
+            s.pop();
+        }
+    }
+    format!("{s} {prefix}{unit}")
 }
 
 #[cfg(test)]
