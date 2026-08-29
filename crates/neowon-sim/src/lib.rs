@@ -120,7 +120,12 @@ impl SimSource {
         }
         self.t0 += SAMPLES as f64 / self.sample_rate;
         self.seq += 1;
-        CaptureFrame { seq: self.seq, sample_rate: self.sample_rate, channels }
+        CaptureFrame {
+            seq: self.seq,
+            sample_rate: self.sample_rate,
+            acq: neowon_core::AcqMode::Sample,
+            channels,
+        }
     }
 }
 

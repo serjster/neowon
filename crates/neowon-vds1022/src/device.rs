@@ -9,7 +9,7 @@ use nusb::transfer::{Bulk, Direction, In, Out, TransferError};
 use nusb::{Device, Endpoint, Interface, MaybeFuture};
 use tracing::{debug, info};
 
-use neowon_core::{CaptureFrame, ChannelCapture, Coupling, Slope, Sweep};
+use neowon_core::{AcqMode, CaptureFrame, ChannelCapture, Coupling, Slope, Sweep};
 
 use crate::consts::{self, reg, status, ADC_CLIP, FLASH_SIZE, FRAME_SIZE, HTP_ERR};
 use crate::error::{Error, Result};
@@ -56,6 +56,10 @@ pub struct Vds1022 {
     pub cold_start: bool,
     channels: [ChannelSetup; 2],
     sample_rate: f64,
+    sweep: Sweep,
+    trg_source: usize,
+    roll: bool,
+    peak: bool,
     seq: u64,
     last_io: Instant,
 }
@@ -113,6 +117,10 @@ impl Vds1022 {
             cold_start: false,
             channels: [ChannelSetup::default(); 2],
             sample_rate: 0.0,
+            sweep: Sweep::Auto,
+            trg_source: 0,
+            roll: false,
+            peak: false,
             seq: 0,
             last_io: Instant::now(),
         };
@@ -294,13 +302,35 @@ impl Vds1022 {
     }
 
     /// Set the sampling rate (snapped to the prescaler ladder) and re-center
-    /// the trigger position. Returns the actual rate.
+    /// the trigger position. Engages roll mode below 2.5 kS/s, as the
+    /// hardware requires. Returns the actual rate.
     pub fn set_sample_rate(&mut self, rate: f64) -> Result<f64> {
         let ps = consts::prescaler_for_rate(rate);
         self.send(reg::SET_TIMEBASE, 4, ps)?;
         self.sample_rate = consts::CLOCK_HZ / ps as f64;
+        let roll = self.sample_rate < consts::ROLLMODE_THRESHOLD;
+        if roll != self.roll {
+            self.roll = roll;
+            self.send(reg::SET_ROLLMODE, 1, roll as u32)?;
+        }
         self.set_trigger_position(0.5)?;
         Ok(self.sample_rate)
+    }
+
+    /// Hardware peak-detect: each sample pair becomes (max, min) over the
+    /// decimation interval.
+    pub fn set_peak_mode(&mut self, on: bool) -> Result<()> {
+        if on != self.peak {
+            self.peak = on;
+            self.send(reg::SET_PEAKMODE, 1, on as u32)?;
+        }
+        Ok(())
+    }
+
+    /// Trigger holdoff. Encoding: 10-bit mantissa in units of 10 ns scaled by
+    /// a decimal exponent, packed `(arg << 6) | exp` and byte-swapped.
+    pub fn set_holdoff(&mut self, ch: usize, seconds: f64) -> Result<()> {
+        self.send(holdoff_reg(ch), 2, holdoff_arg(seconds)).map(drop)
     }
 
     pub fn sample_rate(&self) -> f64 {
@@ -308,8 +338,9 @@ impl Vds1022 {
     }
 
     /// Horizontal trigger position as a fraction of the record (0 = trigger
-    /// at the far left, 0.5 = centered).
+    /// at the far left, 0.5 = centered). Roll mode forces center.
     pub fn set_trigger_position(&mut self, position: f64) -> Result<()> {
+        let position = if self.roll { 0.5 } else { position };
         let htp = (5000.0 * (0.5 - position).clamp(-0.5, 0.5)).round() as i32;
         let pre = (2550 - htp - HTP_ERR).max(0) as u32;
         let suf = (2550 + htp + HTP_ERR).max(0) as u32;
@@ -347,6 +378,8 @@ impl Vds1022 {
         };
         word |= sweep_code << 10;
         self.send(reg::SET_TRIGGER, 2, word as u32)?;
+        self.sweep = sweep;
+        self.trg_source = ch;
 
         // Level pair with 10-LSB hysteresis.
         let (hi, lo) = match slope {
@@ -404,6 +437,17 @@ impl Vds1022 {
         let n = on.iter().filter(|&&e| e).count();
         if n == 0 {
             return Err(Error::Protocol("no channel enabled".into()));
+        }
+        // Normal/Single sweeps gate on the hardware: a completed record AND a
+        // real trigger event on the source channel. Auto just pulls.
+        if self.sweep != Sweep::Auto && !self.roll {
+            if !self.data_finished()? {
+                return Err(Error::NotReady);
+            }
+            let triggered = self.triggered_mask()?;
+            if triggered & (1 << self.trg_source as u32) == 0 {
+                return Err(Error::NotReady);
+            }
         }
         // byte0 = CH1 state, byte1 = CH2 state; 0x05 = on, 0x04 = off.
         let value = (state_code(on[0]) as u32) | ((state_code(on[1]) as u32) << 8);
@@ -471,7 +515,12 @@ impl Vds1022 {
                 }
             })
             .collect();
-        CaptureFrame { seq: self.seq, sample_rate: self.sample_rate, channels }
+        CaptureFrame {
+            seq: self.seq,
+            sample_rate: self.sample_rate,
+            acq: if self.peak { AcqMode::Peak } else { AcqMode::Sample },
+            channels,
+        }
     }
 
     pub fn channel(&self, ch: usize) -> ChannelSetup {
@@ -501,6 +550,19 @@ fn holdoff_reg(ch: usize) -> u32 {
 }
 fn freqref_reg(ch: usize) -> u32 {
     [reg::SET_FREQREF_CH1, reg::SET_FREQREF_CH2][ch]
+}
+
+/// Holdoff wire encoding: `d = seconds * 1e8` (units of 10 ns), divided by 10
+/// until it fits 10 bits, exponent in the low 3 bits, then byte-swapped.
+fn holdoff_arg(seconds: f64) -> u32 {
+    let mut d = (seconds * 1e8).max(1.0);
+    let mut e = 0u32;
+    while d > 1023.0 {
+        d /= 10.0;
+        e += 1;
+    }
+    let v = ((d.round() as u32) << 6) | (e & 7);
+    ((v >> 8) & 0xFF) | ((v & 0xFF) << 8)
 }
 
 /// Wire format: u32 LE address, u8 value width (1/2/4), LE value bytes.
@@ -542,6 +604,16 @@ mod tests {
         );
         // MACHINE_TYPE probe: 0x4001, 1 byte, 'V'
         assert_eq!(cmd_bytes(0x4001, 1, 86), vec![0x01, 0x40, 0, 0, 1, 86]);
+    }
+
+    #[test]
+    fn holdoff_encoding() {
+        // 100 ns -> mantissa 10, exp 0 -> 0x0280 -> swapped 0x8002 (the
+        // documented power-on default).
+        assert_eq!(holdoff_arg(100e-9), 0x8002);
+        // 1 ms -> 1e5 units of 10 ns -> mantissa 1000, exp 2
+        let v = (1000u32 << 6) | 2;
+        assert_eq!(holdoff_arg(1e-3), ((v >> 8) & 0xFF) | ((v & 0xFF) << 8));
     }
 
     #[test]

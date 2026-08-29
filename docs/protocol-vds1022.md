@@ -49,13 +49,30 @@ macOS, nusb). The full register map lives in
   as a footgun, not a feature. Don't run two neowon processes against one
   scope; a lock file may be worth adding.
 
+## Verified 2026-08-29 (Phase 3)
+
+- **Normal/Single sweep gating**: polling `GET_DATAFINISHED (0x7A)` and
+  `GET_TRIGGERED (0x01)` (masked by trigger-source bit) before `GET_DATA`
+  works exactly as documented — frames flow when the edge level is inside the
+  signal, starve (clean `'E'`/not-ready) when it isn't. Single = one gated
+  record then host stop.
+- **Peak-detect (`0x09`)**: hardware-confirmed active — the min/max pair
+  interleave doubles apparent zero crossings (software freq reads 2 kHz on a
+  1 kHz square while the hardware meter stays at 1 kHz). Consumers must
+  unpack odd=max/even=min pairs.
+- **Roll mode (`0x0A`)**: engages below 2.5 kS/s; frames keep flowing with
+  progressive content. (Incremental cursor-based streaming still not
+  implemented.)
+- **Holdoff encoding**: mantissa/exponent formula reproduces the documented
+  power-on default `0x8002` for 100 ns.
+- **Auto-set** (range sweep → amplitude fit → freq-based rate pick → trigger
+  at midpoint) converges on the probe-comp signal in ~6 captures.
+
 ## Still to verify
 
 - FPGA upload handshake on a cold (power-cycled) device.
 - `HTP_ERR = 11` horizontal correction (need a fast edge + timebase sweep).
-- Trigger word bits for Normal/Single sweep gating (`GET_DATAFINISHED`,
-  `GET_TRIGGERED`).
 - Slope/Video trigger type codes (Java says Slope=1/Video=2; Python has them
   swapped).
-- Roll-mode cursor arithmetic (DM=5120, circular).
+- Roll-mode incremental cursor arithmetic (DM=5120, circular).
 - Keep-alive: how quickly the link actually drops when idle (>3 s claimed).

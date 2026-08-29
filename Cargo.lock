@@ -3668,6 +3668,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "neowon-backend",
  "neowon-core",
  "neowon-dsp",
  "neowon-vds1022",
@@ -3701,6 +3702,7 @@ version = "0.1.0"
 dependencies = [
  "neowon-backend",
  "neowon-core",
+ "neowon-dsp",
  "nusb",
  "thiserror 2.0.20",
  "tracing",

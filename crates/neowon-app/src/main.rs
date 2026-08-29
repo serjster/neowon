@@ -9,12 +9,18 @@
 //!   Left/Right  sample rate
 //!   ,/.         trigger level down/up
 //!   S           toggle trigger slope
+//!   N           cycle sweep (auto -> normal -> single)
+//!   M           cycle acquisition (sample -> peak -> avg4 -> avg16 -> avg64)
+//!   C           cycle CH1 coupling (DC -> AC -> GND)
+//!   [/]         CH1 vertical offset down/up
+//!   F           force trigger
+//!   A           auto-set
 
 use bevy::color::palettes::css;
 use bevy::prelude::*;
 
-use neowon_backend::{Backend, Capabilities, Event, ScopeConfig, Supervisor};
-use neowon_core::{SharedFrame, Slope};
+use neowon_backend::{Backend, Capabilities, Command, Event, ScopeConfig, Supervisor};
+use neowon_core::{AcqMode, Coupling, SharedFrame, Slope, Sweep};
 use neowon_dsp::{basic_stats, estimate_frequency};
 
 /// Screen geometry follows scope convention: 20 horizontal x 10 vertical
@@ -109,6 +115,9 @@ fn ingest(mut link: ResMut<Link>) {
                 }
                 link.latest = Some(f);
             }
+            Event::ConfigUpdated(cfg) => {
+                link.config = cfg;
+            }
             Event::Error(e) => link.status = format!("error: {e}"),
         }
     }
@@ -178,6 +187,52 @@ fn input(keys: Res<ButtonInput<KeyCode>>, mut link: ResMut<Link>) {
             Slope::Falling => Slope::Rising,
         };
         link.dirty = true;
+    }
+    if keys.just_pressed(KeyCode::KeyN) {
+        link.config.trigger.sweep = match link.config.trigger.sweep {
+            Sweep::Auto => Sweep::Normal,
+            Sweep::Normal => Sweep::Single,
+            Sweep::Single => Sweep::Auto,
+        };
+        // Arming single (re)starts acquisition.
+        if link.config.trigger.sweep == Sweep::Single {
+            link.config.running = true;
+        }
+        link.dirty = true;
+    }
+    if keys.just_pressed(KeyCode::KeyM) {
+        link.config.acq = match link.config.acq {
+            AcqMode::Sample => AcqMode::Peak,
+            AcqMode::Peak => AcqMode::Average(4),
+            AcqMode::Average(4) => AcqMode::Average(16),
+            AcqMode::Average(16) => AcqMode::Average(64),
+            AcqMode::Average(_) => AcqMode::Sample,
+        };
+        link.dirty = true;
+    }
+    if keys.just_pressed(KeyCode::KeyC) {
+        link.config.channels[0].coupling = match link.config.channels[0].coupling {
+            Coupling::Dc => Coupling::Ac,
+            Coupling::Ac => Coupling::Gnd,
+            Coupling::Gnd => Coupling::Dc,
+        };
+        link.dirty = true;
+    }
+    if keys.just_pressed(KeyCode::BracketRight) {
+        let o = (link.config.channels[0].offset + 0.05).clamp(-0.5, 0.5);
+        link.config.channels[0].offset = o;
+        link.dirty = true;
+    }
+    if keys.just_pressed(KeyCode::BracketLeft) {
+        let o = (link.config.channels[0].offset - 0.05).clamp(-0.5, 0.5);
+        link.config.channels[0].offset = o;
+        link.dirty = true;
+    }
+    if keys.just_pressed(KeyCode::KeyF) {
+        let _ = link.sup.commands.send(Command::ForceTrigger);
+    }
+    if keys.just_pressed(KeyCode::KeyA) {
+        let _ = link.sup.commands.send(Command::AutoSet);
     }
 }
 
@@ -264,8 +319,23 @@ fn update_title(link: Res<Link>, mut windows: Query<&mut Window>) {
         let freq = estimate_frequency(&cap.raw, frame.sample_rate).unwrap_or(0.0);
         meas = format!("  |  CH1 {vpp:.3} Vpp  {freq:.1} Hz  [{}]", link.frames_seen);
     }
+    let sweep = match link.config.trigger.sweep {
+        Sweep::Auto => "auto",
+        Sweep::Normal => "norm",
+        Sweep::Single => "single",
+    };
+    let acq = match link.config.acq {
+        AcqMode::Sample => String::new(),
+        AcqMode::Peak => "  peak".into(),
+        AcqMode::Average(n) => format!("  avg{n}"),
+    };
+    let coupling = match ch.coupling {
+        Coupling::Dc => "DC",
+        Coupling::Ac => "AC",
+        Coupling::Gnd => "GND",
+    };
     window.title = format!(
-        "neowon — {}  [{run}]  {} V/div  {}  trig {:+.2} V{meas}",
+        "neowon — {}  [{run}]  {} V/div {coupling}  {}  trig {:+.2} V {sweep}{acq}{meas}",
         link.status,
         ch.volts_div,
         format_rate(link.config.sample_rate),

@@ -130,12 +130,14 @@ Gotchas already known from GoL: uniform struct field order must match WGSL; `NoA
 
 Each phase ends with something runnable and testable — most against the real scope on your desk (CH1 = 1 kHz 5 Vpp probe-comp signal).
 
-> **Status 2026-08-29:** Phases 0, 1, and 2 are DONE and hardware-verified
-> (unit VDS1022I2324259, hw V5.0.1). `neowon probe|dump|stream|smoke` all pass
-> on the 1 kHz probe-comp signal (~36 frames/s sustained); the Bevy app shows
-> the live hardware waveform with keyboard controls and a reconnecting
-> supervisor. Verified facts live in `docs/protocol-vds1022.md`. Still open
-> from Phase 1: FPGA upload untested until a device power-cycle.
+> **Status 2026-08-29:** Phases 0–3 are DONE and hardware-verified (unit
+> VDS1022I2324259, hw V5.0.1). CLI (`probe|dump|stream|smoke|autoset`) and the
+> Bevy app both run the live scope: Normal/Single sweep gating, peak-detect,
+> roll mode, holdoff, host-side averaging, force trigger, and auto-set all
+> confirmed on the 1 kHz probe-comp signal. Verified facts live in
+> `docs/protocol-vds1022.md`. Still open: FPGA upload untested until a device
+> power-cycle; roll-mode incremental streaming deferred to the Continuous
+> stream work. Next: Phase 4 (GPU phosphor pipeline).
 
 ### Phase 0 — Scaffold + simulated trace (½ day)
 

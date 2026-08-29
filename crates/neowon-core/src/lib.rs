@@ -28,3 +28,12 @@ pub enum Sweep {
     Normal,
     Single,
 }
+
+/// Acquisition mode. `Peak` captures min/max pairs (odd = max, even = min on
+/// the VDS1022); `Average` is a host-side running average over N records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcqMode {
+    Sample,
+    Peak,
+    Average(u8),
+}

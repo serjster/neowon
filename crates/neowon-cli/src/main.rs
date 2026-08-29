@@ -50,6 +50,8 @@ enum Cmd {
         #[command(flatten)]
         acq: AcqArgs,
     },
+    /// Run the backend auto-set against the live signal and print the result
+    Autoset,
 }
 
 #[derive(clap::Args, Clone, Copy)]
@@ -69,6 +71,32 @@ struct AcqArgs {
     /// Trigger level in volts (edge, rising, CH1)
     #[arg(long, default_value_t = 2.5)]
     trig_level: f64,
+    /// Sweep mode
+    #[arg(long, value_enum, default_value_t = SweepArg::Auto)]
+    sweep: SweepArg,
+    /// Hardware peak-detect mode
+    #[arg(long)]
+    peak: bool,
+    /// Trigger holdoff in seconds
+    #[arg(long, default_value_t = 100e-9)]
+    holdoff: f64,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, PartialEq)]
+enum SweepArg {
+    Auto,
+    Normal,
+    Single,
+}
+
+impl From<SweepArg> for Sweep {
+    fn from(s: SweepArg) -> Self {
+        match s {
+            SweepArg::Auto => Sweep::Auto,
+            SweepArg::Normal => Sweep::Normal,
+            SweepArg::Single => Sweep::Single,
+        }
+    }
 }
 
 fn main() -> Result<()> {
@@ -85,6 +113,30 @@ fn main() -> Result<()> {
         Cmd::Dump { frames, acq, ref csv } => dump(&cli, frames, acq, csv.as_deref()),
         Cmd::Stream { secs, acq } => stream(&cli, secs, acq),
         Cmd::Smoke { acq } => smoke(&cli, acq),
+        Cmd::Autoset => autoset(&cli),
+    }
+}
+
+fn autoset(cli: &Cli) -> Result<()> {
+    use neowon_backend::Backend;
+    let mut be = neowon_vds1022::backend::Vds1022Backend::open(Some(&cli.fpga_dir))
+        .context("opening VDS1022")?;
+    match be.autoset().map_err(|e| anyhow::anyhow!(e.to_string()))? {
+        None => bail!("autoset found no signal"),
+        Some(cfg) => {
+            let ch = &cfg.channels[cfg.trigger.source];
+            println!(
+                "autoset: {} V/div, {} S/s, trigger {:.3} V",
+                ch.volts_div, cfg.sample_rate, cfg.trigger.level
+            );
+            // Show what it looks like with the chosen settings.
+            let frame = be
+                .poll_frame(Duration::from_secs(2))
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?
+                .context("no frame after autoset")?;
+            println!("{}", report(&frame));
+            Ok(())
+        }
     }
 }
 
@@ -124,13 +176,17 @@ fn setup(dev: &mut Vds1022, acq: AcqArgs) -> Result<f64> {
     dev.configure_channel(0, ch)?;
     dev.configure_channel(1, ChannelSetup { enabled: acq.ch2, ..ch })?;
     let actual = dev.set_sample_rate(acq.rate)?;
-    dev.set_edge_trigger(0, Slope::Rising, acq.trig_level, Sweep::Auto)?;
+    dev.set_peak_mode(acq.peak)?;
+    dev.set_edge_trigger(0, Slope::Rising, acq.trig_level, acq.sweep.into())?;
+    dev.set_holdoff(0, acq.holdoff)?;
     dev.run()?;
     eprintln!(
-        "configured: {} V/div, {} S/s, trigger {} V rising CH1",
+        "configured: {} V/div, {} S/s, trigger {} V rising CH1, {:?} sweep{}",
         neowon_vds1022::consts::VOLTBASE_MV[vb] as f64 / 1000.0,
         actual,
-        acq.trig_level
+        acq.trig_level,
+        Sweep::from(acq.sweep),
+        if acq.peak { ", peak-detect" } else { "" },
     );
     Ok(actual)
 }

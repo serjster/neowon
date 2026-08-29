@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use neowon_core::{Coupling, SharedFrame, Slope, Sweep};
+use neowon_core::{AcqMode, Coupling, SharedFrame, Slope, Sweep};
 
 pub mod supervisor;
 
@@ -51,11 +51,19 @@ pub struct TriggerConfig {
     /// Level in volts (at the probe tip).
     pub level: f64,
     pub sweep: Sweep,
+    /// Trigger holdoff in seconds.
+    pub holdoff: f64,
 }
 
 impl Default for TriggerConfig {
     fn default() -> Self {
-        Self { source: 0, slope: Slope::Rising, level: 0.0, sweep: Sweep::Auto }
+        Self {
+            source: 0,
+            slope: Slope::Rising,
+            level: 0.0,
+            sweep: Sweep::Auto,
+            holdoff: 100e-9,
+        }
     }
 }
 
@@ -68,6 +76,7 @@ pub struct ScopeConfig {
     pub trigger: TriggerConfig,
     /// Horizontal trigger position, fraction of the record (0.5 = centered).
     pub position: f64,
+    pub acq: AcqMode,
     pub running: bool,
 }
 
@@ -81,6 +90,7 @@ impl Default for ScopeConfig {
             sample_rate: 250e3,
             trigger: TriggerConfig { level: 2.5, ..Default::default() },
             position: 0.5,
+            acq: AcqMode::Sample,
             running: true,
         }
     }
@@ -109,5 +119,17 @@ pub trait Backend: Send {
     /// Periodic upkeep while not acquiring (keep-alives etc.).
     fn idle(&mut self) -> Result<(), BackendError> {
         Ok(())
+    }
+
+    /// Force a trigger event on instruments that support it.
+    fn force_trigger(&mut self) -> Result<(), BackendError> {
+        Ok(())
+    }
+
+    /// Probe the signal and pick sensible settings. Returns the new config
+    /// (already applied to the instrument) or `None` if unsupported / no
+    /// signal found.
+    fn autoset(&mut self) -> Result<Option<ScopeConfig>, BackendError> {
+        Ok(None)
     }
 }

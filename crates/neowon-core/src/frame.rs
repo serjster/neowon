@@ -10,6 +10,9 @@ pub struct CaptureFrame {
     pub seq: u64,
     /// Actual sample rate of this record, in samples/second.
     pub sample_rate: f64,
+    /// How the samples were produced (affects interpretation: peak-detect
+    /// records are min/max pairs).
+    pub acq: crate::AcqMode,
     pub channels: Vec<ChannelCapture>,
 }
 

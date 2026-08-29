@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 neowon-core.workspace = true
+neowon-backend.workspace = true
 neowon-dsp.workspace = true
 neowon-vds1022.workspace = true
 anyhow.workspace = true
