@@ -2,7 +2,9 @@
 //! action script against the live app — the same state mutations the UI
 //! performs, so anything the panel can do a script can do.
 //!
-//! One action per line (`#` comments allowed):
+//! One action per line (`#` comments allowed). Every UI control is
+//! reachable here (AGENTS.md script-parity rule).
+//!
 //! ```text
 //! wait <seconds>
 //! stimulus <name>                       # sim scenarios, e.g. xy-circle
@@ -13,12 +15,33 @@
 //! probe <ch> <factor>
 //! offset <ch> <fraction>
 //! trigger <ch> <rising|falling> <level_volts> <auto|normal|single>
+//! trigpulse <ch> <pos|neg> <gt|eq|lt> <width_us> <auto|normal|single>
+//! trigslope <ch> <pos|neg> <gt|eq|lt> <width_us> <upper_v> <lower_v> <sweep>
+//! trigvideo <line|field|odd|even|linenum> <line#> <sweep>
+//! holdoff <seconds>
+//! autoset
+//! force
 //! acq <sample|peak|avg4|avg16|avg64>
 //! mode <vectors|dots|xy>
 //! persist <off|inf|SECONDS>
 //! gain <float>
 //! math <off|add|sub|mul|div|diff|integ>
 //! run <0|1>
+//! multi <trigout|pfout|trigin>
+//! pfout <0|1>
+//! cursor <time|amp> <on|off>
+//! stats <slot>
+//! statsreset
+//! fft <on|off>
+//! fftsrc <slot>
+//! fftwnd <rectangle|hamming|hann|blackman|flattop|triangular>
+//! pf <on|off>
+//! pfsrc <slot>
+//! pftol <h_div> <v_div>
+//! pfcapture
+//! pfreset
+//! menu <channel <ch>|horizontal|trigger|acquire|display|measure|math|cursor|utility|none>
+//! layout <path.json>                    # named-ROI map + open menu
 //! shot <path.ppm> [x y w h]             # plot-texture region (default: all)
 //! quit
 //! ```
@@ -29,13 +52,16 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bevy::prelude::*;
-use neowon_backend::Command;
-use neowon_core::{AcqMode, Coupling, Slope, Sweep, TriggerKind};
-use neowon_dsp::MathOp;
+use neowon_backend::{Command, MultiMode};
+use neowon_core::{AcqMode, Coupling, PulseCondition, Slope, Sweep, TriggerKind, VideoSync};
+use neowon_dsp::{MathOp, Window};
 
 use crate::Link;
-use crate::derived::MathState;
+use crate::cursors::CursorState;
+use crate::derived::{FftState, MathState, MeasureState, PfState};
 use crate::gpu::{PLOT_H, PLOT_W, Persistence, Phosphor, TraceMode};
+use crate::ui::layout::dump_json;
+use crate::ui::{Menu, MenuState};
 
 /// Shots in flight (readback observers decrement).
 static PENDING_SHOTS: AtomicUsize = AtomicUsize::new(0);
@@ -55,12 +81,52 @@ pub enum Action {
         level: f64,
         sweep: Sweep,
     },
+    TrigPulse {
+        ch: usize,
+        cond: PulseCondition,
+        width: f64,
+        sweep: Sweep,
+    },
+    TrigSlope {
+        ch: usize,
+        cond: PulseCondition,
+        width: f64,
+        upper: f64,
+        lower: f64,
+        sweep: Sweep,
+    },
+    TrigVideo {
+        sync: VideoSync,
+        line: u16,
+        sweep: Sweep,
+    },
+    Holdoff(f64),
+    AutoSet,
+    Force,
     Acq(AcqMode),
     Mode(TraceMode),
     Persist(Persistence),
     Gain(f32),
     Math(Option<MathOp>),
     Run(bool),
+    Multi(MultiMode),
+    PfOut(bool),
+    Cursor {
+        amp: bool,
+        on: bool,
+    },
+    Stats(usize),
+    StatsReset,
+    Fft(bool),
+    FftSrc(usize),
+    FftWnd(Window),
+    Pf(bool),
+    PfSrc(usize),
+    PfTol(f64, f64),
+    PfCapture,
+    PfReset,
+    Menu(Option<Menu>),
+    Layout(String),
     Shot {
         path: String,
         roi: Option<(u32, u32, u32, u32)>,
@@ -86,6 +152,41 @@ pub fn load_from_env() -> Script {
             Script { queue }
         }
         Err(e) => panic!("NEOWON_SCRIPT parse error: {e}"),
+    }
+}
+
+fn parse_sweep(s: &str) -> Result<Sweep, ()> {
+    match s {
+        "auto" => Ok(Sweep::Auto),
+        "normal" => Ok(Sweep::Normal),
+        "single" => Ok(Sweep::Single),
+        _ => Err(()),
+    }
+}
+
+fn parse_condition(polarity: &str, cmp: &str) -> Result<PulseCondition, ()> {
+    use PulseCondition::*;
+    let c = match (polarity, cmp) {
+        ("pos", "gt") => PositiveGreater,
+        ("pos", "eq") => PositiveEqual,
+        ("pos", "lt") => PositiveLess,
+        ("neg", "gt") => NegativeGreater,
+        ("neg", "eq") => NegativeEqual,
+        ("neg", "lt") => NegativeLess,
+        _ => return Err(()),
+    };
+    Ok(c)
+}
+
+fn parse_window(s: &str) -> Result<Window, ()> {
+    match s {
+        "rectangle" => Ok(Window::Rectangle),
+        "hamming" => Ok(Window::Hamming),
+        "hann" => Ok(Window::Hann),
+        "blackman" => Ok(Window::Blackman),
+        "flattop" => Ok(Window::Flattop),
+        "triangular" => Ok(Window::Triangular),
+        _ => Err(()),
     }
 }
 
@@ -138,13 +239,37 @@ fn parse(text: &str) -> Result<VecDeque<(f64, Action)>, String> {
                     _ => return Err(err("bad slope")),
                 },
                 level: rest()?.parse().map_err(|_| err("bad level"))?,
-                sweep: match rest()? {
-                    "auto" => Sweep::Auto,
-                    "normal" => Sweep::Normal,
-                    "single" => Sweep::Single,
-                    _ => return Err(err("bad sweep")),
-                },
+                sweep: parse_sweep(rest()?).map_err(|_| err("bad sweep"))?,
             },
+            "trigpulse" => Action::TrigPulse {
+                ch: rest()?.parse().map_err(|_| err("bad ch"))?,
+                cond: parse_condition(rest()?, rest()?).map_err(|_| err("bad condition"))?,
+                width: rest()?.parse::<f64>().map_err(|_| err("bad width"))? * 1e-6,
+                sweep: parse_sweep(rest()?).map_err(|_| err("bad sweep"))?,
+            },
+            "trigslope" => Action::TrigSlope {
+                ch: rest()?.parse().map_err(|_| err("bad ch"))?,
+                cond: parse_condition(rest()?, rest()?).map_err(|_| err("bad condition"))?,
+                width: rest()?.parse::<f64>().map_err(|_| err("bad width"))? * 1e-6,
+                upper: rest()?.parse().map_err(|_| err("bad upper"))?,
+                lower: rest()?.parse().map_err(|_| err("bad lower"))?,
+                sweep: parse_sweep(rest()?).map_err(|_| err("bad sweep"))?,
+            },
+            "trigvideo" => Action::TrigVideo {
+                sync: match rest()? {
+                    "line" => VideoSync::Line,
+                    "field" => VideoSync::Field,
+                    "odd" => VideoSync::OddField,
+                    "even" => VideoSync::EvenField,
+                    "linenum" => VideoSync::LineNumber,
+                    _ => return Err(err("bad video sync")),
+                },
+                line: rest()?.parse().map_err(|_| err("bad line"))?,
+                sweep: parse_sweep(rest()?).map_err(|_| err("bad sweep"))?,
+            },
+            "holdoff" => Action::Holdoff(rest()?.parse().map_err(|_| err("bad holdoff"))?),
+            "autoset" => Action::AutoSet,
+            "force" => Action::Force,
             "acq" => Action::Acq(match rest()? {
                 "sample" => AcqMode::Sample,
                 "peak" => AcqMode::Peak,
@@ -176,6 +301,51 @@ fn parse(text: &str) -> Result<VecDeque<(f64, Action)>, String> {
                 _ => return Err(err("bad math op")),
             }),
             "run" => Action::Run(rest()? == "1"),
+            "multi" => Action::Multi(match rest()? {
+                "trigout" => MultiMode::TriggerOut,
+                "pfout" => MultiMode::PassFailOut,
+                "trigin" => MultiMode::TriggerIn,
+                _ => return Err(err("bad multi mode")),
+            }),
+            "pfout" => Action::PfOut(rest()? == "1"),
+            "cursor" => Action::Cursor {
+                amp: match rest()? {
+                    "time" => false,
+                    "amp" => true,
+                    _ => return Err(err("bad cursor kind")),
+                },
+                on: rest()? == "on",
+            },
+            "stats" => Action::Stats(rest()?.parse().map_err(|_| err("bad slot"))?),
+            "statsreset" => Action::StatsReset,
+            "fft" => Action::Fft(rest()? == "on"),
+            "fftsrc" => Action::FftSrc(rest()?.parse().map_err(|_| err("bad slot"))?),
+            "fftwnd" => Action::FftWnd(parse_window(rest()?).map_err(|_| err("bad window"))?),
+            "pf" => Action::Pf(rest()? == "on"),
+            "pfsrc" => Action::PfSrc(rest()?.parse().map_err(|_| err("bad slot"))?),
+            "pftol" => Action::PfTol(
+                rest()?.parse().map_err(|_| err("bad h"))?,
+                rest()?.parse().map_err(|_| err("bad v"))?,
+            ),
+            "pfcapture" => Action::PfCapture,
+            "pfreset" => Action::PfReset,
+            "menu" => Action::Menu(match rest()? {
+                "none" => None,
+                "channel" => {
+                    let ch: usize = rest()?.parse().map_err(|_| err("bad ch"))?;
+                    Some(Menu::Channel(ch))
+                }
+                "horizontal" => Some(Menu::Horizontal),
+                "trigger" => Some(Menu::Trigger),
+                "acquire" => Some(Menu::Acquire),
+                "display" => Some(Menu::Display),
+                "measure" => Some(Menu::Measure),
+                "math" => Some(Menu::Math),
+                "cursor" => Some(Menu::Cursor),
+                "utility" => Some(Menu::Utility),
+                _ => return Err(err("bad menu")),
+            }),
+            "layout" => Action::Layout(rest()?.to_string()),
             "shot" => {
                 let path = rest()?.to_string();
                 let roi = match w.next() {
@@ -212,6 +382,11 @@ pub fn run_script(
     mut link: ResMut<Link>,
     mut phosphor: ResMut<Phosphor>,
     mut math: ResMut<MathState>,
+    mut menus: ResMut<MenuState>,
+    mut cur: ResMut<CursorState>,
+    mut meas: ResMut<MeasureState>,
+    mut fft: ResMut<FftState>,
+    mut pf: ResMut<PfState>,
 ) {
     let now = time.elapsed_secs_f64();
     while let Some((due, _)) = script.queue.front() {
@@ -222,7 +397,8 @@ pub fn run_script(
         debug!("script: {action:?}");
         match action {
             Action::Stimulus(name) => {
-                let _ = link.sup.commands.send(Command::Stimulus(name));
+                let _ = link.sup.commands.send(Command::Stimulus(name.clone()));
+                link.stimulus = name;
             }
             Action::Rate(r) => {
                 link.config.sample_rate = r;
@@ -260,6 +436,53 @@ pub fn run_script(
                 link.config.trigger.sweep = sweep;
                 link.dirty = true;
             }
+            Action::TrigPulse {
+                ch,
+                cond,
+                width,
+                sweep,
+            } => {
+                link.config.trigger.source = ch;
+                link.config.trigger.kind = TriggerKind::Pulse {
+                    condition: cond,
+                    width,
+                };
+                link.config.trigger.sweep = sweep;
+                link.dirty = true;
+            }
+            Action::TrigSlope {
+                ch,
+                cond,
+                width,
+                upper,
+                lower,
+                sweep,
+            } => {
+                link.config.trigger.source = ch;
+                link.config.trigger.kind = TriggerKind::Slope {
+                    condition: cond,
+                    width,
+                    upper,
+                    lower,
+                };
+                link.config.trigger.sweep = sweep;
+                link.dirty = true;
+            }
+            Action::TrigVideo { sync, line, sweep } => {
+                link.config.trigger.kind = TriggerKind::Video { sync, line };
+                link.config.trigger.sweep = sweep;
+                link.dirty = true;
+            }
+            Action::Holdoff(h) => {
+                link.config.trigger.holdoff = h;
+                link.dirty = true;
+            }
+            Action::AutoSet => {
+                let _ = link.sup.commands.send(Command::AutoSet);
+            }
+            Action::Force => {
+                let _ = link.sup.commands.send(Command::ForceTrigger);
+            }
             Action::Acq(a) => {
                 link.config.acq = a;
                 link.dirty = true;
@@ -278,6 +501,62 @@ pub fn run_script(
             Action::Run(r) => {
                 link.config.running = r;
                 link.dirty = true;
+            }
+            Action::Multi(m) => {
+                link.multi = m;
+                let _ = link.sup.commands.send(Command::Multi(m));
+            }
+            Action::PfOut(level) => {
+                let _ = link.sup.commands.send(Command::PassFail(level));
+            }
+            Action::Cursor { amp, on } => {
+                if amp {
+                    cur.amp_on = on;
+                } else {
+                    cur.time_on = on;
+                }
+            }
+            Action::Stats(slot) => meas.stats_slot = slot,
+            Action::StatsReset => meas.reset_stats(),
+            Action::Fft(on) => fft.enabled = on,
+            Action::FftSrc(slot) => fft.source = slot,
+            Action::FftWnd(w) => fft.window = w,
+            Action::Pf(on) => pf.enabled = on,
+            Action::PfSrc(slot) => {
+                pf.source_slot = slot;
+                pf.mask = None;
+            }
+            Action::PfTol(h, v) => {
+                pf.h_div = h;
+                pf.v_div = v;
+            }
+            Action::PfCapture => {
+                let raw: Option<Vec<i8>> = if pf.source_slot < 2 {
+                    link.latest
+                        .as_ref()
+                        .and_then(|f| f.channels.iter().find(|c| c.ch == pf.source_slot))
+                        .map(|c| c.raw.clone())
+                } else {
+                    math.trace.as_ref().map(|c| c.raw.clone())
+                };
+                if let Some(raw) = raw {
+                    pf.mask = Some(crate::derived::build_pf_mask(&raw, pf.h_div, pf.v_div));
+                    pf.pass = 0;
+                    pf.fail = 0;
+                }
+            }
+            Action::PfReset => {
+                pf.pass = 0;
+                pf.fail = 0;
+            }
+            Action::Menu(m) => menus.open = m,
+            Action::Layout(path) => {
+                let open = menus.open.map(menu_name);
+                let json = dump_json(open);
+                match std::fs::write(&path, json) {
+                    Ok(()) => info!("script: wrote layout {path}"),
+                    Err(e) => error!("script: cannot write {path}: {e}"),
+                }
             }
             Action::Shot { path, roi } => {
                 PENDING_SHOTS.fetch_add(1, Ordering::SeqCst);
@@ -304,6 +583,23 @@ pub fn run_script(
                 std::process::exit(0);
             }
         }
+    }
+}
+
+/// Stable menu names for the `layout` JSON.
+fn menu_name(m: Menu) -> &'static str {
+    match m {
+        Menu::Channel(0) => "channel0",
+        Menu::Channel(1) => "channel1",
+        Menu::Channel(_) => "channel",
+        Menu::Horizontal => "horizontal",
+        Menu::Trigger => "trigger",
+        Menu::Acquire => "acquire",
+        Menu::Display => "display",
+        Menu::Measure => "measure",
+        Menu::Math => "math",
+        Menu::Cursor => "cursor",
+        Menu::Utility => "utility",
     }
 }
 

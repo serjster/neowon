@@ -1,0 +1,126 @@
+//! Utility dialog — MULTI port, pass/fail engine, spectrum (FFT) controls.
+
+use bevy_egui::egui;
+use neowon_backend::{Command, MultiMode};
+use neowon_dsp::Window;
+
+use crate::Link;
+use crate::derived::{FftState, MathState, PfState, SLOT_NAMES, build_pf_mask};
+
+pub fn show(
+    ui: &mut egui::Ui,
+    link: &mut Link,
+    math: &MathState,
+    pf: &mut PfState,
+    fft: &mut FftState,
+) {
+    ui.group(|ui| {
+        ui.strong("MULTI port");
+        ui.horizontal(|ui| {
+            for (m, label) in [
+                (MultiMode::TriggerOut, "Trigger out"),
+                (MultiMode::PassFailOut, "Pass-fail out"),
+                (MultiMode::TriggerIn, "Trigger in"),
+            ] {
+                if ui.selectable_label(link.multi == m, label).clicked() {
+                    link.multi = m;
+                    let _ = link.sup.commands.send(Command::Multi(m));
+                }
+            }
+        });
+    });
+
+    ui.group(|ui| {
+        ui.strong("Pass/Fail");
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut pf.enabled, "Enabled");
+            ui.label("Src");
+            for (slot, name) in SLOT_NAMES.iter().enumerate() {
+                if ui.selectable_label(pf.source_slot == slot, *name).clicked() {
+                    pf.source_slot = slot;
+                    pf.mask = None; // reference came from another trace
+                }
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("H tol");
+            ui.add(
+                egui::DragValue::new(&mut pf.h_div)
+                    .speed(0.05)
+                    .range(0.0..=20.0)
+                    .suffix(" div"),
+            );
+            ui.label("V tol");
+            ui.add(
+                egui::DragValue::new(&mut pf.v_div)
+                    .speed(0.05)
+                    .range(0.0..=10.0)
+                    .suffix(" div"),
+            );
+        });
+        ui.horizontal(|ui| {
+            let can_capture = if pf.source_slot < 2 {
+                link.latest
+                    .as_ref()
+                    .and_then(|f| f.channels.iter().find(|c| c.ch == pf.source_slot))
+                    .is_some()
+            } else {
+                math.trace.is_some()
+            };
+            if ui
+                .add_enabled(can_capture, egui::Button::new("Capture reference"))
+                .clicked()
+            {
+                let raw: Option<Vec<i8>> = if pf.source_slot < 2 {
+                    link.latest
+                        .as_ref()
+                        .and_then(|f| f.channels.iter().find(|c| c.ch == pf.source_slot))
+                        .map(|c| c.raw.clone())
+                } else {
+                    math.trace.as_ref().map(|c| c.raw.clone())
+                };
+                if let Some(raw) = raw {
+                    pf.mask = Some(build_pf_mask(&raw, pf.h_div, pf.v_div));
+                    pf.pass = 0;
+                    pf.fail = 0;
+                }
+            }
+            if ui.button("Reset counts").clicked() {
+                pf.pass = 0;
+                pf.fail = 0;
+            }
+        });
+        ui.checkbox(&mut pf.stop_on_fail, "Stop on fail");
+        ui.checkbox(&mut pf.output_multi, "Output result to MULTI");
+        let total = pf.pass + pf.fail;
+        ui.label(format!(
+            "pass {}   fail {}   total {}",
+            pf.pass, pf.fail, total
+        ));
+        if pf.mask.is_none() {
+            ui.label(egui::RichText::new("no reference captured").weak().small());
+        }
+    });
+
+    ui.group(|ui| {
+        ui.strong("Spectrum (FFT)");
+        ui.checkbox(&mut fft.enabled, "Enabled");
+        ui.horizontal(|ui| {
+            ui.label("Source");
+            for (slot, name) in SLOT_NAMES.iter().enumerate() {
+                if ui.selectable_label(fft.source == slot, *name).clicked() {
+                    fft.source = slot;
+                }
+            }
+            egui::ComboBox::from_id_salt("fftwnd")
+                .selected_text(fft.window.label())
+                .show_ui(ui, |ui| {
+                    for w in Window::ALL {
+                        if ui.selectable_label(fft.window == w, w.label()).clicked() {
+                            fft.window = w;
+                        }
+                    }
+                });
+        });
+    });
+}

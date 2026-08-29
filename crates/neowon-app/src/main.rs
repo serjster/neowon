@@ -52,6 +52,11 @@ pub struct Link {
     pub frames_seen: u64,
     /// Last selected MULTI port function.
     pub multi: MultiMode,
+    /// Elapsed time when the last frame arrived — the WAIT indicator in the
+    /// menu bar compares against it (starved Normal/Single trigger).
+    pub last_frame_at: f64,
+    /// Name of the active stimulus (generating backends only).
+    pub stimulus: String,
 }
 
 fn main() {
@@ -83,6 +88,8 @@ fn main() {
             primary_window: Some(Window {
                 title: "neowon".into(),
                 resolution: [1520, 820].into(),
+                // Fixed position so ROI screenshots map 1:1 to screen space.
+                position: WindowPosition::At(IVec2::new(40, 40)),
                 ..default()
             }),
             ..default()
@@ -98,8 +105,11 @@ fn main() {
             dirty: false,
             frames_seen: 0,
             multi: MultiMode::TriggerOut,
+            last_frame_at: 0.0,
+            stimulus: "probe-comp".into(),
         })
         .init_resource::<Phosphor>()
+        .init_resource::<ui::MenuState>()
         .init_resource::<derived::MathState>()
         .init_resource::<derived::MeasureState>()
         .init_resource::<derived::FftState>()
@@ -225,7 +235,7 @@ fn update_phosphor(
     };
 }
 
-fn ingest(mut link: ResMut<Link>) {
+fn ingest(time: Res<Time>, mut link: ResMut<Link>) {
     while let Ok(event) = link.sup.events.try_recv() {
         match event {
             Event::Connected(caps) => {
@@ -238,6 +248,7 @@ fn ingest(mut link: ResMut<Link>) {
             }
             Event::Frame(f) => {
                 link.frames_seen += 1;
+                link.last_frame_at = time.elapsed_secs_f64();
                 if link.frames_seen == 1 || link.frames_seen.is_multiple_of(500) {
                     tracing::info!(frames = link.frames_seen, "acquiring");
                 }

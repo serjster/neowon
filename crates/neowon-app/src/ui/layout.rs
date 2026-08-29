@@ -93,10 +93,9 @@ impl Roi {
                 Pos2::new(DIALOG_LEFT, MID_TOP),
                 Pos2::new(WINDOW_W, MID_BOTTOM),
             ),
-            Roi::FrontPanel => Rect::from_min_max(
-                Pos2::new(0.0, MID_BOTTOM),
-                Pos2::new(WINDOW_W, WINDOW_H),
-            ),
+            Roi::FrontPanel => {
+                Rect::from_min_max(Pos2::new(0.0, MID_BOTTOM), Pos2::new(WINDOW_W, WINDOW_H))
+            }
             Roi::TrigBadge => Rect::from_min_size(
                 Pos2::new(PLOT_LEFT + PLOT_W - 64.0, PLOT_TOP + PLOT_H / 2.0 - 40.0),
                 EVec2::new(56.0, 80.0),
@@ -107,6 +106,35 @@ impl Roi {
             ),
         }
     }
+}
+
+/// Serialize the named-ROI map plus dynamic UI state as JSON — the
+/// `layout <path>` script action writes this for UI tests. Geometry is
+/// compile-time fixed; only the open menu varies.
+pub fn dump_json(open_menu: Option<&str>) -> String {
+    let mut rois = String::new();
+    for (i, r) in Roi::ALL.iter().enumerate() {
+        let rect = r.rect();
+        if i > 0 {
+            rois.push(',');
+        }
+        rois.push_str(&format!(
+            "\n    \"{}\": [{:.1}, {:.1}, {:.1}, {:.1}]",
+            r.name(),
+            rect.min.x,
+            rect.min.y,
+            rect.width(),
+            rect.height(),
+        ));
+    }
+    let menu = match open_menu {
+        Some(m) => format!("\"{m}\""),
+        None => "null".into(),
+    };
+    format!(
+        "{{\n  \"window\": [{:.1}, {:.1}],\n  \"plot_center\": [{:.1}, {:.1}],\n  \"menu\": {menu},\n  \"rois\": {{{rois}\n  }}\n}}\n",
+        WINDOW_W, WINDOW_H, PLOT_CENTER.x, PLOT_CENTER.y,
+    )
 }
 
 #[cfg(test)]
