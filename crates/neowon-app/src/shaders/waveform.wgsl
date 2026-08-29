@@ -69,11 +69,29 @@ fn raster(@builtin(global_invocation_id) id: vec3<u32>) {
 
     if (params.mode == 2u) {
         // XY: (ch1 -> x, ch2 -> y); needs both channels, one thread row.
+        // Segments between consecutive points: a scope's beam is continuous,
+        // and coherent sampling would otherwise splat the same few pixels.
         if (ch != 0u || params.en0 == 0u || params.en1 == 0u) { return; }
-        let fx = clamp(0.5 + f32(wave[i]) / 250.0, 0.0, 1.0);
-        let x = u32(fx * f32(params.width - 1u));
-        let y = u32(sample_row(1u, i));
-        atomicAdd(&accum[accum_idx(0u, x, y)], u32(FIXED));
+        let fx0 = clamp(0.5 + f32(wave[i - 1u]) / 250.0, 0.0, 1.0);
+        let fx1 = clamp(0.5 + f32(wave[i]) / 250.0, 0.0, 1.0);
+        let x0 = f32(u32(fx0 * f32(params.width - 1u)));
+        let x1 = f32(u32(fx1 * f32(params.width - 1u)));
+        let y0 = sample_row(1u, i - 1u);
+        let y1 = sample_row(1u, i);
+        let dx = x1 - x0;
+        let dy = y1 - y0;
+        let steps = u32(ceil(max(abs(dx), abs(dy))));
+        if (steps == 0u) {
+            atomicAdd(&accum[accum_idx(0u, u32(x1), u32(y1))], u32(FIXED));
+            return;
+        }
+        let contrib = max(u32(FIXED / (f32(steps) + 1.0)), u32(FIXED / 12.0));
+        for (var s = 0u; s <= steps; s++) {
+            let t = f32(s) / f32(steps);
+            let x = u32(x0 + dx * t + 0.5);
+            let y = u32(y0 + dy * t + 0.5);
+            atomicAdd(&accum[accum_idx(0u, x, y)], contrib);
+        }
         return;
     }
 
