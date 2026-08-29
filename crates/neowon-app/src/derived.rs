@@ -282,16 +282,17 @@ pub fn compute_derived(
 /// Engineering formatting: value with SI prefix per unit.
 pub fn fmt(v: f64, unit: Unit) -> String {
     match unit {
-        Unit::Percent => format!("{:.1} %", v * 100.0),
+        Unit::Percent => format!("{:5.1} %", v * 100.0),
         Unit::Volt => fmt_si(v, "V"),
         Unit::Second => fmt_si(v, "s"),
         Unit::Hertz => fmt_si(v, "Hz"),
     }
 }
 
-/// Engineering notation the way a scope front panel writes it: an SI prefix
-/// putting the mantissa in [1, 1000), at most 4 significant digits, no
-/// trailing zeros — `200 mV`, `2 ms`, `1.032 V`, `12.5 MS/s`.
+/// Engineering notation the way a scope front panel writes it: an SI
+/// prefix putting the mantissa in [1, 1000) and a FIXED four significant
+/// digits — `200.0 mV`, `1.000 kHz`, `999.9 µs`. Constant width per
+/// magnitude band, so live readouts don't flicker as decimals come and go.
 pub fn fmt_si(v: f64, unit: &str) -> String {
     let a = v.abs();
     let (scale, prefix) = if a >= 1e9 {
@@ -317,16 +318,26 @@ pub fn fmt_si(v: f64, unit: &str) -> String {
     } else {
         3
     };
-    let mut s = format!("{m:.decimals$}");
-    if s.contains('.') {
-        while s.ends_with('0') {
-            s.pop();
-        }
-        if s.ends_with('.') {
-            s.pop();
-        }
+    format!("{m:.decimals$} {prefix}{unit}")
+}
+
+#[cfg(test)]
+mod fmt_tests {
+    use super::fmt_si;
+
+    #[test]
+    fn fixed_significant_digits() {
+        assert_eq!(fmt_si(0.2, "V"), "200.0 mV");
+        assert_eq!(fmt_si(1000.0, "Hz"), "1.000 kHz");
+        assert_eq!(fmt_si(999.9, "Hz"), "999.9 Hz");
+        assert_eq!(fmt_si(0.0009999, "s"), "999.9 µs");
+        assert_eq!(fmt_si(250e3, "S/s"), "250.0 kS/s");
+        assert_eq!(fmt_si(1.032, "V"), "1.032 V");
+        assert_eq!(fmt_si(0.0, "V"), "0.0 V");
+        // Width is constant within a magnitude band: no flicker.
+        assert_eq!(fmt_si(999.8, "Hz").len(), fmt_si(999.9, "Hz").len());
+        assert_eq!(fmt_si(1000.4, "Hz").len(), fmt_si(1001.0, "Hz").len());
     }
-    format!("{s} {prefix}{unit}")
 }
 
 #[cfg(test)]

@@ -21,6 +21,7 @@
 mod cursors;
 mod derived;
 mod gpu;
+mod record;
 mod script;
 mod ui;
 
@@ -59,7 +60,11 @@ pub struct Link {
 
 fn main() {
     // Logging is owned by Bevy's LogPlugin (honors RUST_LOG).
-    let use_sim = std::env::args().any(|a| a == "--sim");
+    // --demo [slow]: oscilloscope-music XY playback on the simulator
+    // (assets/demo, from lofibucket.com's Oscilloscope Quake).
+    let demo = std::env::args().any(|a| a == "--demo");
+    let demo_slow = std::env::args().any(|a| a == "slow");
+    let use_sim = demo || std::env::args().any(|a| a == "--sim");
     let sup = if use_sim {
         neowon_backend::spawn(|| Ok(Box::new(neowon_sim::SimBackend::new()) as Box<dyn Backend>))
     } else {
@@ -79,7 +84,21 @@ fn main() {
         },
         ..Default::default()
     };
+    let config = if demo {
+        let mut c = config;
+        for ch in c.channels.iter_mut().take(2) {
+            ch.enabled = true;
+            ch.volts_div = 0.5; // wav full scale (+-2 V) fills the +-4-div window
+        }
+        c
+    } else {
+        config
+    };
     sup.apply(config.clone());
+    if demo {
+        let name = if demo_slow { "quake-slow" } else { "quake" };
+        let _ = sup.commands.send(Command::Stimulus(name.into()));
+    }
 
     // NEOWON_WINDOW=WxH overrides the initial size (layout tests).
     let (win_w, win_h) = std::env::var("NEOWON_WINDOW")
@@ -121,7 +140,16 @@ fn main() {
             stimulus: "probe-comp".into(),
             selected: 0,
         })
-        .init_resource::<Phosphor>()
+        .insert_resource({
+            let mut p = Phosphor::default();
+            if demo {
+                p.mode = TraceMode::Xy;
+                p.persistence = Persistence::Off;
+                p.palette = gpu::Palette::Green;
+                p.gain = 1.1;
+            }
+            p
+        })
         .init_resource::<Layout>()
         .init_resource::<ui::touch::TouchState>()
         .init_resource::<ui::MenuState>()
@@ -133,32 +161,40 @@ fn main() {
         .init_resource::<derived::FftState>()
         .init_resource::<derived::PfState>()
         .init_resource::<cursors::CursorState>()
+        .init_resource::<record::Recorder>()
         .insert_resource(script::load_from_env())
         .add_systems(Startup, setup)
         .add_systems(EguiPrimaryContextPass, ui::panel)
         .add_systems(
             Update,
             (
-                sync_layout,
-                clear_one_shot,
-                ingest,
-                input,
-                phosphor_input,
-                cursors::cursor_input,
-                ui::touch::plot_pointer,
-                script::run_script,
-                flush,
-                derived::compute_derived,
-                update_phosphor,
-                readback_hook,
-                draw_graticule,
-                draw_trigger,
-                draw_pf_mask,
-                draw_guides,
-                draw_markers,
-                draw_clip_warnings,
-                cursors::draw_cursors,
-                update_title,
+                (
+                    sync_layout,
+                    clear_one_shot,
+                    ingest,
+                    record::record_frames,
+                    input,
+                    phosphor_input,
+                    cursors::cursor_input,
+                    ui::touch::plot_pointer,
+                    script::run_script,
+                    flush,
+                    derived::compute_derived,
+                    update_phosphor,
+                )
+                    .chain(),
+                (
+                    readback_hook,
+                    draw_graticule,
+                    draw_trigger,
+                    draw_pf_mask,
+                    draw_guides,
+                    draw_markers,
+                    draw_clip_warnings,
+                    cursors::draw_cursors,
+                    update_title,
+                )
+                    .chain(),
             )
                 .chain(),
         )
@@ -541,7 +577,7 @@ fn draw_guides(
     layout: Res<Layout>,
     mut gizmos: Gizmos,
 ) {
-    if !meas.guides || menus.open != Some(ui::Menu::Measure) {
+    if !meas.guides || !menus.is_open(ui::Menu::Measure) {
         return;
     }
     let slot = meas.stats_slot;

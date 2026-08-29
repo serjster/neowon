@@ -255,15 +255,23 @@ fn prepare_buffers(
             }
         }
         if phosphor.new_frame && frame.seq != b.uploaded_seq {
-            let mut data = vec![0i32; CHANNELS * MAX_SAMPLES];
-            let mut n = 0usize;
+            // Records can be shorter than MAX_SAMPLES (WAV playback emits
+            // exactly the new audio each tick); pack channels contiguously
+            // at the actual length and tell the shader.
+            let n = frame
+                .channels
+                .iter()
+                .filter(|c| c.ch < CHANNELS)
+                .map(|c| c.raw.len().min(MAX_SAMPLES))
+                .max()
+                .unwrap_or(0);
+            let mut data = vec![0i32; CHANNELS * n.max(1)];
             for cap in &frame.channels {
                 if cap.ch >= CHANNELS {
                     continue;
                 }
-                n = cap.raw.len().min(MAX_SAMPLES);
                 for (i, &r) in cap.raw.iter().take(n).enumerate() {
-                    data[cap.ch * MAX_SAMPLES + i] = r as i32;
+                    data[cap.ch * n + i] = r as i32;
                 }
             }
             queue.write_buffer(&b.wave, 0, bytemuck::cast_slice(&data));
@@ -279,10 +287,11 @@ fn prepare_buffers(
     } else {
         phosphor.decay
     };
+    let n_samples = b.n_samples.max(2);
     b.params.set(Params {
         width: PLOT_W,
         height: PLOT_H,
-        samples: MAX_SAMPLES as u32,
+        samples: n_samples,
         mode: match phosphor.mode {
             TraceMode::Vectors => 0,
             TraceMode::Dots => 1,

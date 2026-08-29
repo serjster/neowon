@@ -63,7 +63,7 @@ pub fn show(
 
                 // Horizontal (manual 8.3).
                 group(ui, "HORIZONTAL", |ui| {
-                    if key(ui, "H", matches!(menus.open, Some(Menu::Horizontal))) {
+                    if key(ui, "H", menus.is_open(Menu::Horizontal)) {
                         menus.toggle(Menu::Horizontal);
                     }
                     if key(ui, "Pos 50%", false) {
@@ -123,7 +123,7 @@ pub fn show(
                         ("Display", Menu::Display),
                         ("Utility", Menu::Utility),
                     ] {
-                        if key(ui, label, matches!(menus.open, Some(x) if x == m)) {
+                        if key(ui, label, menus.is_open(m)) {
                             menus.toggle(m);
                         }
                     }

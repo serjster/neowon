@@ -97,7 +97,9 @@ fn raster(@builtin(global_invocation_id) id: vec3<u32>) {
             atomicAdd(&accum[accum_idx(0u, u32(x1), u32(y1))], u32(FIXED));
             return;
         }
-        let contrib = max(u32(FIXED / (f32(steps) + 1.0)), u32(FIXED / 12.0));
+        // Faint floor: beam repositioning between shapes stays a ghost
+        // line, like the real oscilloscope-music videos.
+        let contrib = max(u32(FIXED / (f32(steps) + 1.0)), u32(FIXED / 64.0));
         for (var s = 0u; s <= steps; s++) {
             let t = f32(s) / f32(steps);
             let x = u32(x0 + dx * t + 0.5);

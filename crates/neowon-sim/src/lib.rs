@@ -30,6 +30,12 @@ pub struct SimSource {
     /// Continuous time origin in seconds, so consecutive frames join
     /// seamlessly.
     t0: f64,
+    /// Per-frame time advance override, seconds. `None` = one record length
+    /// (free-running); WAV playback uses one UI tick so audio runs at 1x.
+    frame_advance: Option<f64>,
+    /// Samples per record; WAV playback shortens records to exactly the
+    /// audio advanced per tick so every sample is drawn once.
+    frame_len: usize,
     rng: Xorshift,
 }
 
@@ -49,11 +55,23 @@ impl SimSource {
             ranges: [10.0, 10.0],
             seq: 0,
             t0: 0.0,
+            frame_advance: None,
+            frame_len: SAMPLES,
             rng: Xorshift::default(),
         }
     }
 
     pub fn set_scenario(&mut self, s: Scenario) {
+        // WAV playback advances one 30 fps UI tick per frame so the audio
+        // plays at true speed (frames show an overlapping 5000-sample
+        // window, exactly like a scope watching the line-out).
+        (self.frame_advance, self.frame_len) = match &s {
+            Scenario::XyWav { rate, .. } => {
+                let len = (rate / 30.0).round().max(2.0) as usize;
+                (Some(len as f64 / rate), len.min(SAMPLES))
+            }
+            _ => (None, SAMPLES),
+        };
         self.scenario = s;
     }
 
@@ -90,9 +108,10 @@ impl SimSource {
     }
 
     pub fn next_frame(&mut self) -> CaptureFrame {
-        let mut raws = [Vec::with_capacity(SAMPLES), Vec::with_capacity(SAMPLES)];
+        let n = self.frame_len;
+        let mut raws = [Vec::with_capacity(n), Vec::with_capacity(n)];
         let mut clipped = [false, false];
-        for i in 0..SAMPLES {
+        for i in 0..n {
             let t = self.t0 + i as f64 / self.sample_rate;
             let v = self.scenario.sample(t, &mut self.rng);
             for ch in 0..2 {
@@ -105,7 +124,7 @@ impl SimSource {
                 raws[ch].push(r as i8);
             }
         }
-        self.t0 += SAMPLES as f64 / self.sample_rate;
+        self.t0 += self.frame_advance.unwrap_or(n as f64 / self.sample_rate);
         self.seq += 1;
         let channels = (0..2)
             .filter(|&ch| self.enabled[ch])

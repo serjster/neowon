@@ -3,6 +3,7 @@
 //! Preset names are a stable API — see AGENTS.md.
 
 use std::f64::consts::PI;
+use std::sync::Arc;
 
 use crate::figures::XyFigure;
 use crate::signal::{Component, SignalSpec, Xorshift};
@@ -15,6 +16,13 @@ pub enum Scenario {
     Xy {
         figure: XyFigure,
         freq: f64,
+        amp: f64,
+    },
+    /// Looping stereo waveform playback: CH1 = amp*left, CH2 = amp*right —
+    /// the oscilloscope-music / vector-graphics format (L = X, R = Y).
+    XyWav {
+        samples: Arc<Vec<(f32, f32)>>,
+        rate: f64,
         amp: f64,
     },
 }
@@ -163,6 +171,7 @@ impl Scenario {
                 let (x, y) = figure.sample(std::f64::consts::TAU * freq * t);
                 [amp * x, amp * y]
             }
+            Scenario::XyWav { .. } => self.sample_quiet(t),
         }
     }
 
@@ -174,6 +183,14 @@ impl Scenario {
                 let (x, y) = figure.sample(std::f64::consts::TAU * freq * t);
                 [amp * x, amp * y]
             }
+            Scenario::XyWav { samples, rate, amp } => {
+                if samples.is_empty() {
+                    return [0.0, 0.0];
+                }
+                let idx = ((t * rate).floor() as i64).rem_euclid(samples.len() as i64) as usize;
+                let (x, y) = samples[idx];
+                [amp * x as f64, amp * y as f64]
+            }
         }
     }
 
@@ -181,8 +198,18 @@ impl Scenario {
     pub fn fundamental(&self, ch: usize) -> Option<f64> {
         match self {
             Scenario::PerChannel(specs) => specs.get(ch.min(1))?.fundamental(),
-            Scenario::Xy { .. } => None,
+            Scenario::Xy { .. } | Scenario::XyWav { .. } => None,
         }
+    }
+
+    /// Load a stereo WAV as an XY playback scenario.
+    pub fn from_wav(path: &std::path::Path, amp: f64) -> std::io::Result<Scenario> {
+        let (rate, samples) = neowon_core::wav::read_pcm16(path)?;
+        Ok(Scenario::XyWav {
+            samples: Arc::new(samples),
+            rate: rate as f64,
+            amp,
+        })
     }
 }
 

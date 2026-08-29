@@ -10,6 +10,7 @@ pub mod dialog_display;
 pub mod dialog_horizontal;
 pub mod dialog_math;
 pub mod dialog_measure;
+pub mod dialog_record;
 pub mod dialog_trigger;
 pub mod dialog_utility;
 pub mod frontpanel;
@@ -43,6 +44,7 @@ pub fn panel(
     mut cur: ResMut<CursorState>,
     mut pf: ResMut<PfState>,
     mut menus: ResMut<MenuState>,
+    mut rec: ResMut<crate::record::Recorder>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else { return };
     let ctx = ctx.clone();
@@ -70,6 +72,7 @@ pub fn panel(
         &mut fft,
         &mut cur,
         &mut pf,
+        &mut rec,
     );
 
     if fft.enabled {

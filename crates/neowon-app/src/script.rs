@@ -42,6 +42,8 @@
 //! pfreset
 //! menu <channel <ch>|horizontal|trigger|acquire|display|measure|math|cursor|utility|none>
 //! markers <0|1>                         # on-graph drag handles
+//! record <0|1> / recordclear
+//! export <wav|csv|raw> <path>           # write the recording
 //! palette <phosphor|thermal|green>
 //! window <W>x<H>                        # resize (layout tests)
 //! layout <path.json>                    # named-ROI map + open menu
@@ -114,6 +116,9 @@ pub enum Action {
     Select(usize),
     Guides(bool),
     Markers(bool),
+    Record(bool),
+    RecordClear,
+    Export(String, String),
     PaletteSet(crate::gpu::Palette),
     WindowSize(f32, f32),
     Math(Option<MathOp>),
@@ -303,6 +308,9 @@ fn parse(text: &str) -> Result<VecDeque<(f64, Action)>, String> {
             "select" => Action::Select(rest()?.parse().map_err(|_| err("bad ch"))?),
             "guides" => Action::Guides(rest()? == "1"),
             "markers" => Action::Markers(rest()? == "1"),
+            "record" => Action::Record(rest()? == "1"),
+            "recordclear" => Action::RecordClear,
+            "export" => Action::Export(rest()?.to_string(), rest()?.to_string()),
             "palette" => Action::PaletteSet(match rest()? {
                 "phosphor" => crate::gpu::Palette::Phosphor,
                 "thermal" => crate::gpu::Palette::Thermal,
@@ -370,6 +378,7 @@ fn parse(text: &str) -> Result<VecDeque<(f64, Action)>, String> {
                 "math" => Some(Menu::Math),
                 "cursor" => Some(Menu::Cursor),
                 "utility" => Some(Menu::Utility),
+                "record" => Some(Menu::Record),
                 _ => return Err(err("bad menu")),
             }),
             "layout" => Action::Layout(rest()?.to_string()),
@@ -416,6 +425,7 @@ pub fn run_script(
     mut meas: ResMut<MeasureState>,
     mut fft: ResMut<FftState>,
     mut pf: ResMut<PfState>,
+    mut rec: ResMut<crate::record::Recorder>,
 ) {
     let now = time.elapsed_secs_f64();
     while let Some((due, _)) = script.queue.front() {
@@ -523,6 +533,25 @@ pub fn run_script(
             Action::Select(ch) => link.selected = ch.min(1),
             Action::Guides(on) => meas.guides = on,
             Action::Markers(on) => cur.markers = on,
+            Action::Record(on) => rec.on = on,
+            Action::RecordClear => rec.clear(),
+            Action::Export(kind, path) => {
+                let path = std::path::PathBuf::from(&path);
+                let result = match kind.as_str() {
+                    "wav" => rec
+                        .export_wav(&path)
+                        .map(|_| vec![path.display().to_string()]),
+                    "csv" => rec
+                        .export_csv(&path)
+                        .map(|_| vec![path.display().to_string()]),
+                    "raw" => rec.export_raw(&path),
+                    _ => Err(std::io::Error::other("bad export kind")),
+                };
+                match result {
+                    Ok(files) => info!("script: exported {}", files.join(", ")),
+                    Err(e) => error!("script: export failed: {e}"),
+                }
+            }
             Action::PaletteSet(p) => phosphor.palette = p,
             Action::WindowSize(w, h) => {
                 if let Ok(mut window) = windows.single_mut() {
@@ -588,10 +617,11 @@ pub fn run_script(
                 pf.pass = 0;
                 pf.fail = 0;
             }
-            Action::Menu(m) => menus.open = m,
+            Action::Menu(m) => menus.set_exclusive(m),
             Action::Layout(path) => {
-                let open = menus.open.map(menu_name);
-                let json = dump_json(&layout, open);
+                let names: Vec<&str> = menus.open_list().iter().map(|m| menu_name(*m)).collect();
+                let open = (!names.is_empty()).then(|| names.join(","));
+                let json = dump_json(&layout, open.as_deref());
                 match std::fs::write(&path, json) {
                     Ok(()) => info!("script: wrote layout {path}"),
                     Err(e) => error!("script: cannot write {path}: {e}"),
@@ -639,6 +669,7 @@ fn menu_name(m: Menu) -> &'static str {
         Menu::Math => "math",
         Menu::Cursor => "cursor",
         Menu::Utility => "utility",
+        Menu::Record => "record",
     }
 }
 

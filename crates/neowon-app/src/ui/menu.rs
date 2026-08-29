@@ -1,7 +1,7 @@
 //! The settings dock: an always-visible right-side rail (the
-//! Photoshop/Blender model) with one accordion section per function.
-//! Exactly one section is expanded at a time — compact, predictable, and
-//! the `menu` script action keeps addressing sections by name.
+//! Photoshop/Blender model). Sections expand independently and stay open
+//! (the rail scrolls on overflow); the `menu` script action opens a
+//! section exclusively so tests stay deterministic.
 
 use bevy::prelude::*;
 use bevy_egui::egui;
@@ -14,8 +14,10 @@ use crate::gpu::Phosphor;
 use super::layout::{Layout, Roi};
 use super::{
     dialog_acquire, dialog_channel, dialog_cursor, dialog_display, dialog_horizontal, dialog_math,
-    dialog_measure, dialog_trigger, dialog_utility,
+    dialog_measure, dialog_record, dialog_trigger, dialog_utility,
 };
+
+use crate::record::Recorder;
 
 /// Which function's dialog box is open. Exactly one at a time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,6 +31,7 @@ pub enum Menu {
     Math,
     Cursor,
     Utility,
+    Record,
 }
 
 impl Menu {
@@ -47,31 +50,55 @@ impl Menu {
             Menu::Math => "Math",
             Menu::Cursor => "Cursors",
             Menu::Utility => "Utility",
+            Menu::Record => "Record / Export",
         }
     }
 }
 
-/// The expanded dock section. `None` = all sections collapsed.
+/// Which dock sections are expanded. Sections are independent — leave as
+/// many open as you like; the rail scrolls.
 #[derive(Resource)]
 pub struct MenuState {
-    pub open: Option<Menu>,
+    open: Vec<Menu>,
 }
 
 impl Default for MenuState {
     fn default() -> Self {
         Self {
-            open: Some(Menu::Trigger),
+            open: vec![Menu::Trigger],
         }
     }
 }
 
 impl MenuState {
-    /// Toggle: pressing the already-open function collapses the dialog.
+    pub fn is_open(&self, m: Menu) -> bool {
+        self.open.contains(&m)
+    }
+
     pub fn toggle(&mut self, m: Menu) {
-        self.open = match self.open {
-            Some(cur) if cur == m => None,
-            _ => Some(m),
-        };
+        if let Some(i) = self.open.iter().position(|&x| x == m) {
+            self.open.remove(i);
+        } else {
+            self.open.push(m);
+        }
+    }
+
+    /// Expand a section (keeping others as they are).
+    pub fn open(&mut self, m: Menu) {
+        if !self.is_open(m) {
+            self.open.push(m);
+        }
+    }
+
+    /// Script semantics: exactly this section open (None = all collapsed),
+    /// so `layout` dumps stay deterministic.
+    pub fn set_exclusive(&mut self, m: Option<Menu>) {
+        self.open = m.into_iter().collect();
+    }
+
+    /// Open sections, in opening order (for the layout dump).
+    pub fn open_list(&self) -> &[Menu] {
+        &self.open
     }
 }
 
@@ -87,6 +114,7 @@ pub fn show(
     fft: &mut FftState,
     cur: &mut CursorState,
     pf: &mut PfState,
+    rec: &mut Recorder,
 ) {
     let rect = Roi::Dialog.rect(l);
     let mut frame = egui::Frame::new();
@@ -129,12 +157,14 @@ pub fn show(
                                 Menu::Measure => dialog_measure::show(ui, meas),
                                 Menu::Math => dialog_math::show(ui, math),
                                 Menu::Cursor => dialog_cursor::show(ui, link, cur, meas),
-                                Menu::Utility => {
+                                Menu::Utility | Menu::Record => {
                                     let _ = menus;
-                                    dialog_utility::show(ui, link, math, pf, fft)
                                 }
                             });
                         }
+                        section(ui, menus, Menu::Record, |ui, _| {
+                            dialog_record::show(ui, link, rec)
+                        });
                         section(ui, menus, Menu::Utility, |ui, _| {
                             dialog_utility::show(ui, link, math, pf, fft)
                         });
@@ -151,7 +181,7 @@ fn section(
     m: Menu,
     body: impl FnOnce(&mut egui::Ui, &mut MenuState),
 ) {
-    let open = menus.open == Some(m);
+    let open = menus.is_open(m);
     let arrow = if open { "▼" } else { "▶" };
     let header = egui::Button::new(
         egui::RichText::new(format!("{arrow} {}", m.title()))
@@ -168,7 +198,7 @@ fn section(
     if ui.add(header).clicked() {
         menus.toggle(m);
     }
-    if menus.open == Some(m) {
+    if menus.is_open(m) {
         ui.add_space(4.0);
         body(ui, menus);
         ui.add_space(6.0);

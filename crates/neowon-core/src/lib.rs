@@ -2,6 +2,7 @@
 //! channel/trigger vocabulary. No I/O, no device specifics, no GPU.
 
 pub mod frame;
+pub mod wav;
 
 pub use frame::{CaptureFrame, ChannelCapture, SharedFrame};
 

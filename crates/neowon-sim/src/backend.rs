@@ -101,7 +101,11 @@ impl Backend for SimBackend {
     }
 
     fn apply(&mut self, cfg: &ScopeConfig) -> Result<(), BackendError> {
-        self.src.sample_rate = cfg.sample_rate;
+        // WAV playback keeps the file's own rate; everything else follows
+        // the configured timebase.
+        if !matches!(self.src.scenario(), Scenario::XyWav { .. }) {
+            self.src.sample_rate = cfg.sample_rate;
+        }
         for (i, c) in cfg.channels.iter().enumerate().take(2) {
             self.src.set_enabled(i, c.enabled);
             self.src.set_range(i, c.volts_div * 10.0 * c.probe);
@@ -124,9 +128,30 @@ impl Backend for SimBackend {
     }
 
     fn set_stimulus(&mut self, name: &str) -> Result<bool, BackendError> {
+        // Demo WAV playback (oscilloscope-music format: L = X, R = Y).
+        // NEOWON_DEMO_WAV overrides the file for `quake`.
+        let wav_path = match name {
+            "quake" => Some(
+                std::env::var("NEOWON_DEMO_WAV")
+                    .unwrap_or_else(|_| "assets/demo/e1m1_fast_48khz.wav".into()),
+            ),
+            "quake-slow" => Some("assets/demo/e1m1_slow_48khz.wav".into()),
+            _ => None,
+        };
+        if let Some(path) = wav_path {
+            let s = Scenario::from_wav(std::path::Path::new(&path), 4.0)
+                .map_err(|e| BackendError::Transient(format!("{path}: {e}")))?;
+            self.src.set_scenario(s);
+            // Report the true audio rate so time readouts are honest.
+            if let Scenario::XyWav { rate, .. } = self.src.scenario() {
+                self.src.sample_rate = *rate;
+            }
+            return Ok(true);
+        }
         match Scenario::preset(name) {
             Some(s) => {
                 self.src.set_scenario(s);
+                self.src.sample_rate = self.cfg.sample_rate;
                 Ok(true)
             }
             None => Ok(false),
@@ -134,7 +159,10 @@ impl Backend for SimBackend {
     }
 
     fn stimuli(&self) -> Vec<&'static str> {
-        Scenario::PRESETS.to_vec()
+        let mut all = Scenario::PRESETS.to_vec();
+        all.push("quake");
+        all.push("quake-slow");
+        all
     }
 }
 
