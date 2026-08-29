@@ -221,6 +221,17 @@ Pulse/slope/video triggers and alternate mode (bit layouts from the Java app —
 > assert geometry + that every dialog opens (spec + one deviation: pass/fail
 > lives in the Utility dialog).
 > Repo now governed by `AGENTS.md` (`CLAUDE.md` symlinks to it).
+> **UX audit round (2026-08-29 evening):** honest clipping render (off-screen
+> beam suppression + clip arrows; no more false edge-hugging trace), CRT
+> compose pass (halo/scanlines/vignette, Display-dialog + `crt` script
+> toggle), scope-style number formatting, responsive runtime layout
+> (resizable window, dialog overlays the grid like the reference scope,
+> `NEOWON_WINDOW` test override), touch-style pointer control (drag trigger
+> level / waveform offset+position, scroll V-div, shift+scroll rate,
+> descriptor click selects channel), and measurement guides (dashed
+> Vtop/Vbase/Vavg/10%/90% lines while Measure is open). ui_layout tests are
+> relational at three window sizes. Pointer gestures await a hands-on check
+> (synthetic mouse events need macOS accessibility permission).
 
 The correctness backbone for everything after it. Four pillars:
 
