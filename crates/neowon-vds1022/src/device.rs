@@ -429,6 +429,15 @@ impl Vds1022 {
         Ok(frames)
     }
 
+    /// Non-blocking capture: `Ok(None)` when the device has no data yet.
+    pub fn try_capture(&mut self) -> Result<Option<CaptureFrame>> {
+        match self.get_frames() {
+            Ok(frames) => Ok(Some(self.to_capture(frames))),
+            Err(Error::NotReady) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Poll `get_frames` until data arrives or `deadline` passes, then
     /// convert to a calibrated `CaptureFrame`.
     pub fn capture(&mut self, max_wait: Duration) -> Result<CaptureFrame> {

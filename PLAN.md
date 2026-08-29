@@ -130,6 +130,13 @@ Gotchas already known from GoL: uniform struct field order must match WGSL; `NoA
 
 Each phase ends with something runnable and testable — most against the real scope on your desk (CH1 = 1 kHz 5 Vpp probe-comp signal).
 
+> **Status 2026-08-29:** Phases 0, 1, and 2 are DONE and hardware-verified
+> (unit VDS1022I2324259, hw V5.0.1). `neowon probe|dump|stream|smoke` all pass
+> on the 1 kHz probe-comp signal (~36 frames/s sustained); the Bevy app shows
+> the live hardware waveform with keyboard controls and a reconnecting
+> supervisor. Verified facts live in `docs/protocol-vds1022.md`. Still open
+> from Phase 1: FPGA upload untested until a device power-cycle.
+
 ### Phase 0 — Scaffold + simulated trace (½ day)
 
 Workspace, git init, Bevy 0.19 pinned (submodule optional; reuse GoL's profile settings), CI-less `cargo test` culture. `neowon-sim` produces sine/square/noise frames at a configurable rate. Bevy window renders the trace as a simple polyline (CPU mesh — GPU pipeline comes in Phase 4) with a graticule.

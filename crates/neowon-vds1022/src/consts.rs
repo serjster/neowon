@@ -94,6 +94,20 @@ pub fn full_scale_volts(vb: usize) -> f64 {
     VOLTBASE_MV[vb] as f64 * 10.0 / 1000.0
 }
 
+/// Nearest voltbase index for a volts/div request.
+pub fn nearest_voltbase(volts_div: f64) -> usize {
+    let mut best = 0;
+    let mut best_d = f64::MAX;
+    for (i, &mv) in VOLTBASE_MV.iter().enumerate() {
+        let d = ((mv as f64 / 1000.0).ln() - volts_div.max(1e-6).ln()).abs();
+        if d < best_d {
+            best_d = d;
+            best = i;
+        }
+    }
+    best
+}
+
 /// The input attenuation relay engages from this voltbase index upward
 /// (500 mV/div, i.e. 5 V full scale). Java: `vb > VB_200mv(5)`.
 pub const ATTENUATION_VB: usize = 6;

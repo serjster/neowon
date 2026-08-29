@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 neowon-core.workspace = true
+neowon-backend.workspace = true
 nusb.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

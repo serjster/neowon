@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/neowon-core",
+    "crates/neowon-backend",
     "crates/neowon-dsp",
     "crates/neowon-sim",
     "crates/neowon-vds1022",
@@ -16,6 +17,7 @@ license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 neowon-core = { path = "crates/neowon-core" }
+neowon-backend = { path = "crates/neowon-backend" }
 neowon-dsp = { path = "crates/neowon-dsp" }
 neowon-sim = { path = "crates/neowon-sim" }
 neowon-vds1022 = { path = "crates/neowon-vds1022" }

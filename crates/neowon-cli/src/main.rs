@@ -136,16 +136,7 @@ fn setup(dev: &mut Vds1022, acq: AcqArgs) -> Result<f64> {
 }
 
 fn nearest_vb(volts_div: f64) -> usize {
-    neowon_vds1022::consts::VOLTBASE_MV
-        .iter()
-        .enumerate()
-        .min_by(|a, b| {
-            let da = (*a.1 as f64 / 1000.0 - volts_div).abs();
-            let db = (*b.1 as f64 / 1000.0 - volts_div).abs();
-            da.total_cmp(&db)
-        })
-        .map(|(i, _)| i)
-        .unwrap()
+    neowon_vds1022::consts::nearest_voltbase(volts_div)
 }
 
 fn report(frame: &neowon_core::CaptureFrame) -> String {

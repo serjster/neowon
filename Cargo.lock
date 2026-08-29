@@ -3644,9 +3644,22 @@ name = "neowon-app"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "neowon-backend",
  "neowon-core",
  "neowon-dsp",
  "neowon-sim",
+ "neowon-vds1022",
+ "tracing",
+]
+
+[[package]]
+name = "neowon-backend"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "neowon-core",
+ "thiserror 2.0.20",
+ "tracing",
 ]
 
 [[package]]
@@ -3677,6 +3690,7 @@ dependencies = [
 name = "neowon-sim"
 version = "0.1.0"
 dependencies = [
+ "neowon-backend",
  "neowon-core",
  "neowon-dsp",
 ]
@@ -3685,6 +3699,7 @@ dependencies = [
 name = "neowon-vds1022"
 version = "0.1.0"
 dependencies = [
+ "neowon-backend",
  "neowon-core",
  "nusb",
  "thiserror 2.0.20",

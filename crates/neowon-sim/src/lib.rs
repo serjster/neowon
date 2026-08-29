@@ -4,6 +4,9 @@
 
 use neowon_core::{CaptureFrame, ChannelCapture};
 
+pub mod backend;
+pub use backend::SimBackend;
+
 pub const SAMPLES: usize = 5000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

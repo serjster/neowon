@@ -9,6 +9,7 @@
 //! every cold start, reads factory calibration from flash, then drives a
 //! byte-addressed register file over bulk transfers.
 
+pub mod backend;
 pub mod consts;
 pub mod device;
 pub mod error;

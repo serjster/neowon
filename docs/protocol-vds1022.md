@@ -43,6 +43,12 @@ macOS, nusb). The full register map lives in
   jump between vb 5 and 6 — the attenuation-relay boundary
   (`[1269 … 555 | 989 … 560]`). A useful sanity check when parsing flash.
 
+- **macOS + nusb does NOT give exclusive access**: two processes can claim
+  interface 0 and stream simultaneously (verified: CLI + app both pulled ~36
+  frames/s at once). Their command/response pairs can interleave — treat this
+  as a footgun, not a feature. Don't run two neowon processes against one
+  scope; a lock file may be worth adding.
+
 ## Still to verify
 
 - FPGA upload handshake on a cold (power-cycled) device.
