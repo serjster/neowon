@@ -136,8 +136,8 @@ pub fn coupling_code(c: neowon_core::Coupling) -> u8 {
 
 /// The distinct sample rates the prescaler ladder produces, S/s.
 pub const SAMPLE_RATES: [f64; 24] = [
-    2.5, 5.0, 12.5, 25.0, 50.0, 125.0, 250.0, 500.0, 1.25e3, 2.5e3, 5e3, 12.5e3, 25e3, 50e3,
-    125e3, 250e3, 500e3, 1.25e6, 2.5e6, 5e6, 12.5e6, 25e6, 50e6, 100e6,
+    2.5, 5.0, 12.5, 25.0, 50.0, 125.0, 250.0, 500.0, 1.25e3, 2.5e3, 5e3, 12.5e3, 25e3, 50e3, 125e3,
+    250e3, 500e3, 1.25e6, 2.5e6, 5e6, 12.5e6, 25e6, 50e6, 100e6,
 ];
 
 /// Prescaler for a requested rate, snapped to the nearest rate the hardware

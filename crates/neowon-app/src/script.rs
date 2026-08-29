@@ -33,9 +33,9 @@ use neowon_backend::Command;
 use neowon_core::{AcqMode, Coupling, Slope, Sweep, TriggerKind};
 use neowon_dsp::MathOp;
 
-use crate::derived::MathState;
-use crate::gpu::{Persistence, Phosphor, TraceMode, PLOT_H, PLOT_W};
 use crate::Link;
+use crate::derived::MathState;
+use crate::gpu::{PLOT_H, PLOT_W, Persistence, Phosphor, TraceMode};
 
 /// Shots in flight (readback observers decrement).
 static PENDING_SHOTS: AtomicUsize = AtomicUsize::new(0);
@@ -49,14 +49,22 @@ pub enum Action {
     CouplingSet(usize, Coupling),
     Probe(usize, f64),
     Offset(usize, f64),
-    Trigger { ch: usize, slope: Slope, level: f64, sweep: Sweep },
+    Trigger {
+        ch: usize,
+        slope: Slope,
+        level: f64,
+        sweep: Sweep,
+    },
     Acq(AcqMode),
     Mode(TraceMode),
     Persist(Persistence),
     Gain(f32),
     Math(Option<MathOp>),
     Run(bool),
-    Shot { path: String, roi: Option<(u32, u32, u32, u32)> },
+    Shot {
+        path: String,
+        roi: Option<(u32, u32, u32, u32)>,
+    },
     Quit,
 }
 
@@ -70,8 +78,8 @@ pub fn load_from_env() -> Script {
     let Some(path) = std::env::var_os("NEOWON_SCRIPT") else {
         return Script::default();
     };
-    let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("NEOWON_SCRIPT {path:?}: {e}"));
+    let text =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("NEOWON_SCRIPT {path:?}: {e}"));
     match parse(&text) {
         Ok(queue) => {
             info!("script: {} actions from {path:?}", queue.len());
@@ -104,10 +112,7 @@ fn parse(text: &str) -> Result<VecDeque<(f64, Action)>, String> {
                 rest()?.parse().map_err(|_| err("bad ch"))?,
                 rest()?.parse().map_err(|_| err("bad volts"))?,
             ),
-            "enable" => Action::Enable(
-                rest()?.parse().map_err(|_| err("bad ch"))?,
-                rest()? == "1",
-            ),
+            "enable" => Action::Enable(rest()?.parse().map_err(|_| err("bad ch"))?, rest()? == "1"),
             "coupling" => Action::CouplingSet(
                 rest()?.parse().map_err(|_| err("bad ch"))?,
                 match rest()? {
@@ -157,9 +162,7 @@ fn parse(text: &str) -> Result<VecDeque<(f64, Action)>, String> {
             "persist" => Action::Persist(match rest()? {
                 "off" => Persistence::Off,
                 "inf" => Persistence::Infinite,
-                s => Persistence::Seconds(
-                    s.parse().map_err(|_| err("bad persistence"))?,
-                ),
+                s => Persistence::Seconds(s.parse().map_err(|_| err("bad persistence"))?),
             }),
             "gain" => Action::Gain(rest()?.parse().map_err(|_| err("bad gain"))?),
             "math" => Action::Math(match rest()? {
@@ -245,7 +248,12 @@ pub fn run_script(
                 link.config.channels[ch].offset = o;
                 link.dirty = true;
             }
-            Action::Trigger { ch, slope, level, sweep } => {
+            Action::Trigger {
+                ch,
+                slope,
+                level,
+                sweep,
+            } => {
                 link.config.trigger.source = ch;
                 link.config.trigger.kind = TriggerKind::Edge { slope };
                 link.config.trigger.level = level;

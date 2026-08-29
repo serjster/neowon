@@ -2,7 +2,9 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("no VDS1022 found (VID 0x5345 PID 0x1234) — is it plugged in, and is the vendor app closed?")]
+    #[error(
+        "no VDS1022 found (VID 0x5345 PID 0x1234) — is it plugged in, and is the vendor app closed?"
+    )]
     NoDevice,
     #[error("USB error: {0}")]
     Usb(#[from] nusb::Error),

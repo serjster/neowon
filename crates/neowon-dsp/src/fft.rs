@@ -2,8 +2,8 @@
 //! CPU implementation via rustfft — the correctness oracle for the GPU FFT
 //! that arrives with the waterfall view.
 
-use rustfft::num_complex::Complex64;
 use rustfft::FftPlanner;
+use rustfft::num_complex::Complex64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Window {
@@ -113,7 +113,10 @@ pub fn spectrum(
         .enumerate()
         .map(|(i, c)| c.norm() * if i == 0 { 0.5 * scale } else { scale })
         .collect();
-    Some(Spectrum { bin_hz: sample_rate / n as f64, amplitude })
+    Some(Spectrum {
+        bin_hz: sample_rate / n as f64,
+        amplitude,
+    })
 }
 
 #[cfg(test)]
@@ -122,9 +125,7 @@ mod tests {
 
     fn sine(n: usize, cycles: f64, amp: f64) -> Vec<i8> {
         (0..n)
-            .map(|i| {
-                (amp * (i as f64 / n as f64 * cycles * std::f64::consts::TAU).sin()) as i8
-            })
+            .map(|i| (amp * (i as f64 / n as f64 * cycles * std::f64::consts::TAU).sin()) as i8)
             .collect()
     }
 

@@ -171,7 +171,10 @@ fn xy_circle_renders_as_ellipse_ring() {
     assert!(lit.len() > 300, "only {} lit pixels", lit.len());
     let cx = (PLOT_W as f64 - 1.0) / 2.0;
     let cy = (PLOT_H as f64 - 1.0) / 2.0;
-    let (rx, ry) = (75.0 / 250.0 * (PLOT_W as f64 - 1.0), 75.0 / 250.0 * (PLOT_H as f64 - 1.0));
+    let (rx, ry) = (
+        75.0 / 250.0 * (PLOT_W as f64 - 1.0),
+        75.0 / 250.0 * (PLOT_H as f64 - 1.0),
+    );
     let mut on_ring = 0usize;
     for &(x, y) in &lit {
         let nx = (x as f64 - cx) / rx;
@@ -182,5 +185,9 @@ fn xy_circle_renders_as_ellipse_ring() {
         }
     }
     let frac = on_ring as f64 / lit.len() as f64;
-    assert!(frac > 0.9, "only {:.0}% of lit pixels on the ring", frac * 100.0);
+    assert!(
+        frac > 0.9,
+        "only {:.0}% of lit pixels on the ring",
+        frac * 100.0
+    );
 }

@@ -62,7 +62,10 @@ impl FlashCal {
         // Device read returns AA 55; a freshly written blob may read 55 AA.
         let hdr = (buf[0], buf[1]);
         if hdr != (0xAA, 0x55) && hdr != (0x55, 0xAA) {
-            return Err(Error::Flash(format!("bad header {:02X} {:02X}", buf[0], buf[1])));
+            return Err(Error::Flash(format!(
+                "bad header {:02X} {:02X}",
+                buf[0], buf[1]
+            )));
         }
         let version = u32::from_le_bytes([buf[2], buf[3], buf[4], buf[5]]);
         if version != 2 {
@@ -80,7 +83,16 @@ impl FlashCal {
         } else {
             0
         };
-        Ok(Self { version, gain, ampl, comp, oem, hw_version, serial, phasefine })
+        Ok(Self {
+            version,
+            gain,
+            ampl,
+            comp,
+            oem,
+            hw_version,
+            serial,
+            phasefine,
+        })
     }
 }
 

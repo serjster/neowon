@@ -14,7 +14,13 @@ fn main() {
     let mut dev = Vds1022::open(Some(&fpga)).expect("open");
     dev.configure_channel(
         0,
-        ChannelSetup { enabled: true, vb: 5, coupling: Coupling::Dc, probe: 1.0, offset: 0.0 },
+        ChannelSetup {
+            enabled: true,
+            vb: 5,
+            coupling: Coupling::Dc,
+            probe: 1.0,
+            offset: 0.0,
+        },
     )
     .unwrap();
     dev.set_sample_rate(250e3).unwrap();
@@ -23,31 +29,45 @@ fn main() {
     let cases: Vec<(&str, TriggerKind, f64, bool)> = vec![
         (
             "edge rising (control)",
-            TriggerKind::Edge { slope: Slope::Rising },
+            TriggerKind::Edge {
+                slope: Slope::Rising,
+            },
             0.25,
             true,
         ),
         (
             "pulse +> 400us (500us high pulse)",
-            TriggerKind::Pulse { condition: PulseCondition::PositiveGreater, width: 400e-6 },
+            TriggerKind::Pulse {
+                condition: PulseCondition::PositiveGreater,
+                width: 400e-6,
+            },
             0.25,
             true,
         ),
         (
             "pulse +> 600us (no such pulse)",
-            TriggerKind::Pulse { condition: PulseCondition::PositiveGreater, width: 600e-6 },
+            TriggerKind::Pulse {
+                condition: PulseCondition::PositiveGreater,
+                width: 600e-6,
+            },
             0.25,
             false,
         ),
         (
             "pulse +< 600us (500us qualifies)",
-            TriggerKind::Pulse { condition: PulseCondition::PositiveLess, width: 600e-6 },
+            TriggerKind::Pulse {
+                condition: PulseCondition::PositiveLess,
+                width: 600e-6,
+            },
             0.25,
             true,
         ),
         (
             "pulse -> 400us (500us low pulse)",
-            TriggerKind::Pulse { condition: PulseCondition::NegativeGreater, width: 400e-6 },
+            TriggerKind::Pulse {
+                condition: PulseCondition::NegativeGreater,
+                width: 400e-6,
+            },
             0.25,
             true,
         ),
@@ -93,10 +113,12 @@ fn main() {
         );
     }
     // MULTI port + PF output smoke: just verify the writes are acked.
-    dev.set_multi(neowon_backend::MultiMode::PassFailOut).unwrap();
+    dev.set_multi(neowon_backend::MultiMode::PassFailOut)
+        .unwrap();
     dev.set_pf_level(true).unwrap();
     dev.set_pf_level(false).unwrap();
-    dev.set_multi(neowon_backend::MultiMode::TriggerOut).unwrap();
+    dev.set_multi(neowon_backend::MultiMode::TriggerOut)
+        .unwrap();
     println!("PASS  MULTI port + PF level writes acked");
 
     dev.stop().unwrap();

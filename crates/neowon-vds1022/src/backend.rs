@@ -26,11 +26,18 @@ impl Vds1022Backend {
             serial: dev.cal.serial.clone(),
             channels: 2,
             sample_rates: consts::SAMPLE_RATES.to_vec(),
-            volts_div: consts::VOLTBASE_MV.iter().map(|&mv| mv as f64 / 1000.0).collect(),
+            volts_div: consts::VOLTBASE_MV
+                .iter()
+                .map(|&mv| mv as f64 / 1000.0)
+                .collect(),
             probes: vec![1.0, 10.0, 20.0, 50.0, 100.0, 500.0, 1000.0],
             record_len: consts::SAMPLES,
         };
-        Ok(Self { dev, caps, applied: None })
+        Ok(Self {
+            dev,
+            caps,
+            applied: None,
+        })
     }
 }
 
@@ -45,9 +52,7 @@ impl Backend for Vds1022Backend {
 
     fn apply(&mut self, cfg: &ScopeConfig) -> Result<(), BackendError> {
         let prev = self.applied.take();
-        let same = |f: fn(&ScopeConfig) -> ScopeConfigPart| {
-            prev.as_ref().map(f) == Some(f(cfg))
-        };
+        let same = |f: fn(&ScopeConfig) -> ScopeConfigPart| prev.as_ref().map(f) == Some(f(cfg));
 
         if !same(part_channels) {
             for (i, ch) in cfg.channels.iter().take(2).enumerate() {
@@ -131,7 +136,10 @@ impl Backend for Vds1022Backend {
         let mut cfg = self.applied.clone().unwrap_or_default();
         let src = cfg.trigger.source.min(1);
         let probe = cfg.channels.get(src).map_or(1.0, |c| c.probe);
-        let coupling = cfg.channels.get(src).map_or(neowon_core::Coupling::Dc, |c| c.coupling);
+        let coupling = cfg
+            .channels
+            .get(src)
+            .map_or(neowon_core::Coupling::Dc, |c| c.coupling);
 
         let capture_one = |dev: &mut Vds1022| -> Result<neowon_core::CaptureFrame, BackendError> {
             // Discard one record (may predate the last config write).
@@ -158,7 +166,13 @@ impl Backend for Vds1022Backend {
             self.dev
                 .configure_channel(
                     src,
-                    ChannelSetup { enabled: true, vb, coupling, probe, offset: 0.0 },
+                    ChannelSetup {
+                        enabled: true,
+                        vb,
+                        coupling,
+                        probe,
+                        offset: 0.0,
+                    },
                 )
                 .map_err(fatal)?;
             let frame = capture_one(&mut self.dev)?;
@@ -191,11 +205,19 @@ impl Backend for Vds1022Backend {
         self.dev
             .configure_channel(
                 src,
-                ChannelSetup { enabled: true, vb, coupling, probe, offset: 0.0 },
+                ChannelSetup {
+                    enabled: true,
+                    vb,
+                    coupling,
+                    probe,
+                    offset: 0.0,
+                },
             )
             .map_err(fatal)?;
         let frame = capture_one(&mut self.dev)?;
-        let Some((lo, hi)) = measure(&frame) else { return Ok(None) };
+        let Some((lo, hi)) = measure(&frame) else {
+            return Ok(None);
+        };
         let lsb = consts::full_scale_volts(vb) * probe / consts::ADC_RANGE;
         let level = (lo + hi) as f64 / 2.0 * lsb;
 
@@ -230,7 +252,9 @@ impl Backend for Vds1022Backend {
         }
         cfg.sample_rate = actual;
         cfg.trigger.level = level;
-        cfg.trigger.kind = neowon_core::TriggerKind::Edge { slope: Slope::Rising };
+        cfg.trigger.kind = neowon_core::TriggerKind::Edge {
+            slope: Slope::Rising,
+        };
         cfg.trigger.sweep = Sweep::Auto;
         cfg.position = 0.5;
         cfg.acq = neowon_core::AcqMode::Sample;
@@ -294,7 +318,12 @@ fn part_trigger(c: &ScopeConfig) -> ScopeConfigPart {
             v.push(condition.code() as u64);
             v.push(width.to_bits());
         }
-        TriggerKind::Slope { condition, width, upper, lower } => {
+        TriggerKind::Slope {
+            condition,
+            width,
+            upper,
+            lower,
+        } => {
             v.push(2);
             v.push(condition.code() as u64);
             v.push(width.to_bits());

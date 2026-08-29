@@ -4,7 +4,7 @@ use std::io::Write as _;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
 use neowon_core::{Coupling, Slope, Sweep};
@@ -102,15 +102,18 @@ impl From<SweepArg> for Sweep {
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
     let cli = Cli::parse();
 
     match cli.cmd {
         Cmd::Probe => probe(&cli),
-        Cmd::Dump { frames, acq, ref csv } => dump(&cli, frames, acq, csv.as_deref()),
+        Cmd::Dump {
+            frames,
+            acq,
+            ref csv,
+        } => dump(&cli, frames, acq, csv.as_deref()),
         Cmd::Stream { secs, acq } => stream(&cli, secs, acq),
         Cmd::Smoke { acq } => smoke(&cli, acq),
         Cmd::Autoset => autoset(&cli),
@@ -151,12 +154,23 @@ fn probe(cli: &Cli) -> Result<()> {
     println!("hw version  : {}", cal.hw_version);
     println!("oem         : {}", cal.oem);
     println!("phasefine   : {}", cal.phasefine);
-    println!("cold start  : {} (FPGA {})", dev.cold_start,
-        if dev.cold_start { "uploaded by us" } else { "was already loaded" });
+    println!(
+        "cold start  : {} (FPGA {})",
+        dev.cold_start,
+        if dev.cold_start {
+            "uploaded by us"
+        } else {
+            "was already loaded"
+        }
+    );
     println!("cal (per voltbase 5mV..5V/div):");
-    for (name, arr) in [("gain", &cal.gain), ("ampl", &cal.ampl), ("comp", &cal.comp)] {
-        for ch in 0..2 {
-            println!("  ch{} {:4}: {:?}", ch + 1, name, arr[ch]);
+    for (name, arr) in [
+        ("gain", &cal.gain),
+        ("ampl", &cal.ampl),
+        ("comp", &cal.comp),
+    ] {
+        for (ch, row) in arr.iter().enumerate() {
+            println!("  ch{} {:4}: {:?}", ch + 1, name, row);
         }
     }
     dev.stop()?;
@@ -174,7 +188,13 @@ fn setup(dev: &mut Vds1022, acq: AcqArgs) -> Result<f64> {
         offset: 0.0,
     };
     dev.configure_channel(0, ch)?;
-    dev.configure_channel(1, ChannelSetup { enabled: acq.ch2, ..ch })?;
+    dev.configure_channel(
+        1,
+        ChannelSetup {
+            enabled: acq.ch2,
+            ..ch
+        },
+    )?;
     let actual = dev.set_sample_rate(acq.rate)?;
     dev.set_peak_mode(acq.peak)?;
     dev.set_edge_trigger(0, Slope::Rising, acq.trig_level, acq.sweep.into())?;
@@ -206,7 +226,7 @@ fn report(frame: &neowon_core::CaptureFrame) -> String {
             cap.ch + 1,
             stats.map_or("-".into(), |s| format!("{:.3} V", s.vpp)),
             stats.map_or("-".into(), |s| format!("{:.3} V", s.vavg)),
-            freq.map_or("-".into(), |f| format_hz(f)),
+            freq.map_or("-".into(), format_hz),
             cap.freq_meter.map_or("-".into(), format_hz),
             if cap.clipped { "  CLIPPED" } else { "" },
         ));

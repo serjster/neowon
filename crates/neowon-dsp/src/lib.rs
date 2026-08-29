@@ -7,7 +7,7 @@ pub mod math;
 pub mod measure;
 pub mod stats;
 
-pub use fft::{spectrum, Spectrum, Window};
-pub use math::{math_trace, MathOp};
-pub use measure::{basic_stats, estimate_frequency, measure, BasicStats, Measurements};
+pub use fft::{Spectrum, Window, spectrum};
+pub use math::{MathOp, math_trace};
+pub use measure::{BasicStats, Measurements, basic_stats, estimate_frequency, measure};
 pub use stats::StatTrack;

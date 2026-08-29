@@ -27,7 +27,11 @@ impl StatTrack {
     }
 
     pub fn std_dev(&self) -> f64 {
-        if self.count < 2 { 0.0 } else { (self.m2 / (self.count - 1) as f64).sqrt() }
+        if self.count < 2 {
+            0.0
+        } else {
+            (self.m2 / (self.count - 1) as f64).sqrt()
+        }
     }
 
     pub fn reset(&mut self) {

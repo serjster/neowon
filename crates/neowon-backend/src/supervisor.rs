@@ -8,7 +8,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crossbeam_channel::{bounded, unbounded, Receiver, RecvTimeoutError, Sender, TryRecvError};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TryRecvError, bounded, unbounded};
 use neowon_core::{AcqMode, CaptureFrame, SharedFrame, Sweep};
 use tracing::{info, warn};
 
@@ -74,7 +74,11 @@ where
         .spawn(move || run(&mut factory, cmd_rx, event_tx))
         .expect("spawn acquisition thread");
 
-    Supervisor { commands: cmd_tx, events: event_rx, handle: Some(handle) }
+    Supervisor {
+        commands: cmd_tx,
+        events: event_rx,
+        handle: Some(handle),
+    }
 }
 
 /// Host-side running average over the last N records, per channel.
@@ -118,7 +122,10 @@ impl Averager {
         }
         let mut out = frame.clone();
         for (cap, acc) in out.channels.iter_mut().zip(&self.acc) {
-            cap.raw = acc.iter().map(|&a| a.round().clamp(-128.0, 127.0) as i8).collect();
+            cap.raw = acc
+                .iter()
+                .map(|&a| a.round().clamp(-128.0, 127.0) as i8)
+                .collect();
         }
         out.acq = AcqMode::Average(self.n);
         out
@@ -219,8 +226,7 @@ fn run(
                 match backend.set_stimulus(&name) {
                     Ok(true) => {}
                     Ok(false) => {
-                        let _ = events
-                            .try_send(Event::Error(format!("unknown stimulus {name:?}")));
+                        let _ = events.try_send(Event::Error(format!("unknown stimulus {name:?}")));
                     }
                     Err(e) => {
                         let _ = events.try_send(Event::Error(e.to_string()));

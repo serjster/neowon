@@ -29,7 +29,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
 use bevy_egui::input::EguiWantsInput;
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
-use gpu::{Persistence, Phosphor, PhosphorPlugin, TraceMode, PLOT_H, PLOT_W};
+use gpu::{PLOT_H, PLOT_W, Persistence, Phosphor, PhosphorPlugin, TraceMode};
 
 /// World-space offset of the plot center, leaving room for the side and
 /// bottom egui panels.
@@ -62,9 +62,7 @@ fn main() {
     // Logging is owned by Bevy's LogPlugin (honors RUST_LOG).
     let use_sim = std::env::args().any(|a| a == "--sim");
     let sup = if use_sim {
-        neowon_backend::spawn(|| {
-            Ok(Box::new(neowon_sim::SimBackend::new()) as Box<dyn Backend>)
-        })
+        neowon_backend::spawn(|| Ok(Box::new(neowon_sim::SimBackend::new()) as Box<dyn Backend>))
     } else {
         neowon_backend::spawn(neowon_vds1022::backend::factory(None))
     };
@@ -147,7 +145,11 @@ fn setup(
 
     // Display texture: written by the compose pass, shown via this sprite.
     let mut image = Image::new(
-        Extent3d { width: PLOT_W, height: PLOT_H, depth_or_array_layers: 1 },
+        Extent3d {
+            width: PLOT_W,
+            height: PLOT_H,
+            depth_or_array_layers: 1,
+        },
         TextureDimension::D2,
         vec![0; (PLOT_W * PLOT_H * 4) as usize],
         TextureFormat::Rgba8Unorm,
@@ -240,7 +242,7 @@ fn ingest(mut link: ResMut<Link>) {
             }
             Event::Frame(f) => {
                 link.frames_seen += 1;
-                if link.frames_seen == 1 || link.frames_seen % 500 == 0 {
+                if link.frames_seen == 1 || link.frames_seen.is_multiple_of(500) {
                     tracing::info!(frames = link.frames_seen, "acquiring");
                 }
                 link.latest = Some(f);
@@ -264,15 +266,15 @@ fn step(ladder: &[f64], current: f64, up: bool) -> f64 {
             idx = i;
         }
     }
-    let idx = if up { (idx + 1).min(ladder.len() - 1) } else { idx.saturating_sub(1) };
+    let idx = if up {
+        (idx + 1).min(ladder.len() - 1)
+    } else {
+        idx.saturating_sub(1)
+    };
     ladder[idx]
 }
 
-fn input(
-    keys: Res<ButtonInput<KeyCode>>,
-    egui_wants: Res<EguiWantsInput>,
-    mut link: ResMut<Link>,
-) {
+fn input(keys: Res<ButtonInput<KeyCode>>, egui_wants: Res<EguiWantsInput>, mut link: ResMut<Link>) {
     if egui_wants.wants_any_keyboard_input() {
         return;
     }
@@ -385,7 +387,10 @@ fn phosphor_input(
     }
     if keys.just_pressed(KeyCode::KeyE) {
         let ladder = Persistence::LADDER;
-        let i = ladder.iter().position(|p| *p == phosphor.persistence).unwrap_or(0);
+        let i = ladder
+            .iter()
+            .position(|p| *p == phosphor.persistence)
+            .unwrap_or(0);
         phosphor.persistence = ladder[(i + 1) % ladder.len()];
     }
     if keys.just_pressed(KeyCode::KeyX) {
@@ -426,7 +431,11 @@ fn draw_graticule(mut gizmos: Gizmos) {
 fn draw_trigger(link: Res<Link>, mut gizmos: Gizmos) {
     let w = H_DIVS as f32 * DIV_PX;
     let h = V_DIVS as f32 * DIV_PX;
-    let src = link.config.trigger.source.min(link.config.channels.len() - 1);
+    let src = link
+        .config
+        .trigger
+        .source
+        .min(link.config.channels.len() - 1);
     let ch = &link.config.channels[src];
     let range = ch.volts_div * 10.0 * ch.probe;
     let frac = (link.config.trigger.level / range + ch.offset).clamp(-0.55, 0.55);
@@ -472,7 +481,9 @@ fn format_rate(r: f64) -> String {
 }
 
 fn update_title(link: Res<Link>, phosphor: Res<Phosphor>, mut windows: Query<&mut Window>) {
-    let Ok(mut window) = windows.single_mut() else { return };
+    let Ok(mut window) = windows.single_mut() else {
+        return;
+    };
     let run = if link.config.running { "RUN" } else { "STOP" };
     let ch = &link.config.channels[0];
     let mut meas = String::new();
@@ -481,7 +492,10 @@ fn update_title(link: Res<Link>, phosphor: Res<Phosphor>, mut windows: Query<&mu
     {
         let vpp = basic_stats(cap).map_or(0.0, |s| s.vpp);
         let freq = estimate_frequency(&cap.raw, frame.sample_rate).unwrap_or(0.0);
-        meas = format!("  |  CH1 {vpp:.3} Vpp  {freq:.1} Hz  [{}]", link.frames_seen);
+        meas = format!(
+            "  |  CH1 {vpp:.3} Vpp  {freq:.1} Hz  [{}]",
+            link.frames_seen
+        );
     }
     let sweep = match link.config.trigger.sweep {
         Sweep::Auto => "auto",

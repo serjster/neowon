@@ -12,7 +12,7 @@ use tracing::{debug, info};
 use neowon_backend::MultiMode;
 use neowon_core::{AcqMode, CaptureFrame, ChannelCapture, Coupling, Slope, Sweep, TriggerKind};
 
-use crate::consts::{self, reg, status, ADC_CLIP, FLASH_SIZE, FRAME_SIZE, HTP_ERR};
+use crate::consts::{self, ADC_CLIP, FLASH_SIZE, FRAME_SIZE, HTP_ERR, reg, status};
 use crate::error::{Error, Result};
 use crate::flash::FlashCal;
 use crate::fpga;
@@ -37,7 +37,13 @@ pub struct ChannelSetup {
 
 impl Default for ChannelSetup {
     fn default() -> Self {
-        Self { enabled: false, vb: 7, coupling: Coupling::Dc, probe: 1.0, offset: 0.0 }
+        Self {
+            enabled: false,
+            vb: 7,
+            coupling: Coupling::Dc,
+            probe: 1.0,
+            offset: 0.0,
+        }
     }
 }
 
@@ -74,7 +80,11 @@ impl Vds1022 {
             .wait()?
             .find(|d| d.vendor_id() == consts::USB_VID && d.product_id() == consts::USB_PID)
             .ok_or(Error::NoDevice)?;
-        debug!(bus = info.bus_id(), addr = info.device_address(), "found device");
+        debug!(
+            bus = info.bus_id(),
+            addr = info.device_address(),
+            "found device"
+        );
         let device = info.open().wait()?;
         let interface = device.claim_interface(0).wait()?;
 
@@ -91,10 +101,9 @@ impl Vds1022 {
                 }
             }
         }
-        let ep_out_addr = ep_out_addr
-            .ok_or_else(|| Error::Protocol("no bulk OUT endpoint".into()))?;
-        let ep_in_addr =
-            ep_in_addr.ok_or_else(|| Error::Protocol("no bulk IN endpoint".into()))?;
+        let ep_out_addr =
+            ep_out_addr.ok_or_else(|| Error::Protocol("no bulk OUT endpoint".into()))?;
+        let ep_in_addr = ep_in_addr.ok_or_else(|| Error::Protocol("no bulk IN endpoint".into()))?;
         debug!(ep_out = ep_out_addr, ep_in = ep_in_addr, "bulk endpoints");
 
         let ep_out = interface.endpoint::<Bulk, Out>(ep_out_addr)?;
@@ -128,7 +137,10 @@ impl Vds1022 {
 
         // Machine-type probe. The vendor app sleeps 50 ms between write and
         // read here (PortFilterTiny).
-        dev.write_raw(&cmd_bytes(reg::MACHINE_TYPE, 1, b'V' as u32), DEFAULT_TIMEOUT)?;
+        dev.write_raw(
+            &cmd_bytes(reg::MACHINE_TYPE, 1, b'V' as u32),
+            DEFAULT_TIMEOUT,
+        )?;
         std::thread::sleep(Duration::from_millis(50));
         let resp = dev.read_resp(Duration::from_secs(1))?;
         match resp.value {
@@ -215,7 +227,10 @@ impl Vds1022 {
         self.write_raw(&cmd_bytes(reg::READ_FLASH, 1, 1), DEFAULT_TIMEOUT)?;
         let data = self.read_raw(LONG_TIMEOUT)?;
         if data.len() != FLASH_SIZE {
-            return Err(Error::Flash(format!("flash read returned {} bytes", data.len())));
+            return Err(Error::Flash(format!(
+                "flash read returned {} bytes",
+                data.len()
+            )));
         }
         Ok(data)
     }
@@ -226,7 +241,10 @@ impl Vds1022 {
 
     pub fn load_fpga_from(&mut self, path: &Path) -> Result<()> {
         let bits = std::fs::read(path)?;
-        self.write_raw(&cmd_bytes(reg::LOAD_FPGA, 4, bits.len() as u32), DEFAULT_TIMEOUT)?;
+        self.write_raw(
+            &cmd_bytes(reg::LOAD_FPGA, 4, bits.len() as u32),
+            DEFAULT_TIMEOUT,
+        )?;
         let resp = self.read_resp(LONG_TIMEOUT)?;
         let frame_size = resp.value as usize;
         if frame_size <= 4 || frame_size > (1 << 20) {
@@ -251,7 +269,10 @@ impl Vds1022 {
             }
         }
         std::thread::sleep(Duration::from_millis(100));
-        info!("FPGA bitstream loaded ({} bytes, {total} chunks)", bits.len());
+        info!(
+            "FPGA bitstream loaded ({} bytes, {total} chunks)",
+            bits.len()
+        );
         Ok(())
     }
 
@@ -331,7 +352,8 @@ impl Vds1022 {
     /// Trigger holdoff. Encoding: 10-bit mantissa in units of 10 ns scaled by
     /// a decimal exponent, packed `(arg << 6) | exp` and byte-swapped.
     pub fn set_holdoff(&mut self, ch: usize, seconds: f64) -> Result<()> {
-        self.send(holdoff_reg(ch), 2, holdoff_arg(seconds)).map(drop)
+        self.send(holdoff_reg(ch), 2, holdoff_arg(seconds))
+            .map(drop)
     }
 
     pub fn sample_rate(&self) -> f64 {
@@ -375,7 +397,9 @@ impl Vds1022 {
         let setup = self.channels[ch];
         let range = consts::full_scale_volts(setup.vb) * setup.probe;
         let to_raw = |volts: f64| {
-            ((volts / range + setup.offset) * 250.0).round().clamp(-128.0, 127.0) as i32
+            ((volts / range + setup.offset) * 250.0)
+                .round()
+                .clamp(-128.0, 127.0) as i32
         };
 
         self.send(reg::SET_TRIGGER, 2, trigger_word(ch, kind, sweep) as u32)?;
@@ -400,7 +424,12 @@ impl Vds1022 {
                 self.send(width_gl_reg(ch), 2, gl as u32)?;
                 self.send(width_hl_reg(ch), 2, hl as u32)?;
             }
-            TriggerKind::Slope { width, upper, lower, .. } => {
+            TriggerKind::Slope {
+                width,
+                upper,
+                lower,
+                ..
+            } => {
                 let (mut up, mut lo) = (to_raw(*upper), to_raw(*lower));
                 if up < lo {
                     (up, lo) = (lo, up); // upper must exceed lower
@@ -530,7 +559,7 @@ impl Vds1022 {
     /// Non-blocking capture: `Ok(None)` when the device has no data yet.
     pub fn try_capture(&mut self) -> Result<Option<CaptureFrame>> {
         match self.get_frames() {
-            Ok(frames) => Ok(Some(self.to_capture(frames))),
+            Ok(frames) => Ok(Some(self.assemble_capture(frames))),
             Err(Error::NotReady) => Ok(None),
             Err(e) => Err(e),
         }
@@ -542,7 +571,7 @@ impl Vds1022 {
         let deadline = Instant::now() + max_wait;
         loop {
             match self.get_frames() {
-                Ok(frames) => return Ok(self.to_capture(frames)),
+                Ok(frames) => return Ok(self.assemble_capture(frames)),
                 Err(Error::NotReady) if Instant::now() < deadline => {
                     std::thread::sleep(Duration::from_millis(60));
                 }
@@ -551,7 +580,7 @@ impl Vds1022 {
         }
     }
 
-    fn to_capture(&mut self, frames: Vec<RawFrame>) -> CaptureFrame {
+    fn assemble_capture(&mut self, frames: Vec<RawFrame>) -> CaptureFrame {
         self.seq += 1;
         let channels = frames
             .into_iter()
@@ -572,7 +601,11 @@ impl Vds1022 {
         CaptureFrame {
             seq: self.seq,
             sample_rate: self.sample_rate,
-            acq: if self.peak { AcqMode::Peak } else { AcqMode::Sample },
+            acq: if self.peak {
+                AcqMode::Peak
+            } else {
+                AcqMode::Sample
+            },
             channels,
         }
     }
@@ -750,10 +783,22 @@ mod tests {
     #[test]
     fn trigger_word_edge() {
         // CH1, rising, auto: the power-on default word.
-        let w = trigger_word(0, &TriggerKind::Edge { slope: Slope::Rising }, Sweep::Auto);
+        let w = trigger_word(
+            0,
+            &TriggerKind::Edge {
+                slope: Slope::Rising,
+            },
+            Sweep::Auto,
+        );
         assert_eq!(w, 0);
         // CH2, falling, single: channel + slope + sweep bits.
-        let w = trigger_word(1, &TriggerKind::Edge { slope: Slope::Falling }, Sweep::Single);
+        let w = trigger_word(
+            1,
+            &TriggerKind::Edge {
+                slope: Slope::Falling,
+            },
+            Sweep::Single,
+        );
         assert_eq!(w, (1 << 13) | (1 << 12) | (2 << 10));
     }
 
@@ -785,7 +830,10 @@ mod tests {
     #[test]
     fn trigger_word_video() {
         // Video, even-field (code 3) on CH1. Type code 2 -> bit 14.
-        let kind = TriggerKind::Video { sync: VideoSync::EvenField, line: 0 };
+        let kind = TriggerKind::Video {
+            sync: VideoSync::EvenField,
+            line: 0,
+        };
         let w = trigger_word(0, &kind, Sweep::Auto);
         assert_eq!(w, (1 << 14) | (3 << 10));
     }

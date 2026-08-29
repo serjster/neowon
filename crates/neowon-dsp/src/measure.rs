@@ -46,7 +46,12 @@ fn raw_stats(raw: &[i8]) -> Option<RawStats> {
         sq += (v * v) as i64;
     }
     let n = raw.len() as f64;
-    Some(RawStats { min, max, mean: sum as f64 / n, mean_sq: sq as f64 / n })
+    Some(RawStats {
+        min,
+        max,
+        mean: sum as f64 / n,
+        mean_sq: sq as f64 / n,
+    })
 }
 
 /// The full automatic measurement set of one trace. Voltages in volts, times
@@ -99,12 +104,26 @@ fn crossings(raw: &[i8], mid: f64, hyst: f64) -> Vec<Crossing> {
             armed_high = true;
         }
         if armed_low && prev < hi_th && v >= hi_th {
-            let frac = if v > prev { (hi_th - prev) / (v - prev) } else { 0.0 };
-            out.push(Crossing { t: (i - 1) as f64 + frac, rising: true });
+            let frac = if v > prev {
+                (hi_th - prev) / (v - prev)
+            } else {
+                0.0
+            };
+            out.push(Crossing {
+                t: (i - 1) as f64 + frac,
+                rising: true,
+            });
             armed_low = false;
         } else if armed_high && prev > lo_th && v <= lo_th {
-            let frac = if v < prev { (prev - lo_th) / (prev - v) } else { 0.0 };
-            out.push(Crossing { t: (i - 1) as f64 + frac, rising: false });
+            let frac = if v < prev {
+                (prev - lo_th) / (prev - v)
+            } else {
+                0.0
+            };
+            out.push(Crossing {
+                t: (i - 1) as f64 + frac,
+                rising: false,
+            });
             armed_high = false;
         }
         prev = v;
@@ -144,13 +163,20 @@ fn top_base(raw: &[i8], min: i32, max: i32) -> (f64, f64) {
 fn edge_time(raw: &[i8], c: &Crossing, low_level: f64, high_level: f64) -> Option<f64> {
     let n = raw.len();
     let idx = c.t as usize;
-    let (start_level, end_level) =
-        if c.rising { (low_level, high_level) } else { (high_level, low_level) };
+    let (start_level, end_level) = if c.rising {
+        (low_level, high_level)
+    } else {
+        (high_level, low_level)
+    };
     // Walk backward to where the edge started.
     let mut a = idx;
     loop {
         let v = raw[a] as f64;
-        let done = if c.rising { v <= start_level } else { v >= start_level };
+        let done = if c.rising {
+            v <= start_level
+        } else {
+            v >= start_level
+        };
         if done {
             break;
         }
@@ -166,7 +192,11 @@ fn edge_time(raw: &[i8], c: &Crossing, low_level: f64, high_level: f64) -> Optio
             return None;
         }
         let v = raw[b] as f64;
-        let done = if c.rising { v >= end_level } else { v <= end_level };
+        let done = if c.rising {
+            v >= end_level
+        } else {
+            v <= end_level
+        };
         if done {
             break;
         }
@@ -204,7 +234,10 @@ pub fn measure(cap: &ChannelCapture, sample_rate: f64) -> Option<Measurements> {
         vavg: rs.mean * lsb + z,
         vrms: {
             let zero = z / lsb;
-            (rs.mean_sq + 2.0 * zero * rs.mean + zero * zero).max(0.0).sqrt() * lsb
+            (rs.mean_sq + 2.0 * zero * rs.mean + zero * zero)
+                .max(0.0)
+                .sqrt()
+                * lsb
         },
         ..Default::default()
     };
@@ -371,7 +404,13 @@ mod tests {
     fn full_measurements_of_square() {
         // 1 kHz, 25% duty square at 250 kS/s: 250 samples/period, 62.5 high.
         let raw: Vec<i8> = (0..5000)
-            .map(|i| if (i as f64 / 250.0).fract() < 0.25 { 100 } else { -50 })
+            .map(|i| {
+                if (i as f64 / 250.0).fract() < 0.25 {
+                    100
+                } else {
+                    -50
+                }
+            })
             .collect();
         let m = measure(&cap(raw, 0.01), 250e3).unwrap();
         assert!((m.vtop - 1.0).abs() < 0.02, "vtop {}", m.vtop);

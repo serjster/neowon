@@ -147,7 +147,9 @@ Each phase ends with something runnable and testable — most against the real s
 > pass/fail mask engine with UI. Hardware harness:
 > `cargo run -p neowon-vds1022 --example trigtest`. Still open: FPGA upload
 > untested until a power-cycle; roll-mode incremental streaming, sin(x)/x,
-> GPU FFT deferred. Next: Phase 7 (history/recording/export).
+> GPU FFT deferred. **Phase 6.5 inserted** (virtual testbench + scope-grade
+> UI): pillars 1–3 done and green (see that phase's status block). Next:
+> Phase 6.5 pillar 4 (scope-grade UI), then Phase 7.
 
 ### Phase 0 — Scaffold + simulated trace (½ day)
 
@@ -201,6 +203,18 @@ The phases-1–3 CPU polyline is replaced by the compute pipeline (§3 GPU strat
 Pulse/slope/video triggers and alternate mode (bit layouts from the Java app — note the Slope/Video code swap bug in vds1022.py: use Java's `Edge=0, Slope=1, Video=2, Pulse=3`). Width encoding per FPGA version (V3+: `t×1e8` split u16/u16). Pass/fail rule engine (up to 8 rules, per-channel h/v tolerance masks, GPU point-in-mask test is trivial in the rasterizer), MULTI port modes (trigger out / pass-fail out / trigger in).
 
 ### Phase 6.5 — Virtual testbench & scope-grade UI (inserted 2026-08-29)
+
+> **Status 2026-08-29:** Pillars 1–3 DONE and green. Signal engine + XY
+> figures + 14 named presets + simulated edge triggering live in
+> `neowon-sim` (spec: `docs/tasks/phase65-signals-spec.md`). The virtual
+> testbench (`crates/neowon-sim/tests/testbench.rs`, 16 tests) verifies every
+> DSP operation against golden signals. Script automation (`NEOWON_SCRIPT`)
+> + ROI plot shots + pixel tests (`crates/neowon-app/tests/ui_pixels.rs`,
+> 3 tests, run with `-- --ignored`) are green. Implementing the testbench
+> surfaced and fixed one real render bug: XY mode splatted isolated points,
+> so coherent sampling drew a dotted ring; XY now rasterizes beam-continuous
+> segments like a real scope. **Open: pillar 4 (scope-grade UI).**
+> Repo now governed by `AGENTS.md` (`CLAUDE.md` symlinks to it).
 
 The correctness backbone for everything after it. Four pillars:
 

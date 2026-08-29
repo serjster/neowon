@@ -27,7 +27,9 @@ pub fn fpga_generation(hw_version: &str) -> Result<u32> {
     {
         return Ok(n);
     }
-    Err(Error::Fpga(format!("cannot derive FPGA generation from version {v:?}")))
+    Err(Error::Fpga(format!(
+        "cannot derive FPGA generation from version {v:?}"
+    )))
 }
 
 /// Find `VDS1022_FPGAV{n}_*.bin` in `dir`.

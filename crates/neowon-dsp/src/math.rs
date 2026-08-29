@@ -17,8 +17,14 @@ pub enum MathOp {
 }
 
 impl MathOp {
-    pub const ALL: [MathOp; 6] =
-        [MathOp::Add, MathOp::Sub, MathOp::Mul, MathOp::Div, MathOp::Diff, MathOp::Integ];
+    pub const ALL: [MathOp; 6] = [
+        MathOp::Add,
+        MathOp::Sub,
+        MathOp::Mul,
+        MathOp::Div,
+        MathOp::Diff,
+        MathOp::Integ,
+    ];
 
     pub fn label(&self) -> &'static str {
         match self {
@@ -62,7 +68,11 @@ fn compute(a: &ChannelCapture, b: Option<&ChannelCapture>, op: MathOp, rate: f64
                         MathOp::Sub => x - y,
                         MathOp::Mul => x * y,
                         MathOp::Div => {
-                            if y.abs() < 1e-9 { 0.0 } else { x / y }
+                            if y.abs() < 1e-9 {
+                                0.0
+                            } else {
+                                x / y
+                            }
                         }
                         _ => unreachable!(),
                     }

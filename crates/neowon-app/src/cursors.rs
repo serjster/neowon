@@ -4,8 +4,8 @@
 use bevy::prelude::*;
 use bevy_egui::input::EguiWantsInput;
 
-use crate::gpu::{PLOT_H, PLOT_W};
 use crate::PLOT_OFFSET;
+use crate::gpu::{PLOT_H, PLOT_W};
 
 /// Cursor indices: 0/1 = time (x, fraction 0..1 of the record),
 /// 2/3 = amplitude (y, fraction -0.5..0.5 of full scale).
@@ -19,7 +19,12 @@ pub struct CursorState {
 
 impl Default for CursorState {
     fn default() -> Self {
-        Self { time_on: false, amp_on: false, pos: [0.4, 0.6, -0.1, 0.1], drag: None }
+        Self {
+            time_on: false,
+            amp_on: false,
+            pos: [0.4, 0.6, -0.1, 0.1],
+            drag: None,
+        }
     }
 }
 
@@ -46,8 +51,12 @@ pub fn cursor_input(
     let (Ok(window), Ok((camera, cam_tf))) = (windows.single(), camera.single()) else {
         return;
     };
-    let Some(screen) = window.cursor_position() else { return };
-    let Ok(world) = camera.viewport_to_world_2d(cam_tf, screen) else { return };
+    let Some(screen) = window.cursor_position() else {
+        return;
+    };
+    let Ok(world) = camera.viewport_to_world_2d(cam_tf, screen) else {
+        return;
+    };
 
     if mouse.just_pressed(MouseButton::Left) {
         let mut best: Option<(usize, f32)> = None;
@@ -69,8 +78,7 @@ pub fn cursor_input(
     if mouse.pressed(MouseButton::Left) {
         if let Some(i) = cur.drag {
             if i < 2 {
-                cur.pos[i] =
-                    ((world.x - PLOT_OFFSET.x) / PLOT_W as f32 + 0.5).clamp(0.0, 1.0);
+                cur.pos[i] = ((world.x - PLOT_OFFSET.x) / PLOT_W as f32 + 0.5).clamp(0.0, 1.0);
             } else {
                 cur.pos[i] = ((world.y - PLOT_OFFSET.y) / PLOT_H as f32).clamp(-0.5, 0.5);
             }

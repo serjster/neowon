@@ -4,7 +4,9 @@
 use bevy::prelude::*;
 use neowon_backend::Command;
 use neowon_core::ChannelCapture;
-use neowon_dsp::{math_trace, measure, spectrum, MathOp, Measurements, Spectrum, StatTrack, Window};
+use neowon_dsp::{
+    MathOp, Measurements, Spectrum, StatTrack, Window, math_trace, measure, spectrum,
+};
 
 use crate::Link;
 
@@ -138,7 +140,12 @@ pub struct FftState {
 
 impl Default for FftState {
     fn default() -> Self {
-        Self { enabled: false, source: 0, window: Window::Hann, spectrum: None }
+        Self {
+            enabled: false,
+            source: 0,
+            window: Window::Hann,
+            spectrum: None,
+        }
     }
 }
 
@@ -151,7 +158,10 @@ pub enum Unit {
     Percent,
 }
 
-pub const METRICS: [(&str, fn(&Measurements) -> Option<f64>, Unit); N_METRICS] = [
+/// One auto-measurement row: label, accessor, display unit.
+pub type Metric = (&'static str, fn(&Measurements) -> Option<f64>, Unit);
+
+pub const METRICS: [Metric; N_METRICS] = [
     ("Freq", |m| m.freq, Unit::Hertz),
     ("Period", |m| m.period, Unit::Second),
     ("Vpp", |m| Some(m.vpp), Unit::Volt),
@@ -194,7 +204,11 @@ pub fn compute_derived(
     if math.enabled {
         let a = frame.channels.iter().find(|c| c.ch == 0);
         let b = frame.channels.iter().find(|c| c.ch == 1);
-        let src = if math.op.needs_b() { a.zip(b).map(|(a, _)| a) } else { a };
+        let src = if math.op.needs_b() {
+            a.zip(b).map(|(a, _)| a)
+        } else {
+            a
+        };
         if let Some(a) = src {
             let fs = (!math.rescale).then_some(math.full_scale);
             let (trace, fs) = math_trace(a, b, math.op, frame.sample_rate, fs);

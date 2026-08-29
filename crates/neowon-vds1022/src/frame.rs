@@ -43,7 +43,13 @@ impl RawFrame {
             .iter()
             .map(|&b| b as i8)
             .collect();
-        Ok(Self { channel, time_sum, period_num, cursor, adc })
+        Ok(Self {
+            channel,
+            time_sum,
+            period_num,
+            cursor,
+            adc,
+        })
     }
 
     /// The 5000 usable samples (drops 50 pre and 50 post).
@@ -52,7 +58,9 @@ impl RawFrame {
     }
 
     pub fn clipped(&self) -> bool {
-        self.samples().iter().any(|&s| s.unsigned_abs() >= ADC_CLIP as u8)
+        self.samples()
+            .iter()
+            .any(|&s| s.unsigned_abs() >= ADC_CLIP as u8)
     }
 
     /// Hardware frequency-meter reading, if it counted anything.

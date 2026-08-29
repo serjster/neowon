@@ -9,7 +9,7 @@ use neowon_core::{AcqMode, Coupling, SharedFrame, Slope, Sweep, TriggerKind};
 
 pub mod supervisor;
 
-pub use supervisor::{spawn, Command, Event, Supervisor};
+pub use supervisor::{Command, Event, Supervisor, spawn};
 
 /// What an instrument can do; the UI builds itself from this.
 #[derive(Debug, Clone)]
@@ -39,7 +39,13 @@ pub struct ChannelConfig {
 
 impl Default for ChannelConfig {
     fn default() -> Self {
-        Self { enabled: false, volts_div: 1.0, coupling: Coupling::Dc, probe: 1.0, offset: 0.0 }
+        Self {
+            enabled: false,
+            volts_div: 1.0,
+            coupling: Coupling::Dc,
+            probe: 1.0,
+            offset: 0.0,
+        }
     }
 }
 
@@ -59,7 +65,9 @@ impl Default for TriggerConfig {
     fn default() -> Self {
         Self {
             source: 0,
-            kind: TriggerKind::Edge { slope: Slope::Rising },
+            kind: TriggerKind::Edge {
+                slope: Slope::Rising,
+            },
             level: 0.0,
             sweep: Sweep::Auto,
             holdoff: 100e-9,
@@ -92,11 +100,17 @@ impl Default for ScopeConfig {
     fn default() -> Self {
         Self {
             channels: vec![
-                ChannelConfig { enabled: true, ..Default::default() },
+                ChannelConfig {
+                    enabled: true,
+                    ..Default::default()
+                },
                 ChannelConfig::default(),
             ],
             sample_rate: 250e3,
-            trigger: TriggerConfig { level: 2.5, ..Default::default() },
+            trigger: TriggerConfig {
+                level: 2.5,
+                ..Default::default()
+            },
             position: 0.5,
             acq: AcqMode::Sample,
             running: true,

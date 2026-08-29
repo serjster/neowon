@@ -103,8 +103,14 @@ impl Plugin for PhosphorPlugin {
         let render_app = app.sub_app_mut(RenderApp);
         render_app
             .add_systems(RenderStartup, init_pipelines)
-            .add_systems(Render, prepare_buffers.in_set(RenderSystems::PrepareResources))
-            .add_systems(Render, prepare_bind_groups.in_set(RenderSystems::PrepareBindGroups))
+            .add_systems(
+                Render,
+                prepare_buffers.in_set(RenderSystems::PrepareResources),
+            )
+            .add_systems(
+                Render,
+                prepare_bind_groups.in_set(RenderSystems::PrepareBindGroups),
+            )
             .add_systems(RenderGraph, dispatch.before(camera_driver));
     }
 }
@@ -182,7 +188,12 @@ fn init_pipelines(
     let decay = pipeline("decay");
     let raster = pipeline("raster");
     let compose = pipeline("compose");
-    commands.insert_resource(Pipelines { layout, decay, raster, compose });
+    commands.insert_resource(Pipelines {
+        layout,
+        decay,
+        raster,
+        compose,
+    });
 }
 
 fn prepare_buffers(
@@ -276,6 +287,7 @@ fn prepare_buffers(
     b.params.write_buffer(&device, &queue);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn prepare_bind_groups(
     mut commands: Commands,
     pipelines: Res<Pipelines>,
@@ -331,9 +343,11 @@ fn dispatch(
         return;
     };
     let get = |id| pipeline_cache.get_compute_pipeline(id);
-    let (Some(decay), Some(raster), Some(compose)) =
-        (get(pipelines.decay), get(pipelines.raster), get(pipelines.compose))
-    else {
+    let (Some(decay), Some(raster), Some(compose)) = (
+        get(pipelines.decay),
+        get(pipelines.raster),
+        get(pipelines.compose),
+    ) else {
         if !*logged.1 {
             tracing::warn!("phosphor: pipelines still compiling");
             *logged.1 = true;
