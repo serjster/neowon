@@ -21,6 +21,7 @@
 mod cursors;
 mod derived;
 mod gpu;
+mod script;
 mod ui;
 
 use bevy::asset::RenderAssetUsages;
@@ -110,6 +111,7 @@ fn main() {
         .init_resource::<derived::FftState>()
         .init_resource::<derived::PfState>()
         .init_resource::<cursors::CursorState>()
+        .insert_resource(script::load_from_env())
         .add_systems(Startup, setup)
         .add_systems(EguiPrimaryContextPass, ui::panel)
         .add_systems(
@@ -120,6 +122,7 @@ fn main() {
                 input,
                 phosphor_input,
                 cursors::cursor_input,
+                script::run_script,
                 flush,
                 derived::compute_derived,
                 update_phosphor,
