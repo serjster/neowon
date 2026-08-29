@@ -103,7 +103,7 @@ declares off limits.
 - Frames are `Arc`-shared, never copied per consumer.
 - CPU DSP (`neowon-dsp`) is the correctness oracle; any GPU variant must be
   tested against it within tolerance via readback.
-- File budgets: ~400 lines soft, 600 hard. A file over budget is a design
+- File budgets: ~500 lines soft, 700 hard. A file over budget is a design
   signal — split along the second job it picked up. (`neowon-app/src/ui.rs`
   is over-budget debt scheduled for restructuring in Phase 6.5; it may
   shrink, never grow.)
