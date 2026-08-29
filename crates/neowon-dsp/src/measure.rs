@@ -267,7 +267,7 @@ pub fn measure(cap: &ChannelCapture, sample_rate: f64) -> Option<Measurements> {
     // Rise/fall: 10%..90% of Vamp, averaged over edges.
     let low10 = base_r + 0.1 * amp_r;
     let high90 = base_r + 0.9 * amp_r;
-    let mut acc = |rising: bool| -> Option<f64> {
+    let acc = |rising: bool| -> Option<f64> {
         let (mut sum, mut n) = (0.0, 0u32);
         for c in cr.iter().filter(|c| c.rising == rising) {
             if let Some(t) = edge_time(raw, c, low10, high90) {

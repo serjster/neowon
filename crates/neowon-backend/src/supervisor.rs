@@ -12,13 +12,15 @@ use crossbeam_channel::{bounded, unbounded, Receiver, RecvTimeoutError, Sender, 
 use neowon_core::{AcqMode, CaptureFrame, SharedFrame, Sweep};
 use tracing::{info, warn};
 
-use crate::{Backend, BackendError, Capabilities, ScopeConfig};
+use crate::{Backend, BackendError, Capabilities, MultiMode, ScopeConfig};
 
 #[derive(Debug, Clone)]
 pub enum Command {
     Apply(ScopeConfig),
     ForceTrigger,
     AutoSet,
+    Multi(MultiMode),
+    PassFail(bool),
     Shutdown,
 }
 
@@ -162,11 +164,15 @@ fn run(
             let mut newest: Option<ScopeConfig> = None;
             let mut do_force = false;
             let mut do_autoset = false;
+            let mut multi: Option<MultiMode> = None;
+            let mut pass_fail: Option<bool> = None;
             loop {
                 match commands.try_recv() {
                     Ok(Command::Apply(cfg)) => newest = Some(cfg),
                     Ok(Command::ForceTrigger) => do_force = true,
                     Ok(Command::AutoSet) => do_autoset = true,
+                    Ok(Command::Multi(m)) => multi = Some(m),
+                    Ok(Command::PassFail(level)) => pass_fail = Some(level),
                     Ok(Command::Shutdown) => break 'outer,
                     Err(TryRecvError::Empty) => break,
                     Err(TryRecvError::Disconnected) => break 'outer,
@@ -193,6 +199,16 @@ fn run(
                 }
             }
             if do_force && let Err(e) = backend.force_trigger() {
+                let _ = events.try_send(Event::Error(e.to_string()));
+            }
+            if let Some(mode) = multi
+                && let Err(e) = backend.set_multi(mode)
+            {
+                let _ = events.try_send(Event::Error(e.to_string()));
+            }
+            if let Some(level) = pass_fail
+                && let Err(e) = backend.set_pass_fail_output(level)
+            {
                 let _ = events.try_send(Event::Error(e.to_string()));
             }
             if do_autoset {

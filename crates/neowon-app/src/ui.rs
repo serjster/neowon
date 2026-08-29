@@ -2,12 +2,15 @@
 
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
-use neowon_backend::Command;
-use neowon_core::{AcqMode, Coupling, Slope, Sweep};
+use neowon_backend::{Command, MultiMode};
+use neowon_core::{AcqMode, Coupling, PulseCondition, Slope, Sweep, TriggerKind, VideoSync};
 use neowon_dsp::{MathOp, Window};
 
 use crate::cursors::CursorState;
-use crate::derived::{fmt, fmt_si, FftState, MathState, MeasureState, METRICS, SLOT_NAMES, SLOTS};
+use crate::derived::{
+    build_pf_mask, fmt, fmt_si, FftState, MathState, MeasureState, PfState, METRICS, SLOT_NAMES,
+    SLOTS,
+};
 use crate::gpu::{Persistence, Phosphor, TraceMode};
 use crate::Link;
 
@@ -41,6 +44,32 @@ fn ladder_combo(
     changed
 }
 
+fn multi_label(m: MultiMode) -> &'static str {
+    match m {
+        MultiMode::TriggerOut => "Trigger out",
+        MultiMode::PassFailOut => "Pass-fail out",
+        MultiMode::TriggerIn => "Trigger in",
+    }
+}
+
+fn condition_combo(ui: &mut egui::Ui, id: &str, condition: &mut PulseCondition) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        ui.label("When");
+        egui::ComboBox::from_id_salt(id)
+            .selected_text(condition.label())
+            .show_ui(ui, |ui| {
+                for c in PulseCondition::ALL {
+                    if ui.selectable_label(*condition == c, c.label()).clicked() {
+                        *condition = c;
+                        changed = true;
+                    }
+                }
+            });
+    });
+    changed
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn panel(
     mut contexts: EguiContexts,
@@ -50,6 +79,7 @@ pub fn panel(
     mut meas: ResMut<MeasureState>,
     mut fft: ResMut<FftState>,
     mut cur: ResMut<CursorState>,
+    mut pf: ResMut<PfState>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else { return };
     let ctx = ctx.clone();
@@ -172,15 +202,149 @@ pub fn panel(
                     }
                 });
                 ui.horizontal(|ui| {
-                    ui.label("Slope");
-                    for (label, s) in [("Rising ⬈", Slope::Rising), ("Falling ⬊", Slope::Falling)]
-                    {
-                        if ui.selectable_label(t.slope == s, label).clicked() {
-                            t.slope = s;
-                            dirty = true;
-                        }
-                    }
+                    ui.label("Type");
+                    egui::ComboBox::from_id_salt("trigkind")
+                        .selected_text(t.kind.label())
+                        .show_ui(ui, |ui| {
+                            if ui
+                                .selectable_label(matches!(t.kind, TriggerKind::Edge { .. }), "Edge")
+                                .clicked()
+                            {
+                                let slope = match t.kind {
+                                    TriggerKind::Edge { slope } => slope,
+                                    _ => Slope::Rising,
+                                };
+                                t.kind = TriggerKind::Edge { slope };
+                                dirty = true;
+                            }
+                            if ui
+                                .selectable_label(
+                                    matches!(t.kind, TriggerKind::Pulse { .. }),
+                                    "Pulse",
+                                )
+                                .clicked()
+                            {
+                                t.kind = TriggerKind::Pulse {
+                                    condition: PulseCondition::PositiveGreater,
+                                    width: 1e-6,
+                                };
+                                dirty = true;
+                            }
+                            if ui
+                                .selectable_label(matches!(t.kind, TriggerKind::Slope { .. }), "Slope")
+                                .clicked()
+                            {
+                                t.kind = TriggerKind::Slope {
+                                    condition: PulseCondition::PositiveGreater,
+                                    width: 1e-6,
+                                    upper: t.level + 0.1,
+                                    lower: t.level - 0.1,
+                                };
+                                dirty = true;
+                            }
+                            if ui
+                                .selectable_label(
+                                    matches!(t.kind, TriggerKind::Video { .. }),
+                                    "Video",
+                                )
+                                .clicked()
+                            {
+                                t.kind = TriggerKind::Video { sync: VideoSync::Line, line: 1 };
+                                dirty = true;
+                            }
+                        });
                 });
+                match &mut t.kind {
+                    TriggerKind::Edge { slope } => {
+                        ui.horizontal(|ui| {
+                            ui.label("Slope");
+                            for (label, s) in
+                                [("Rising ⬈", Slope::Rising), ("Falling ⬊", Slope::Falling)]
+                            {
+                                if ui.selectable_label(*slope == s, label).clicked() {
+                                    *slope = s;
+                                    dirty = true;
+                                }
+                            }
+                        });
+                    }
+                    TriggerKind::Pulse { condition, width } => {
+                        dirty |= condition_combo(ui, "pulsecond", condition);
+                        let mut w_us = *width * 1e6;
+                        ui.horizontal(|ui| {
+                            ui.label("Width");
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut w_us)
+                                        .speed(0.1)
+                                        .range(0.01..=655_360.0)
+                                        .suffix(" µs"),
+                                )
+                                .changed()
+                            {
+                                *width = w_us * 1e-6;
+                                dirty = true;
+                            }
+                        });
+                    }
+                    TriggerKind::Slope { condition, width, upper, lower } => {
+                        dirty |= condition_combo(ui, "slopecond", condition);
+                        let mut w_us = *width * 1e6;
+                        ui.horizontal(|ui| {
+                            ui.label("Width");
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut w_us)
+                                        .speed(0.1)
+                                        .range(0.01..=655_360.0)
+                                        .suffix(" µs"),
+                                )
+                                .changed()
+                            {
+                                *width = w_us * 1e-6;
+                                dirty = true;
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Upper");
+                            if ui.add(egui::DragValue::new(upper).speed(0.01).suffix(" V")).changed()
+                            {
+                                dirty = true;
+                            }
+                            ui.label("Lower");
+                            if ui.add(egui::DragValue::new(lower).speed(0.01).suffix(" V")).changed()
+                            {
+                                dirty = true;
+                            }
+                        });
+                    }
+                    TriggerKind::Video { sync, line } => {
+                        ui.horizontal(|ui| {
+                            ui.label("Sync");
+                            egui::ComboBox::from_id_salt("vidsync")
+                                .selected_text(sync.label())
+                                .show_ui(ui, |ui| {
+                                    for s in VideoSync::ALL {
+                                        if ui.selectable_label(*sync == s, s.label()).clicked() {
+                                            *sync = s;
+                                            dirty = true;
+                                        }
+                                    }
+                                });
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Line #");
+                            if ui.add(egui::DragValue::new(line).range(0..=65535)).changed() {
+                                dirty = true;
+                            }
+                        });
+                        ui.label(
+                            egui::RichText::new("Video trigger: packing unverified on hardware")
+                                .weak()
+                                .small(),
+                        );
+                    }
+                }
                 ui.horizontal(|ui| {
                     ui.label("Sweep");
                     for (label, s) in
@@ -195,17 +359,19 @@ pub fn panel(
                         }
                     }
                 });
-                let mut level = t.level;
-                ui.horizontal(|ui| {
-                    ui.label("Level");
-                    if ui
-                        .add(egui::DragValue::new(&mut level).speed(0.01).suffix(" V"))
-                        .changed()
-                    {
-                        t.level = level;
-                        dirty = true;
-                    }
-                });
+                if matches!(t.kind, TriggerKind::Edge { .. } | TriggerKind::Pulse { .. }) {
+                    let mut level = t.level;
+                    ui.horizontal(|ui| {
+                        ui.label("Level");
+                        if ui
+                            .add(egui::DragValue::new(&mut level).speed(0.01).suffix(" V"))
+                            .changed()
+                        {
+                            t.level = level;
+                            dirty = true;
+                        }
+                    });
+                }
                 let mut holdoff_us = t.holdoff * 1e6;
                 ui.horizontal(|ui| {
                     ui.label("Holdoff");
@@ -225,6 +391,88 @@ pub fn panel(
                 if dirty {
                     link.config.trigger = t;
                     link.dirty = true;
+                }
+                ui.horizontal(|ui| {
+                    ui.label("MULTI");
+                    egui::ComboBox::from_id_salt("multiport")
+                        .selected_text(multi_label(link.multi))
+                        .show_ui(ui, |ui| {
+                            for (m, label) in [
+                                (MultiMode::TriggerOut, "Trigger out"),
+                                (MultiMode::PassFailOut, "Pass-fail out"),
+                                (MultiMode::TriggerIn, "Trigger in"),
+                            ] {
+                                if ui.selectable_label(link.multi == m, label).clicked() {
+                                    link.multi = m;
+                                    let _ = link.sup.commands.send(Command::Multi(m));
+                                }
+                            }
+                        });
+                });
+            });
+
+            ui.collapsing("Pass/Fail", |ui| {
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut pf.enabled, "Enabled");
+                    ui.label("Src");
+                    for slot in 0..SLOTS {
+                        if ui
+                            .selectable_label(pf.source_slot == slot, SLOT_NAMES[slot])
+                            .clicked()
+                        {
+                            pf.source_slot = slot;
+                            pf.mask = None; // reference came from another trace
+                        }
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("H tol");
+                    ui.add(
+                        egui::DragValue::new(&mut pf.h_div).speed(0.05).range(0.0..=20.0).suffix(" div"),
+                    );
+                    ui.label("V tol");
+                    ui.add(
+                        egui::DragValue::new(&mut pf.v_div).speed(0.05).range(0.0..=10.0).suffix(" div"),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    let can_capture = if pf.source_slot < 2 {
+                        link.latest
+                            .as_ref()
+                            .and_then(|f| f.channels.iter().find(|c| c.ch == pf.source_slot))
+                            .is_some()
+                    } else {
+                        math.trace.is_some()
+                    };
+                    if ui
+                        .add_enabled(can_capture, egui::Button::new("Capture reference"))
+                        .clicked()
+                    {
+                        let raw: Option<Vec<i8>> = if pf.source_slot < 2 {
+                            link.latest
+                                .as_ref()
+                                .and_then(|f| f.channels.iter().find(|c| c.ch == pf.source_slot))
+                                .map(|c| c.raw.clone())
+                        } else {
+                            math.trace.as_ref().map(|c| c.raw.clone())
+                        };
+                        if let Some(raw) = raw {
+                            pf.mask = Some(build_pf_mask(&raw, pf.h_div, pf.v_div));
+                            pf.pass = 0;
+                            pf.fail = 0;
+                        }
+                    }
+                    if ui.button("Reset counts").clicked() {
+                        pf.pass = 0;
+                        pf.fail = 0;
+                    }
+                });
+                ui.checkbox(&mut pf.stop_on_fail, "Stop on fail");
+                ui.checkbox(&mut pf.output_multi, "Output result to MULTI");
+                let total = pf.pass + pf.fail;
+                ui.label(format!("pass {}   fail {}   total {}", pf.pass, pf.fail, total));
+                if pf.mask.is_none() {
+                    ui.label(egui::RichText::new("no reference captured").weak().small());
                 }
             });
 

@@ -68,11 +68,32 @@ macOS, nusb). The full register map lives in
 - **Auto-set** (range sweep → amplitude fit → freq-based rate pick → trigger
   at midpoint) converges on the probe-comp signal in ~6 captures.
 
+## Verified 2026-08-29 (Phase 6 — pulse/slope triggers, live)
+
+- **Trigger type codes**: Java's mapping confirmed on hardware — Slope = 1
+  triggers correctly (both `<` and `>` width conditions behave as expected on
+  the probe-comp edge), so Edge=0 / Slope=1 / Video=2 / Pulse=3 stands.
+- **Pulse/slope condition codes (trigger word bits 5-7)**: bit 2 = polarity,
+  bits 0-1 = comparator. Positive `>`/`=`/`<` = 0/1/2, negative = **4/5/6**.
+  The Python reference's 3/4/5 is WRONG — negative conditions silently starve
+  with it. (This matches the truncated Java decompile `{0,1,2,4,5,...}`.)
+- **Pulse level polarity**: the edge-level pair for a pulse trigger must be
+  packed with the slope matching the pulse polarity (falling packing for
+  negative pulses), or negative conditions starve.
+- **Width registers** (FPGA >= V3): `m = seconds × 1e8` split u16 gl/hl at
+  0x42/0x44 (CH1), 0x46/0x48 (CH2) — verified by `>`/`<` behavior at 400 µs
+  and 600 µs against the 500 µs probe-comp half-periods.
+- **Slope thresholds** (0x10/0x12, `(upper&0xFF)|((lower&0xFF)<<8)`) verified.
+- `SET_MULTI` (0x06) and `SET_PF` (0x07) writes are acked; electrical
+  behavior of the MULTI port not yet scoped.
+- Test harness: `cargo run -p neowon-vds1022 --example trigtest` (requires
+  the probe-comp signal on CH1).
+
 ## Still to verify
 
 - FPGA upload handshake on a cold (power-cycled) device.
 - `HTP_ERR = 11` horizontal correction (need a fast edge + timebase sweep).
-- Slope/Video trigger type codes (Java says Slope=1/Video=2; Python has them
-  swapped).
+- Video trigger (word packing implemented from the decompile; unverified).
+- MULTI port electrical behavior (trigger out/in, pass-fail out).
 - Roll-mode incremental cursor arithmetic (DM=5120, circular).
 - Keep-alive: how quickly the link actually drops when idle (>3 s claimed).

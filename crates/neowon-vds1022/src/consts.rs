@@ -48,16 +48,29 @@ pub mod reg {
 
     pub const GET_TRIGGERED: u32 = 0x01;
     pub const SET_MULTI: u32 = 0x06;
+    /// Pass/fail TTL level on the MULTI port (u8, 0 or 1).
+    pub const SET_PF: u32 = 0x07;
     pub const SET_PEAKMODE: u32 = 0x09;
     pub const SET_ROLLMODE: u32 = 0x0A;
     pub const SET_CHL_ON: u32 = 0x0B;
     pub const SET_FORCETRG: u32 = 0x0C;
+    /// Slope-trigger threshold pair: `(upper & 0xFF) | ((lower & 0xFF) << 8)`.
+    pub const SET_SLOPE_THRED_CH1: u32 = 0x10;
+    pub const SET_SLOPE_THRED_CH2: u32 = 0x12;
     pub const SET_PHASEFINE: u32 = 0x18;
     pub const SET_TRIGGER: u32 = 0x24;
     pub const SET_TRG_HOLDOFF_CH1: u32 = 0x26;
     pub const SET_TRG_HOLDOFF_CH2: u32 = 0x2A;
     pub const SET_EDGE_LEVEL_CH1: u32 = 0x2E;
     pub const SET_EDGE_LEVEL_CH2: u32 = 0x30;
+    /// Video-trigger line number (only meaningful for sync = LineNum).
+    pub const SET_VIDEOLINE: u32 = 0x32;
+    /// Pulse/slope trigger width, units of 10 ns, split u16/u16 (FPGA >= V3):
+    /// `trg_cdt_gl` holds `m & 0xFFFF`, `trg_cdt_hl` holds `m >> 16`.
+    pub const SET_TRG_WIDTH_GL_CH1: u32 = 0x42;
+    pub const SET_TRG_WIDTH_HL_CH1: u32 = 0x44;
+    pub const SET_TRG_WIDTH_GL_CH2: u32 = 0x46;
+    pub const SET_TRG_WIDTH_HL_CH2: u32 = 0x48;
     pub const SET_FREQREF_CH1: u32 = 0x4A;
     pub const SET_FREQREF_CH2: u32 = 0x4B;
     pub const SET_TIMEBASE: u32 = 0x52;

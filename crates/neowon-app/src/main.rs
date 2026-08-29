@@ -34,8 +34,8 @@ use gpu::{Persistence, Phosphor, PhosphorPlugin, TraceMode, PLOT_H, PLOT_W};
 /// bottom egui panels.
 pub const PLOT_OFFSET: Vec2 = Vec2::new(120.0, 90.0);
 
-use neowon_backend::{Backend, Capabilities, Command, Event, ScopeConfig, Supervisor};
-use neowon_core::{AcqMode, Coupling, SharedFrame, Slope, Sweep};
+use neowon_backend::{Backend, Capabilities, Command, Event, MultiMode, ScopeConfig, Supervisor};
+use neowon_core::{AcqMode, Coupling, SharedFrame, Slope, Sweep, TriggerKind};
 use neowon_dsp::{basic_stats, estimate_frequency};
 
 /// Screen geometry follows scope convention: 20 horizontal x 10 vertical
@@ -53,6 +53,8 @@ pub struct Link {
     pub config: ScopeConfig,
     pub dirty: bool,
     pub frames_seen: u64,
+    /// Last selected MULTI port function.
+    pub multi: MultiMode,
 }
 
 fn main() {
@@ -100,11 +102,13 @@ fn main() {
             config,
             dirty: false,
             frames_seen: 0,
+            multi: MultiMode::TriggerOut,
         })
         .init_resource::<Phosphor>()
         .init_resource::<derived::MathState>()
         .init_resource::<derived::MeasureState>()
         .init_resource::<derived::FftState>()
+        .init_resource::<derived::PfState>()
         .init_resource::<cursors::CursorState>()
         .add_systems(Startup, setup)
         .add_systems(EguiPrimaryContextPass, ui::panel)
@@ -122,6 +126,7 @@ fn main() {
                 readback_hook,
                 draw_graticule,
                 draw_trigger,
+                draw_pf_mask,
                 cursors::draw_cursors,
                 update_title,
             )
@@ -310,8 +315,10 @@ fn input(
         link.config.trigger.level -= trig_step;
         link.dirty = true;
     }
-    if keys.just_pressed(KeyCode::KeyS) {
-        link.config.trigger.slope = match link.config.trigger.slope {
+    if keys.just_pressed(KeyCode::KeyS)
+        && let TriggerKind::Edge { slope } = &mut link.config.trigger.kind
+    {
+        *slope = match *slope {
             Slope::Rising => Slope::Falling,
             Slope::Falling => Slope::Rising,
         };
@@ -426,6 +433,29 @@ fn draw_trigger(link: Res<Link>, mut gizmos: Gizmos) {
         Vec2::new(PLOT_OFFSET.x + w / 2.0, y),
         Color::srgba(1.0, 0.5, 0.2, 0.5),
     );
+}
+
+/// The pass/fail envelope as two dim-green polylines (lo and hi bounds).
+fn draw_pf_mask(pf: Res<derived::PfState>, mut gizmos: Gizmos) {
+    let Some(mask) = &pf.mask else { return };
+    if !pf.enabled || mask.lo.is_empty() {
+        return;
+    }
+    let w = H_DIVS as f32 * DIV_PX;
+    let h = V_DIVS as f32 * DIV_PX;
+    let n = mask.lo.len();
+    // Decimate so the gizmo stays cheap on a 5000-sample record.
+    let step = (n / 500).max(1);
+    let x_at = |i: usize| PLOT_OFFSET.x - w / 2.0 + i as f32 / (n - 1).max(1) as f32 * w;
+    let y_at = |raw: i8| PLOT_OFFSET.y + raw as f32 / 250.0 * h;
+    let color = Color::srgba(0.2, 0.6, 0.3, 0.6);
+    for bounds in [&mask.lo, &mask.hi] {
+        let points: Vec<Vec2> = (0..n)
+            .step_by(step)
+            .map(|i| Vec2::new(x_at(i), y_at(bounds[i])))
+            .collect();
+        gizmos.linestrip_2d(points, color);
+    }
 }
 
 fn format_rate(r: f64) -> String {

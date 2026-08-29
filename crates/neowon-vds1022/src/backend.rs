@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use neowon_backend::{Backend, BackendError, Capabilities, ScopeConfig};
+use neowon_backend::{Backend, BackendError, Capabilities, MultiMode, ScopeConfig};
 use neowon_core::SharedFrame;
 
 use crate::consts;
@@ -75,7 +75,7 @@ impl Backend for Vds1022Backend {
             let t = &cfg.trigger;
             let src = t.source.min(1);
             self.dev
-                .set_edge_trigger(src, t.slope, t.level, t.sweep)
+                .set_trigger(src, &t.kind, t.level, t.sweep)
                 .map_err(fatal)?;
             self.dev.set_holdoff(src, t.holdoff).map_err(fatal)?;
         }
@@ -113,6 +113,14 @@ impl Backend for Vds1022Backend {
 
     fn force_trigger(&mut self) -> Result<(), BackendError> {
         self.dev.force_trigger().map_err(fatal)
+    }
+
+    fn set_multi(&mut self, mode: MultiMode) -> Result<(), BackendError> {
+        self.dev.set_multi(mode).map_err(fatal)
+    }
+
+    fn set_pass_fail_output(&mut self, level: bool) -> Result<(), BackendError> {
+        self.dev.set_pf_level(level).map_err(fatal)
     }
 
     /// Probe the trigger-source channel and pick range, rate, and trigger
@@ -222,7 +230,7 @@ impl Backend for Vds1022Backend {
         }
         cfg.sample_rate = actual;
         cfg.trigger.level = level;
-        cfg.trigger.slope = Slope::Rising;
+        cfg.trigger.kind = neowon_core::TriggerKind::Edge { slope: Slope::Rising };
         cfg.trigger.sweep = Sweep::Auto;
         cfg.position = 0.5;
         cfg.acq = neowon_core::AcqMode::Sample;
@@ -263,18 +271,43 @@ fn part_position(c: &ScopeConfig) -> ScopeConfigPart {
 }
 
 fn part_trigger(c: &ScopeConfig) -> ScopeConfigPart {
+    use neowon_core::TriggerKind;
     let t = &c.trigger;
-    vec![
+    let mut v = vec![
         t.source as u64,
         t.level.to_bits(),
         t.holdoff.to_bits(),
-        matches!(t.slope, neowon_core::Slope::Falling) as u64,
         match t.sweep {
             neowon_core::Sweep::Auto => 0,
             neowon_core::Sweep::Normal => 1,
             neowon_core::Sweep::Single => 2,
         },
-    ]
+    ];
+    // Fold the full trigger kind into comparable u64s.
+    match &t.kind {
+        TriggerKind::Edge { slope } => {
+            v.push(0);
+            v.push(matches!(slope, neowon_core::Slope::Falling) as u64);
+        }
+        TriggerKind::Pulse { condition, width } => {
+            v.push(1);
+            v.push(condition.code() as u64);
+            v.push(width.to_bits());
+        }
+        TriggerKind::Slope { condition, width, upper, lower } => {
+            v.push(2);
+            v.push(condition.code() as u64);
+            v.push(width.to_bits());
+            v.push(upper.to_bits());
+            v.push(lower.to_bits());
+        }
+        TriggerKind::Video { sync, line } => {
+            v.push(3);
+            v.push(sync.code() as u64);
+            v.push(*line as u64);
+        }
+    }
+    v
 }
 
 fn part_acq(c: &ScopeConfig) -> ScopeConfigPart {

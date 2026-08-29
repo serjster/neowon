@@ -9,7 +9,8 @@ use nusb::transfer::{Bulk, Direction, In, Out, TransferError};
 use nusb::{Device, Endpoint, Interface, MaybeFuture};
 use tracing::{debug, info};
 
-use neowon_core::{AcqMode, CaptureFrame, ChannelCapture, Coupling, Slope, Sweep};
+use neowon_backend::MultiMode;
+use neowon_core::{AcqMode, CaptureFrame, ChannelCapture, Coupling, Slope, Sweep, TriggerKind};
 
 use crate::consts::{self, reg, status, ADC_CLIP, FLASH_SIZE, FRAME_SIZE, HTP_ERR};
 use crate::error::{Error, Result};
@@ -358,30 +359,69 @@ impl Vds1022 {
         level_volts: f64,
         sweep: Sweep,
     ) -> Result<()> {
+        self.set_trigger(ch, &TriggerKind::Edge { slope }, level_volts, sweep)
+    }
+
+    /// Trigger from a channel source, single-trigger mode. `level_volts` is
+    /// the edge/pulse level; slope thresholds come from the kind itself.
+    pub fn set_trigger(
+        &mut self,
+        ch: usize,
+        kind: &TriggerKind,
+        level_volts: f64,
+        sweep: Sweep,
+    ) -> Result<()> {
         assert!(ch < 2);
         let setup = self.channels[ch];
         let range = consts::full_scale_volts(setup.vb) * setup.probe;
-        let level =
-            ((level_volts / range + setup.offset) * 250.0).round().clamp(-128.0, 127.0) as i32;
-
-        let mut word: u16 = 0;
-        if ch == 1 {
-            word |= 1 << 13;
-        }
-        if slope == Slope::Falling {
-            word |= 1 << 12;
-        }
-        let sweep_code: u16 = match sweep {
-            Sweep::Auto => 0,
-            Sweep::Normal => 1,
-            Sweep::Single => 2,
+        let to_raw = |volts: f64| {
+            ((volts / range + setup.offset) * 250.0).round().clamp(-128.0, 127.0) as i32
         };
-        word |= sweep_code << 10;
-        self.send(reg::SET_TRIGGER, 2, word as u32)?;
+
+        self.send(reg::SET_TRIGGER, 2, trigger_word(ch, kind, sweep) as u32)?;
         self.sweep = sweep;
         self.trg_source = ch;
 
-        // Level pair with 10-LSB hysteresis.
+        match kind {
+            TriggerKind::Edge { slope } => {
+                self.write_level_pair(ch, to_raw(level_volts), *slope)?;
+            }
+            TriggerKind::Pulse { condition, width } => {
+                // Pulse level lives in the edge level registers. The level
+                // pair's polarity must follow the pulse polarity: a negative
+                // pulse arms on the falling excursion (hardware-verified —
+                // rising-style packing makes negative conditions starve).
+                let slope = match condition.code() {
+                    0..=2 => Slope::Rising,
+                    _ => Slope::Falling,
+                };
+                self.write_level_pair(ch, to_raw(level_volts), slope)?;
+                let (gl, hl) = width_split(*width);
+                self.send(width_gl_reg(ch), 2, gl as u32)?;
+                self.send(width_hl_reg(ch), 2, hl as u32)?;
+            }
+            TriggerKind::Slope { width, upper, lower, .. } => {
+                let (mut up, mut lo) = (to_raw(*upper), to_raw(*lower));
+                if up < lo {
+                    (up, lo) = (lo, up); // upper must exceed lower
+                }
+                self.send(slope_thred_reg(ch), 2, slope_thred_word(up, lo))?;
+                // Frequency-meter reference sits at the window midpoint.
+                self.send(freqref_reg(ch), 1, (((up + lo) / 2) as i8 as u8) as u32)?;
+                let (gl, hl) = width_split(*width);
+                self.send(width_gl_reg(ch), 2, gl as u32)?;
+                self.send(width_hl_reg(ch), 2, hl as u32)?;
+            }
+            TriggerKind::Video { line, .. } => {
+                self.send(reg::SET_VIDEOLINE, 2, *line as u32)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Edge/pulse level pair with 10-LSB hysteresis, plus the
+    /// frequency-meter reference just below the level.
+    fn write_level_pair(&mut self, ch: usize, level: i32, slope: Slope) -> Result<()> {
         let (hi, lo) = match slope {
             Slope::Rising => {
                 let hi = level.min(127);
@@ -394,9 +434,23 @@ impl Vds1022 {
         };
         let val = ((hi as i8 as u8) as u32) | (((lo as i8 as u8) as u32) << 8);
         self.send(edge_level_reg(ch), 2, val)?;
-        // Frequency-meter reference sits just below the trigger level.
         self.send(freqref_reg(ch), 1, ((level - 5) as i8 as u8) as u32)?;
         Ok(())
+    }
+
+    /// MULTI port function: 0 = trigger out, 1 = pass/fail out, 2 = trigger in.
+    pub fn set_multi(&mut self, mode: MultiMode) -> Result<()> {
+        let code = match mode {
+            MultiMode::TriggerOut => 0,
+            MultiMode::PassFailOut => 1,
+            MultiMode::TriggerIn => 2,
+        };
+        self.send(reg::SET_MULTI, 1, code).map(drop)
+    }
+
+    /// Pass/fail TTL level on the MULTI port.
+    pub fn set_pf_level(&mut self, high: bool) -> Result<()> {
+        self.send(reg::SET_PF, 1, high as u32).map(drop)
     }
 
     pub fn run(&mut self) -> Result<()> {
@@ -551,6 +605,73 @@ fn holdoff_reg(ch: usize) -> u32 {
 fn freqref_reg(ch: usize) -> u32 {
     [reg::SET_FREQREF_CH1, reg::SET_FREQREF_CH2][ch]
 }
+fn slope_thred_reg(ch: usize) -> u32 {
+    [reg::SET_SLOPE_THRED_CH1, reg::SET_SLOPE_THRED_CH2][ch]
+}
+fn width_gl_reg(ch: usize) -> u32 {
+    [reg::SET_TRG_WIDTH_GL_CH1, reg::SET_TRG_WIDTH_GL_CH2][ch]
+}
+fn width_hl_reg(ch: usize) -> u32 {
+    [reg::SET_TRG_WIDTH_HL_CH1, reg::SET_TRG_WIDTH_HL_CH2][ch]
+}
+
+/// Trigger word (`SET_TRIGGER`, single-trigger mode): bit 0 = external
+/// source (never for us), bit 8 = type-code bit 0, bit 14 = type-code bit 1,
+/// bit 13 = source channel. Type codes per the Java app: Edge=0, Slope=1,
+/// Video=2, Pulse=3 (vds1022.py has Slope/Video swapped — not copied).
+fn trigger_word(ch: usize, kind: &TriggerKind, sweep: Sweep) -> u16 {
+    fn type_bits(code: u16) -> u16 {
+        ((code & 1) << 8) | (((code >> 1) & 1) << 14)
+    }
+    let sweep_code: u16 = match sweep {
+        Sweep::Auto => 0,
+        Sweep::Normal => 1,
+        Sweep::Single => 2,
+    };
+    let mut word: u16 = 0;
+    if ch == 1 {
+        word |= 1 << 13;
+    }
+    match kind {
+        TriggerKind::Edge { slope } => {
+            word |= type_bits(consts::trg_type::EDGE);
+            if *slope == Slope::Falling {
+                word |= 1 << 12;
+            }
+            word |= sweep_code << 10; // bit 9 stays 0
+        }
+        TriggerKind::Pulse { condition, .. } => {
+            word |= type_bits(consts::trg_type::PULSE);
+            word |= condition.code() << 5;
+            word |= sweep_code << 10;
+        }
+        TriggerKind::Slope { condition, .. } => {
+            word |= type_bits(consts::trg_type::SLOPE);
+            word |= condition.code() << 5;
+            word |= sweep_code << 10;
+        }
+        // Hardware-unverified: the NTSC/PAL and module bits are not fully
+        // decoded; only the sync mode is packed.
+        TriggerKind::Video { sync, .. } => {
+            word |= type_bits(consts::trg_type::VIDEO);
+            word |= sync.code() << 10;
+        }
+    }
+    word
+}
+
+/// Pulse/slope width for FPGA >= V3: `m = round(seconds * 1e8)` (units of
+/// 10 ns), split into the low/high u16 register pair.
+fn width_split(seconds: f64) -> (u16, u16) {
+    let m = (seconds.max(0.0) * 1e8).round() as u64;
+    ((m & 0xFFFF) as u16, (m >> 16) as u16)
+}
+
+/// Slope threshold pair packing: `(upper & 0xFF) | ((lower & 0xFF) << 8)`
+/// with the two levels as raw i8 counts (upper > lower).
+fn slope_thred_word(upper: i32, lower: i32) -> u32 {
+    ((upper as i8 as u8) as u32) | (((lower as i8 as u8) as u32) << 8)
+}
 
 /// Holdoff wire encoding: `d = seconds * 1e8` (units of 10 ns), divided by 10
 /// until it fits 10 bits, exponent in the low 3 bits, then byte-swapped.
@@ -622,5 +743,65 @@ mod tests {
         assert_eq!(r.status, b'S');
         assert_eq!(r.value, 0x2002);
         assert!(parse_resp(&[1, 2, 3]).is_err());
+    }
+
+    use neowon_core::{PulseCondition, VideoSync};
+
+    #[test]
+    fn trigger_word_edge() {
+        // CH1, rising, auto: the power-on default word.
+        let w = trigger_word(0, &TriggerKind::Edge { slope: Slope::Rising }, Sweep::Auto);
+        assert_eq!(w, 0);
+        // CH2, falling, single: channel + slope + sweep bits.
+        let w = trigger_word(1, &TriggerKind::Edge { slope: Slope::Falling }, Sweep::Single);
+        assert_eq!(w, (1 << 13) | (1 << 12) | (2 << 10));
+    }
+
+    #[test]
+    fn trigger_word_pulse() {
+        // Pulse >400 us on CH2, normal sweep. Type code 3 -> bits 8 and 14.
+        let kind = TriggerKind::Pulse {
+            condition: PulseCondition::PositiveGreater,
+            width: 400e-6,
+        };
+        let w = trigger_word(1, &kind, Sweep::Normal);
+        assert_eq!(w, (1 << 14) | (1 << 13) | (1 << 10) | (1 << 8));
+    }
+
+    #[test]
+    fn trigger_word_slope() {
+        // Slope, negative-less (code 6: bit-2 polarity + comparator 2) on
+        // CH2, single. Type code 1 -> bit 8.
+        let kind = TriggerKind::Slope {
+            condition: PulseCondition::NegativeLess,
+            width: 10e-6,
+            upper: 1.0,
+            lower: -1.0,
+        };
+        let w = trigger_word(1, &kind, Sweep::Single);
+        assert_eq!(w, (1 << 13) | (2 << 10) | (1 << 8) | (6 << 5));
+    }
+
+    #[test]
+    fn trigger_word_video() {
+        // Video, even-field (code 3) on CH1. Type code 2 -> bit 14.
+        let kind = TriggerKind::Video { sync: VideoSync::EvenField, line: 0 };
+        let w = trigger_word(0, &kind, Sweep::Auto);
+        assert_eq!(w, (1 << 14) | (3 << 10));
+    }
+
+    #[test]
+    fn width_splitting() {
+        // 1 ms = 1e5 units of 10 ns = 0x186A0 -> gl 0x86A0, hl 0x0001.
+        assert_eq!(width_split(1e-3), (0x86A0, 0x0001));
+        // 400 us = 4e4 = 0x9C40 fits in the low half.
+        assert_eq!(width_split(400e-6), (0x9C40, 0x0000));
+        assert_eq!(width_split(0.0), (0, 0));
+    }
+
+    #[test]
+    fn slope_thred_packing() {
+        // upper 50, lower -30 -> 0x32 | (0xE2 << 8).
+        assert_eq!(slope_thred_word(50, -30), 0x32 | (0xE2 << 8));
     }
 }

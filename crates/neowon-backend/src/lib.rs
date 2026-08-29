@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use neowon_core::{AcqMode, Coupling, SharedFrame, Slope, Sweep};
+use neowon_core::{AcqMode, Coupling, SharedFrame, Slope, Sweep, TriggerKind};
 
 pub mod supervisor;
 
@@ -47,8 +47,8 @@ impl Default for ChannelConfig {
 pub struct TriggerConfig {
     /// Zero-based source channel.
     pub source: usize,
-    pub slope: Slope,
-    /// Level in volts (at the probe tip).
+    pub kind: TriggerKind,
+    /// Level in volts (at the probe tip); the edge/pulse level.
     pub level: f64,
     pub sweep: Sweep,
     /// Trigger holdoff in seconds.
@@ -59,12 +59,20 @@ impl Default for TriggerConfig {
     fn default() -> Self {
         Self {
             source: 0,
-            slope: Slope::Rising,
+            kind: TriggerKind::Edge { slope: Slope::Rising },
             level: 0.0,
             sweep: Sweep::Auto,
             holdoff: 100e-9,
         }
     }
+}
+
+/// Function of the MULTI (aux) BNC port.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MultiMode {
+    TriggerOut,
+    PassFailOut,
+    TriggerIn,
 }
 
 /// Complete desired instrument state. Backends diff this against what they
@@ -123,6 +131,16 @@ pub trait Backend: Send {
 
     /// Force a trigger event on instruments that support it.
     fn force_trigger(&mut self) -> Result<(), BackendError> {
+        Ok(())
+    }
+
+    /// Configure the MULTI (aux) port; no-op on instruments without one.
+    fn set_multi(&mut self, _mode: MultiMode) -> Result<(), BackendError> {
+        Ok(())
+    }
+
+    /// Drive the pass/fail TTL output (MULTI port in pass-fail mode).
+    fn set_pass_fail_output(&mut self, _level: bool) -> Result<(), BackendError> {
         Ok(())
     }
 

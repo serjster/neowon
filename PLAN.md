@@ -138,10 +138,16 @@ Each phase ends with something runnable and testable — most against the real s
 > running statistics (σ(freq) = 1.1 mHz on the probe-comp signal), draggable
 > time/amplitude cursors, math channel (+,−,×,÷,d/dt,∫ as a third phosphor
 > layer), and a windowed FFT spectrum view. Verified facts live in
-> `docs/protocol-vds1022.md`. Still open: FPGA upload untested until a
-> power-cycle; roll-mode incremental streaming, sin(x)/x interpolation, GPU
-> FFT deferred. Next: Phase 6 (advanced triggers, pass/fail, MULTI port) or
-> Phase 7 (history/recording/export).
+> `docs/protocol-vds1022.md`. **Phase 6 done** (implementation delegated to
+> opencode/qwen3.8-max, audited + hardware-verified here): pulse and slope
+> triggers confirmed live on all conditions (audit found and fixed two real
+> protocol bugs — pulse level polarity, and negative condition codes 4/5/6
+> where the Python reference wrongly says 3/4/5), video trigger implemented
+> but unverified, MULTI port modes + pass/fail TTL output, host-side
+> pass/fail mask engine with UI. Hardware harness:
+> `cargo run -p neowon-vds1022 --example trigtest`. Still open: FPGA upload
+> untested until a power-cycle; roll-mode incremental streaming, sin(x)/x,
+> GPU FFT deferred. Next: Phase 7 (history/recording/export).
 
 ### Phase 0 — Scaffold + simulated trace (½ day)
 
