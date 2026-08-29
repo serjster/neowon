@@ -18,8 +18,13 @@ struct Params {
     gain: f32,
     en0: u32,
     en1: u32,
+    en2: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
     col0: vec4f,
     col1: vec4f,
+    col2: vec4f,
 }
 
 @group(0) @binding(0) var<uniform> params: Params;
@@ -36,7 +41,7 @@ fn accum_idx(ch: u32, x: u32, y: u32) -> u32 {
 @compute @workgroup_size(16, 16, 1)
 fn decay(@builtin(global_invocation_id) id: vec3<u32>) {
     if (id.x >= params.width || id.y >= params.height) { return; }
-    for (var c = 0u; c < 2u; c++) {
+    for (var c = 0u; c < 3u; c++) {
         let i = accum_idx(c, id.x, id.y);
         let v = f32(atomicLoad(&accum[i]));
         atomicStore(&accum[i], u32(v * params.decay));
@@ -50,11 +55,17 @@ fn sample_row(ch: u32, i: u32) -> f32 {
     return frac * f32(params.height - 1u);
 }
 
+fn enabled_for(ch: u32) -> u32 {
+    if (ch == 0u) { return params.en0; }
+    if (ch == 1u) { return params.en1; }
+    return params.en2;
+}
+
 @compute @workgroup_size(256, 1, 1)
 fn raster(@builtin(global_invocation_id) id: vec3<u32>) {
     let i = id.x;
     let ch = id.y;
-    if (i >= params.samples || i == 0u || ch >= 2u) { return; }
+    if (i >= params.samples || i == 0u || ch >= 3u) { return; }
 
     if (params.mode == 2u) {
         // XY: (ch1 -> x, ch2 -> y); needs both channels, one thread row.
@@ -66,8 +77,7 @@ fn raster(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
 
-    let enabled = select(params.en1, params.en0, ch == 0u);
-    if (enabled == 0u) { return; }
+    if (enabled_for(ch) == 0u) { return; }
 
     let x = i * (params.width - 1u) / (params.samples - 1u);
     let y1 = sample_row(ch, i);
@@ -93,7 +103,9 @@ fn compose(@builtin(global_invocation_id) id: vec3<u32>) {
     var rgb = vec3f(0.008, 0.010, 0.014);
     let a0 = f32(atomicLoad(&accum[accum_idx(0u, id.x, id.y)])) / FIXED;
     let a1 = f32(atomicLoad(&accum[accum_idx(1u, id.x, id.y)])) / FIXED;
+    let a2 = f32(atomicLoad(&accum[accum_idx(2u, id.x, id.y)])) / FIXED;
     rgb += params.col0.rgb * (1.0 - exp(-a0 * params.gain));
     rgb += params.col1.rgb * (1.0 - exp(-a1 * params.gain));
+    rgb += params.col2.rgb * (1.0 - exp(-a2 * params.gain));
     textureStore(display, vec2i(i32(id.x), i32(id.y)), vec4f(rgb, 1.0));
 }

@@ -28,7 +28,8 @@ use std::borrow::Cow;
 pub const PLOT_W: u32 = 1000;
 pub const PLOT_H: u32 = 500;
 const MAX_SAMPLES: usize = 5000;
-const CHANNELS: usize = 2;
+/// Trace layers: CH1, CH2, math.
+const CHANNELS: usize = 3;
 
 /// Trace display style.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,8 +120,13 @@ struct Params {
     gain: f32,
     en0: u32,
     en1: u32,
+    en2: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
     col0: Vec4,
     col1: Vec4,
+    col2: Vec4,
 }
 
 #[derive(Resource)]
@@ -213,7 +219,7 @@ fn prepare_buffers(
         }
     };
 
-    let mut en = [0u32; 2];
+    let mut en = [0u32; CHANNELS];
     b.do_raster = false;
     if let Some(frame) = &phosphor.frame {
         for cap in &frame.channels {
@@ -259,8 +265,13 @@ fn prepare_buffers(
         gain: phosphor.gain,
         en0: en[0],
         en1: en[1],
+        en2: en[2],
+        _pad0: 0,
+        _pad1: 0,
+        _pad2: 0,
         col0: Vec4::new(1.0, 0.85, 0.1, 1.0),
         col1: Vec4::new(0.2, 0.75, 1.0, 1.0),
+        col2: Vec4::new(1.0, 0.35, 0.85, 1.0),
     });
     b.params.write_buffer(&device, &queue);
 }

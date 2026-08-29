@@ -31,7 +31,7 @@ clap = { version = "4", features = ["derive", "env"] }
 nusb = "0.2"
 
 bevy = "=0.19.1"
-bevy_egui = "0.42"
+bevy_egui = "0.41"
 
 # Fast dev builds: light optimization for our code, full for dependencies.
 [profile.dev]

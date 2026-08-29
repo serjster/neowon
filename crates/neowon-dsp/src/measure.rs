@@ -11,37 +11,277 @@ pub struct BasicStats {
 }
 
 pub fn basic_stats(cap: &ChannelCapture) -> Option<BasicStats> {
-    if cap.raw.is_empty() {
+    let raw = raw_stats(&cap.raw)?;
+    let lsb = cap.volts_per_lsb;
+    Some(BasicStats {
+        vmin: raw.min as f64 * lsb + cap.zero_volts,
+        vmax: raw.max as f64 * lsb + cap.zero_volts,
+        vpp: (raw.max - raw.min) as f64 * lsb,
+        vavg: raw.mean * lsb + cap.zero_volts,
+        vrms: {
+            let zero = cap.zero_volts / lsb;
+            let total = raw.mean_sq + 2.0 * zero * raw.mean + zero * zero;
+            total.max(0.0).sqrt() * lsb
+        },
+    })
+}
+
+struct RawStats {
+    min: i32,
+    max: i32,
+    mean: f64,
+    mean_sq: f64,
+}
+
+fn raw_stats(raw: &[i8]) -> Option<RawStats> {
+    if raw.is_empty() {
         return None;
     }
-    let mut min = i32::MAX;
-    let mut max = i32::MIN;
-    let mut sum = 0i64;
-    let mut sq = 0i64;
-    for &r in &cap.raw {
+    let (mut min, mut max, mut sum, mut sq) = (i32::MAX, i32::MIN, 0i64, 0i64);
+    for &r in raw {
         let v = r as i32;
         min = min.min(v);
         max = max.max(v);
         sum += v as i64;
-        sq += (v as i64) * (v as i64);
+        sq += (v * v) as i64;
     }
-    let n = cap.raw.len() as f64;
+    let n = raw.len() as f64;
+    Some(RawStats { min, max, mean: sum as f64 / n, mean_sq: sq as f64 / n })
+}
+
+/// The full automatic measurement set of one trace. Voltages in volts, times
+/// in seconds, duty as a fraction, over/preshoot as a fraction of Vamp.
+/// Timing fields are `None` when the record doesn't contain enough edges.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Measurements {
+    pub vmin: f64,
+    pub vmax: f64,
+    pub vpp: f64,
+    pub vtop: f64,
+    pub vbase: f64,
+    pub vamp: f64,
+    pub vavg: f64,
+    pub vrms: f64,
+    pub overshoot: Option<f64>,
+    pub preshoot: Option<f64>,
+    pub period: Option<f64>,
+    pub freq: Option<f64>,
+    pub rise: Option<f64>,
+    pub fall: Option<f64>,
+    pub pwidth: Option<f64>,
+    pub nwidth: Option<f64>,
+    pub pduty: Option<f64>,
+    pub nduty: Option<f64>,
+}
+
+/// A mid-level crossing, in fractional sample time.
+#[derive(Debug, Clone, Copy)]
+struct Crossing {
+    t: f64,
+    rising: bool,
+}
+
+/// Interpolated threshold crossings with hysteresis around `mid`.
+fn crossings(raw: &[i8], mid: f64, hyst: f64) -> Vec<Crossing> {
+    let hi_th = mid + hyst / 2.0;
+    let lo_th = mid - hyst / 2.0;
+    let mut out = Vec::new();
+    // armed_low: we've seen the signal below lo_th since the last rising edge.
+    let mut armed_low = false;
+    let mut armed_high = false;
+    let mut prev = raw[0] as f64;
+    for (i, &r) in raw.iter().enumerate().skip(1) {
+        let v = r as f64;
+        if v < lo_th {
+            armed_low = true;
+        }
+        if v > hi_th {
+            armed_high = true;
+        }
+        if armed_low && prev < hi_th && v >= hi_th {
+            let frac = if v > prev { (hi_th - prev) / (v - prev) } else { 0.0 };
+            out.push(Crossing { t: (i - 1) as f64 + frac, rising: true });
+            armed_low = false;
+        } else if armed_high && prev > lo_th && v <= lo_th {
+            let frac = if v < prev { (prev - lo_th) / (prev - v) } else { 0.0 };
+            out.push(Crossing { t: (i - 1) as f64 + frac, rising: false });
+            armed_high = false;
+        }
+        prev = v;
+    }
+    out
+}
+
+/// Vtop/Vbase by histogram mode above/below the midpoint (i8 samples make a
+/// natural 256-bin histogram). Falls back to max/min for signals without flat
+/// levels (e.g. sine).
+fn top_base(raw: &[i8], min: i32, max: i32) -> (f64, f64) {
+    let mid = ((min + max) / 2) as i8;
+    let mut hist = [0u32; 256];
+    for &r in raw {
+        hist[(r as i32 + 128) as usize] += 1;
+    }
+    let significant = (raw.len() / 32).max(4) as u32;
+    let mode_in = |lo: i32, hi: i32| -> Option<i32> {
+        let mut best = None;
+        let mut best_n = significant;
+        for v in lo..=hi {
+            let n = hist[(v + 128) as usize];
+            if n >= best_n {
+                best_n = n;
+                best = Some(v);
+            }
+        }
+        best
+    };
+    let top = mode_in(mid as i32 + 1, max).unwrap_or(max) as f64;
+    let base = mode_in(min, mid as i32).unwrap_or(min) as f64;
+    (top, base)
+}
+
+/// Time from `from_level` to `to_level` on the edge starting at crossing `c`,
+/// searching outward from the mid crossing. Returns fractional samples.
+fn edge_time(raw: &[i8], c: &Crossing, low_level: f64, high_level: f64) -> Option<f64> {
+    let n = raw.len();
+    let idx = c.t as usize;
+    let (start_level, end_level) =
+        if c.rising { (low_level, high_level) } else { (high_level, low_level) };
+    // Walk backward to where the edge started.
+    let mut a = idx;
+    loop {
+        let v = raw[a] as f64;
+        let done = if c.rising { v <= start_level } else { v >= start_level };
+        if done {
+            break;
+        }
+        if a == 0 {
+            return None;
+        }
+        a -= 1;
+    }
+    // Walk forward to where the edge finished.
+    let mut b = idx + 1;
+    loop {
+        if b >= n {
+            return None;
+        }
+        let v = raw[b] as f64;
+        let done = if c.rising { v >= end_level } else { v <= end_level };
+        if done {
+            break;
+        }
+        b += 1;
+    }
+    let interp = |i0: usize, level: f64| -> f64 {
+        let v0 = raw[i0] as f64;
+        let v1 = raw[i0 + 1] as f64;
+        if (v1 - v0).abs() < 1e-12 {
+            i0 as f64
+        } else {
+            i0 as f64 + ((level - v0) / (v1 - v0)).clamp(0.0, 1.0)
+        }
+    };
+    let t0 = interp(a, start_level);
+    let t1 = interp(b - 1, end_level);
+    (t1 > t0).then_some(t1 - t0)
+}
+
+pub fn measure(cap: &ChannelCapture, sample_rate: f64) -> Option<Measurements> {
+    let raw = &cap.raw;
+    let rs = raw_stats(raw)?;
     let lsb = cap.volts_per_lsb;
-    let mean_raw = sum as f64 / n;
-    Some(BasicStats {
-        vmin: min as f64 * lsb + cap.zero_volts,
-        vmax: max as f64 * lsb + cap.zero_volts,
-        vpp: (max - min) as f64 * lsb,
-        vavg: mean_raw * lsb + cap.zero_volts,
-        // RMS of the absolute signal (including its DC content).
+    let z = cap.zero_volts;
+    let dt = 1.0 / sample_rate;
+
+    let (top_r, base_r) = top_base(raw, rs.min, rs.max);
+    let mut m = Measurements {
+        vmin: rs.min as f64 * lsb + z,
+        vmax: rs.max as f64 * lsb + z,
+        vpp: (rs.max - rs.min) as f64 * lsb,
+        vtop: top_r * lsb + z,
+        vbase: base_r * lsb + z,
+        vamp: (top_r - base_r) * lsb,
+        vavg: rs.mean * lsb + z,
         vrms: {
-            let mean_sq = sq as f64 / n;
-            let zero = cap.zero_volts / lsb; // in raw units
-            // E[(x + z)^2] = E[x^2] + 2 z E[x] + z^2, all in raw units.
-            let total = mean_sq + 2.0 * zero * mean_raw + zero * zero;
-            total.max(0.0).sqrt() * lsb
+            let zero = z / lsb;
+            (rs.mean_sq + 2.0 * zero * rs.mean + zero * zero).max(0.0).sqrt() * lsb
         },
-    })
+        ..Default::default()
+    };
+    let amp_r = top_r - base_r;
+    if amp_r >= 8.0 {
+        m.overshoot = Some((rs.max as f64 - top_r) / amp_r);
+        m.preshoot = Some((base_r - rs.min as f64) / amp_r);
+    }
+
+    let span = (rs.max - rs.min) as f64;
+    if span < 8.0 || sample_rate <= 0.0 {
+        return Some(m); // no measurable dynamic signal
+    }
+    let mid = (rs.max + rs.min) as f64 / 2.0;
+    let hyst = (span / 8.0).max(2.0);
+    let cr = crossings(raw, mid, hyst);
+
+    // Period: average same-direction crossing spacing.
+    let rises: Vec<f64> = cr.iter().filter(|c| c.rising).map(|c| c.t).collect();
+    let falls: Vec<f64> = cr.iter().filter(|c| !c.rising).map(|c| c.t).collect();
+    if rises.len() >= 2 {
+        let period = (rises.last().unwrap() - rises[0]) / (rises.len() - 1) as f64 * dt;
+        m.period = Some(period);
+        m.freq = Some(1.0 / period);
+    } else if falls.len() >= 2 {
+        let period = (falls.last().unwrap() - falls[0]) / (falls.len() - 1) as f64 * dt;
+        m.period = Some(period);
+        m.freq = Some(1.0 / period);
+    }
+
+    // Widths: average duration between alternating crossings.
+    let (mut pw, mut pn, mut nw, mut nn) = (0.0, 0u32, 0.0, 0u32);
+    for pair in cr.windows(2) {
+        let (a, b) = (&pair[0], &pair[1]);
+        if a.rising == b.rising {
+            continue;
+        }
+        let w = (b.t - a.t) * dt;
+        if a.rising {
+            pw += w;
+            pn += 1;
+        } else {
+            nw += w;
+            nn += 1;
+        }
+    }
+    if pn > 0 {
+        m.pwidth = Some(pw / pn as f64);
+    }
+    if nn > 0 {
+        m.nwidth = Some(nw / nn as f64);
+    }
+    if let (Some(p), Some(t)) = (m.pwidth, m.period) {
+        m.pduty = Some(p / t);
+    }
+    if let (Some(n), Some(t)) = (m.nwidth, m.period) {
+        m.nduty = Some(n / t);
+    }
+
+    // Rise/fall: 10%..90% of Vamp, averaged over edges.
+    let low10 = base_r + 0.1 * amp_r;
+    let high90 = base_r + 0.9 * amp_r;
+    let mut acc = |rising: bool| -> Option<f64> {
+        let (mut sum, mut n) = (0.0, 0u32);
+        for c in cr.iter().filter(|c| c.rising == rising) {
+            if let Some(t) = edge_time(raw, c, low10, high90) {
+                sum += t;
+                n += 1;
+            }
+        }
+        (n > 0).then(|| sum / n as f64 * dt)
+    };
+    if amp_r >= 8.0 {
+        m.rise = acc(true);
+        m.fall = acc(false);
+    }
+    Some(m)
 }
 
 /// Estimate the dominant frequency by hysteresis threshold crossings at the
@@ -51,49 +291,23 @@ pub fn estimate_frequency(raw: &[i8], sample_rate: f64) -> Option<f64> {
     if raw.len() < 8 || sample_rate <= 0.0 {
         return None;
     }
-    let (min, max) = raw
-        .iter()
-        .fold((i32::MAX, i32::MIN), |(lo, hi), &r| {
-            (lo.min(r as i32), hi.max(r as i32))
-        });
-    let span = max - min;
+    let rs = raw_stats(raw)?;
+    let span = rs.max - rs.min;
     if span < 8 {
-        return None; // flat line — no measurable signal
-    }
-    let mid = (max + min) as f64 / 2.0;
-    let hyst = (span as f64 / 8.0).max(2.0);
-    let hi_th = mid + hyst / 2.0;
-    let lo_th = mid - hyst / 2.0;
-
-    // Rising crossings with hysteresis, linearly interpolated for sub-sample
-    // resolution.
-    let mut armed = false;
-    let mut first: Option<f64> = None;
-    let mut last: Option<f64> = None;
-    let mut count = 0u32;
-    let mut prev = raw[0] as f64;
-    for (i, &r) in raw.iter().enumerate().skip(1) {
-        let v = r as f64;
-        if v < lo_th {
-            armed = true;
-        } else if armed && prev < hi_th && v >= hi_th {
-            let frac = if v > prev { (hi_th - prev) / (v - prev) } else { 0.0 };
-            let t = (i - 1) as f64 + frac;
-            if first.is_none() {
-                first = Some(t);
-            }
-            last = Some(t);
-            count += 1;
-            armed = false;
-        }
-        prev = v;
-    }
-    let (first, last) = (first?, last?);
-    if count < 2 || last <= first {
         return None;
     }
-    let periods = (count - 1) as f64;
-    Some(periods * sample_rate / (last - first))
+    let mid = (rs.max + rs.min) as f64 / 2.0;
+    let hyst = (span as f64 / 8.0).max(2.0);
+    let rises: Vec<f64> = crossings(raw, mid, hyst)
+        .into_iter()
+        .filter(|c| c.rising)
+        .map(|c| c.t)
+        .collect();
+    if rises.len() < 2 {
+        return None;
+    }
+    let dt = rises.last().unwrap() - rises[0];
+    (dt > 0.0).then(|| (rises.len() - 1) as f64 * sample_rate / dt)
 }
 
 #[cfg(test)]
@@ -110,9 +324,19 @@ mod tests {
             .collect()
     }
 
+    fn cap(raw: Vec<i8>, lsb: f64) -> ChannelCapture {
+        ChannelCapture {
+            ch: 0,
+            raw,
+            volts_per_lsb: lsb,
+            zero_volts: 0.0,
+            clipped: false,
+            freq_meter: None,
+        }
+    }
+
     #[test]
     fn freq_of_square_wave() {
-        // 1 kHz at 250 kS/s -> 250 samples/period, 5000 samples = 20 periods.
         let raw = square(5000, 250.0, 0, 125);
         let f = estimate_frequency(&raw, 250_000.0).unwrap();
         assert!((f - 1000.0).abs() < 5.0, "estimated {f}");
@@ -123,23 +347,14 @@ mod tests {
         let raw: Vec<i8> = (0..5000)
             .map(|i| ((i as f64 / 100.0 * std::f64::consts::TAU).sin() * 100.0) as i8)
             .collect();
-        // period = 100 samples @ 1 MS/s -> 10 kHz
         let f = estimate_frequency(&raw, 1_000_000.0).unwrap();
         assert!((f - 10_000.0).abs() < 50.0, "estimated {f}");
     }
 
     #[test]
     fn stats_of_unipolar_square() {
-        // 0..5 V square on a 10 V full-scale range: raw 0..125, lsb = 10/250.
-        let cap = ChannelCapture {
-            ch: 0,
-            raw: square(5000, 250.0, 0, 125),
-            volts_per_lsb: 10.0 / 250.0,
-            zero_volts: 0.0,
-            clipped: false,
-            freq_meter: None,
-        };
-        let s = basic_stats(&cap).unwrap();
+        let c = cap(square(5000, 250.0, 0, 125), 10.0 / 250.0);
+        let s = basic_stats(&c).unwrap();
         assert_eq!(s.vmin, 0.0);
         assert_eq!(s.vmax, 5.0);
         assert_eq!(s.vpp, 5.0);
@@ -150,5 +365,39 @@ mod tests {
     #[test]
     fn no_freq_on_flat_line() {
         assert!(estimate_frequency(&[3i8; 5000], 250_000.0).is_none());
+    }
+
+    #[test]
+    fn full_measurements_of_square() {
+        // 1 kHz, 25% duty square at 250 kS/s: 250 samples/period, 62.5 high.
+        let raw: Vec<i8> = (0..5000)
+            .map(|i| if (i as f64 / 250.0).fract() < 0.25 { 100 } else { -50 })
+            .collect();
+        let m = measure(&cap(raw, 0.01), 250e3).unwrap();
+        assert!((m.vtop - 1.0).abs() < 0.02, "vtop {}", m.vtop);
+        assert!((m.vbase + 0.5).abs() < 0.02, "vbase {}", m.vbase);
+        assert!((m.vamp - 1.5).abs() < 0.04, "vamp {}", m.vamp);
+        let f = m.freq.unwrap();
+        assert!((f - 1000.0).abs() < 5.0, "freq {f}");
+        let duty = m.pduty.unwrap();
+        assert!((duty - 0.25).abs() < 0.02, "pduty {duty}");
+        let pw = m.pwidth.unwrap();
+        assert!((pw - 250e-6).abs() < 10e-6, "pwidth {pw}");
+        // Instant edges at this rate: rise under 2 samples.
+        assert!(m.rise.unwrap() < 2.0 / 250e3, "rise {:?}", m.rise);
+        assert_eq!(m.overshoot, Some(0.0));
+    }
+
+    #[test]
+    fn measurements_of_sine_use_extremes() {
+        let raw: Vec<i8> = (0..5000)
+            .map(|i| ((i as f64 / 500.0 * std::f64::consts::TAU).sin() * 100.0) as i8)
+            .collect();
+        let m = measure(&cap(raw, 0.01), 250e3).unwrap();
+        // Sine has no flat top: histogram peaks at the extremes.
+        assert!(m.vtop > 0.9, "vtop {}", m.vtop);
+        assert!(m.vbase < -0.9, "vbase {}", m.vbase);
+        let d = m.pduty.unwrap();
+        assert!((d - 0.5).abs() < 0.03, "duty {d}");
     }
 }

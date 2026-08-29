@@ -18,12 +18,21 @@
 //!   E           cycle persistence (off -> 0.2s -> 1s -> 5s -> infinite)
 //!   X           cycle trace mode (vectors -> dots -> XY)
 
+mod cursors;
+mod derived;
 mod gpu;
+mod ui;
 
 use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
+use bevy_egui::input::EguiWantsInput;
+use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
 use gpu::{Persistence, Phosphor, PhosphorPlugin, TraceMode, PLOT_H, PLOT_W};
+
+/// World-space offset of the plot center, leaving room for the side and
+/// bottom egui panels.
+pub const PLOT_OFFSET: Vec2 = Vec2::new(120.0, 90.0);
 
 use neowon_backend::{Backend, Capabilities, Command, Event, ScopeConfig, Supervisor};
 use neowon_core::{AcqMode, Coupling, SharedFrame, Slope, Sweep};
@@ -36,14 +45,14 @@ const H_DIVS: i32 = 20;
 const V_DIVS: i32 = 10;
 
 #[derive(Resource)]
-struct Link {
-    sup: Supervisor,
-    caps: Option<Capabilities>,
-    status: String,
-    latest: Option<SharedFrame>,
-    config: ScopeConfig,
-    dirty: bool,
-    frames_seen: u64,
+pub struct Link {
+    pub sup: Supervisor,
+    pub caps: Option<Capabilities>,
+    pub status: String,
+    pub latest: Option<SharedFrame>,
+    pub config: ScopeConfig,
+    pub dirty: bool,
+    pub frames_seen: u64,
 }
 
 fn main() {
@@ -76,11 +85,12 @@ fn main() {
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "neowon".into(),
-                resolution: [1200, 700].into(),
+                resolution: [1520, 820].into(),
                 ..default()
             }),
             ..default()
         }))
+        .add_plugins(EguiPlugin::default())
         .add_plugins(PhosphorPlugin)
         .insert_resource(Link {
             sup,
@@ -92,7 +102,12 @@ fn main() {
             frames_seen: 0,
         })
         .init_resource::<Phosphor>()
+        .init_resource::<derived::MathState>()
+        .init_resource::<derived::MeasureState>()
+        .init_resource::<derived::FftState>()
+        .init_resource::<cursors::CursorState>()
         .add_systems(Startup, setup)
+        .add_systems(EguiPrimaryContextPass, ui::panel)
         .add_systems(
             Update,
             (
@@ -100,11 +115,14 @@ fn main() {
                 ingest,
                 input,
                 phosphor_input,
+                cursors::cursor_input,
                 flush,
+                derived::compute_derived,
                 update_phosphor,
                 readback_hook,
                 draw_graticule,
                 draw_trigger,
+                cursors::draw_cursors,
                 update_title,
             )
                 .chain(),
@@ -132,7 +150,10 @@ fn setup(
         | TextureUsages::COPY_DST
         | TextureUsages::COPY_SRC;
     let handle = images.add(image);
-    commands.spawn(Sprite::from_image(handle.clone()));
+    commands.spawn((
+        Sprite::from_image(handle.clone()),
+        Transform::from_translation(PLOT_OFFSET.extend(0.0)),
+    ));
     phosphor.display_image = handle;
 }
 
@@ -172,11 +193,24 @@ fn readback_hook(mut commands: Commands, link: Res<Link>, phosphor: Res<Phosphor
     }
 }
 
-fn update_phosphor(time: Res<Time>, link: Res<Link>, mut phosphor: ResMut<Phosphor>) {
+fn update_phosphor(
+    time: Res<Time>,
+    link: Res<Link>,
+    math: Res<derived::MathState>,
+    mut phosphor: ResMut<Phosphor>,
+) {
     if let Some(frame) = &link.latest
         && phosphor.frame.as_ref().map(|f| f.seq) != Some(frame.seq)
     {
-        phosphor.frame = Some(frame.clone());
+        // Append the math trace (slot 2) when present.
+        phosphor.frame = Some(match &math.trace {
+            Some(m) => {
+                let mut f = (**frame).clone();
+                f.channels.push(m.clone());
+                std::sync::Arc::new(f)
+            }
+            None => frame.clone(),
+        });
         phosphor.new_frame = true;
     }
     phosphor.decay = match phosphor.persistence {
@@ -226,7 +260,14 @@ fn step(ladder: &[f64], current: f64, up: bool) -> f64 {
     ladder[idx]
 }
 
-fn input(keys: Res<ButtonInput<KeyCode>>, mut link: ResMut<Link>) {
+fn input(
+    keys: Res<ButtonInput<KeyCode>>,
+    egui_wants: Res<EguiWantsInput>,
+    mut link: ResMut<Link>,
+) {
+    if egui_wants.wants_any_keyboard_input() {
+        return;
+    }
     let volts_ladder = link
         .caps
         .as_ref()
@@ -324,7 +365,14 @@ fn input(keys: Res<ButtonInput<KeyCode>>, mut link: ResMut<Link>) {
     }
 }
 
-fn phosphor_input(keys: Res<ButtonInput<KeyCode>>, mut phosphor: ResMut<Phosphor>) {
+fn phosphor_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    egui_wants: Res<EguiWantsInput>,
+    mut phosphor: ResMut<Phosphor>,
+) {
+    if egui_wants.wants_any_keyboard_input() {
+        return;
+    }
     if keys.just_pressed(KeyCode::KeyE) {
         let ladder = Persistence::LADDER;
         let i = ladder.iter().position(|p| *p == phosphor.persistence).unwrap_or(0);
@@ -350,17 +398,18 @@ fn flush(mut link: ResMut<Link>) {
 fn draw_graticule(mut gizmos: Gizmos) {
     let w = H_DIVS as f32 * DIV_PX;
     let h = V_DIVS as f32 * DIV_PX;
+    let o = PLOT_OFFSET;
     let dim = Color::srgba(0.5, 0.55, 0.6, 0.25);
     let axis = Color::srgba(0.6, 0.65, 0.7, 0.6);
     for i in 0..=H_DIVS {
-        let x = -w / 2.0 + i as f32 * DIV_PX;
+        let x = o.x - w / 2.0 + i as f32 * DIV_PX;
         let c = if i == H_DIVS / 2 { axis } else { dim };
-        gizmos.line_2d(Vec2::new(x, -h / 2.0), Vec2::new(x, h / 2.0), c);
+        gizmos.line_2d(Vec2::new(x, o.y - h / 2.0), Vec2::new(x, o.y + h / 2.0), c);
     }
     for i in 0..=V_DIVS {
-        let y = -h / 2.0 + i as f32 * DIV_PX;
+        let y = o.y - h / 2.0 + i as f32 * DIV_PX;
         let c = if i == V_DIVS / 2 { axis } else { dim };
-        gizmos.line_2d(Vec2::new(-w / 2.0, y), Vec2::new(w / 2.0, y), c);
+        gizmos.line_2d(Vec2::new(o.x - w / 2.0, y), Vec2::new(o.x + w / 2.0, y), c);
     }
 }
 
@@ -371,10 +420,10 @@ fn draw_trigger(link: Res<Link>, mut gizmos: Gizmos) {
     let ch = &link.config.channels[src];
     let range = ch.volts_div * 10.0 * ch.probe;
     let frac = (link.config.trigger.level / range + ch.offset).clamp(-0.55, 0.55);
-    let y = frac as f32 * h;
+    let y = PLOT_OFFSET.y + frac as f32 * h;
     gizmos.line_2d(
-        Vec2::new(-w / 2.0, y),
-        Vec2::new(w / 2.0, y),
+        Vec2::new(PLOT_OFFSET.x - w / 2.0, y),
+        Vec2::new(PLOT_OFFSET.x + w / 2.0, y),
         Color::srgba(1.0, 0.5, 0.2, 0.5),
     );
 }

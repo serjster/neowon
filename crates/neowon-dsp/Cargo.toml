@@ -6,3 +6,4 @@ license.workspace = true
 
 [dependencies]
 neowon-core.workspace = true
+rustfft = "6"
