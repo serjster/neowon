@@ -13,6 +13,8 @@ use crate::ui::layout::Layout;
 pub struct CursorState {
     pub time_on: bool,
     pub amp_on: bool,
+    /// On-graph handles (trigger level/position, channel offsets).
+    pub markers: bool,
     pub pos: [f32; 4],
     drag: Option<usize>,
 }
@@ -22,6 +24,7 @@ impl Default for CursorState {
         Self {
             time_on: false,
             amp_on: false,
+            markers: true,
             pos: [0.4, 0.6, -0.1, 0.1],
             drag: None,
         }

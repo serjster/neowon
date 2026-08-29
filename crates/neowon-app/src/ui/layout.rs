@@ -54,12 +54,15 @@ impl Layout {
         let mid_bottom = win_h - FRONT_PANEL_H;
 
         // The plot stretches to fill the middle area (a scope grid's
-        // divisions are just rectangles); the dialog OVERLAYS its right
-        // side while open, exactly like the reference scope, so no space
-        // is wasted when it is closed.
+        // divisions are just rectangles). The settings dock is always
+        // visible on the right — the Photoshop/Blender model — so the plot
+        // stops at its edge.
         let plot = Rect::from_min_max(
             Pos2::new(MARGIN, mid_top + MARGIN),
-            Pos2::new(win_w - MARGIN, mid_bottom - DESC_GAP - DESC_H - MARGIN),
+            Pos2::new(
+                win_w - DIALOG_W - MARGIN,
+                mid_bottom - DESC_GAP - DESC_H - MARGIN,
+            ),
         );
         let descriptors = Rect::from_min_size(
             Pos2::new(plot.left(), plot.bottom() + DESC_GAP),
@@ -187,15 +190,15 @@ mod tests {
             assert_eq!(l.descriptors.top() - plot.bottom(), DESC_GAP);
             assert_eq!(l.descriptors.width(), plot.width());
             assert_eq!(l.descriptors.left(), plot.left());
-            // Dialog flush right, fixed width; it overlays the plot's
-            // right side while open (reference-scope behavior).
+            // Dock flush right, fixed width, beside the plot.
+            assert!(l.dialog.left() >= plot.right());
             assert_eq!(l.dialog.width(), DIALOG_W);
             assert_eq!(l.dialog.right(), w);
             // Chrome strips span the full width.
             assert_eq!(l.menu_bar.width(), w);
             assert_eq!(l.front_panel.width(), w);
             // The plot stays usefully large.
-            assert!(plot.width() >= 600.0, "{w}x{h}: plot {plot:?}");
+            assert!(plot.width() >= 580.0, "{w}x{h}: plot {plot:?}");
             assert!(plot.height() >= 320.0, "{w}x{h}: plot {plot:?}");
             // Everything on screen, nothing overlapping the plot.
             for r in Roi::ALL {

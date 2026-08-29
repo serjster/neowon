@@ -82,33 +82,23 @@ pub fn chip(
     color: egui::Color32,
     text: &str,
     enabled: bool,
-    width: f32,
     selected: bool,
 ) -> egui::Response {
-    let sense = egui::Sense::click();
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 40.0), sense);
+    // A real egui Button sized by its galley — text can never overflow the
+    // box, whatever the font or content.
     let alpha = if enabled { 255 } else { 90 };
-    // The selected (pointer-controlled) channel gets a brighter, thicker box.
+    let border = egui::Color32::from_rgba_premultiplied(color.r(), color.g(), color.b(), alpha);
     let fill = if selected {
         egui::Color32::from_rgb(28, 30, 38)
     } else {
         egui::Color32::from_rgb(16, 18, 24)
     };
-    let border = egui::Color32::from_rgba_premultiplied(color.r(), color.g(), color.b(), alpha);
-    ui.painter().rect(
-        rect,
-        4.0,
-        fill,
-        egui::Stroke::new(if selected { 2.5 } else { 1.5 }, border),
-        egui::StrokeKind::Middle,
-    );
     let text_color = if enabled { color } else { egui::Color32::GRAY };
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        text,
-        egui::FontId::monospace(11.0),
-        text_color,
-    );
-    resp
+    ui.add(
+        egui::Button::new(egui::RichText::new(text).monospace().color(text_color))
+            .fill(fill)
+            .stroke(egui::Stroke::new(if selected { 2.5 } else { 1.5 }, border))
+            .corner_radius(4.0)
+            .min_size(egui::vec2(0.0, 40.0)),
+    )
 }

@@ -155,6 +155,7 @@ fn main() {
                 draw_trigger,
                 draw_pf_mask,
                 draw_guides,
+                draw_markers,
                 draw_clip_warnings,
                 cursors::draw_cursors,
                 update_title,
@@ -581,6 +582,69 @@ fn draw_guides(
             let x2 = (x + 6.0).min(o.x + w / 2.0);
             gizmos.line_2d(Vec2::new(x, y), Vec2::new(x2, y), color);
             x += 12.0;
+        }
+    }
+}
+
+/// On-graph handles: trigger-level arrow at the right edge, trigger-position
+/// arrow at the top edge, per-channel offset arrows at the left edge — all
+/// draggable (ui::touch), all hidden by the Markers toggle.
+fn draw_markers(
+    link: Res<Link>,
+    cur: Res<cursors::CursorState>,
+    layout: Res<Layout>,
+    mut gizmos: Gizmos,
+) {
+    if !cur.markers {
+        return;
+    }
+    let w = layout.plot.width();
+    let h = layout.plot.height();
+    let o = layout.plot_center;
+    let (left, right, top) = (o.x - w / 2.0, o.x + w / 2.0, o.y + h / 2.0);
+
+    // Left-pointing arrowhead at the right edge: trigger level.
+    let ty = ui::touch::trigger_line_y(&layout, &link);
+    let tcol = Color::srgb(1.0, 0.55, 0.25);
+    for d in 0..6 {
+        let f = d as f32;
+        gizmos.line_2d(
+            Vec2::new(right - f, ty - (6.0 - f)),
+            Vec2::new(right - f, ty + (6.0 - f)),
+            tcol,
+        );
+    }
+
+    // Down-pointing arrowhead at the top edge: trigger position.
+    let tx = left + link.config.position as f32 * w;
+    for d in 0..6 {
+        let f = d as f32;
+        gizmos.line_2d(
+            Vec2::new(tx - (6.0 - f), top - f),
+            Vec2::new(tx + (6.0 - f), top - f),
+            tcol,
+        );
+    }
+
+    // Right-pointing arrowheads at the left edge: channel zero offsets.
+    for ch in 0..2 {
+        let c = link.config.channels[ch];
+        if !c.enabled {
+            continue;
+        }
+        let y = layout.frac_to_world_y(c.offset as f32);
+        let col = if ch == 0 {
+            Color::srgb(1.0, 0.85, 0.1)
+        } else {
+            Color::srgb(0.2, 0.75, 1.0)
+        };
+        for d in 0..6 {
+            let f = d as f32;
+            gizmos.line_2d(
+                Vec2::new(left + f, y - (6.0 - f)),
+                Vec2::new(left + f, y + (6.0 - f)),
+                col,
+            );
         }
     }
 }

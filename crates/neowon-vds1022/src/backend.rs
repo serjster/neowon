@@ -101,6 +101,18 @@ impl Backend for Vds1022Backend {
     }
 
     fn poll_frame(&mut self, budget: Duration) -> Result<Option<SharedFrame>, BackendError> {
+        // All channels off is a valid state, not a lost device: idle with a
+        // keep-alive instead of asking the hardware for zero frames (which
+        // used to surface as a fatal "no channel enabled" reconnect storm).
+        if self
+            .applied
+            .as_ref()
+            .is_none_or(|c| c.channels.iter().all(|ch| !ch.enabled))
+        {
+            self.dev.keep_alive().map_err(fatal)?;
+            std::thread::sleep(budget.min(Duration::from_millis(60)));
+            return Ok(None);
+        }
         match self.dev.try_capture() {
             Ok(Some(frame)) => Ok(Some(Arc::new(frame))),
             Ok(None) => {

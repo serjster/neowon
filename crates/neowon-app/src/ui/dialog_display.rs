@@ -4,9 +4,10 @@ use bevy_egui::egui;
 use neowon_backend::Command;
 
 use crate::Link;
-use crate::gpu::{Persistence, Phosphor, TraceMode};
+use crate::cursors::CursorState;
+use crate::gpu::{Palette, Persistence, Phosphor, TraceMode};
 
-pub fn show(ui: &mut egui::Ui, link: &mut Link, phosphor: &mut Phosphor) {
+pub fn show(ui: &mut egui::Ui, link: &mut Link, phosphor: &mut Phosphor, cur: &mut CursorState) {
     ui.group(|ui| {
         ui.strong("Display");
         ui.horizontal(|ui| {
@@ -34,6 +35,19 @@ pub fn show(ui: &mut egui::Ui, link: &mut Link, phosphor: &mut Phosphor) {
         });
         ui.add(egui::Slider::new(&mut phosphor.gain, 0.05..=3.0).text("Intensity"));
         ui.checkbox(&mut phosphor.crt, "CRT screen (halo, scanlines)");
+        ui.checkbox(&mut cur.markers, "On-graph handles (trigger, offsets)");
+        ui.horizontal(|ui| {
+            ui.label("Palette");
+            for (label, p) in [
+                ("Phosphor", Palette::Phosphor),
+                ("Thermal", Palette::Thermal),
+                ("Green", Palette::Green),
+            ] {
+                if ui.selectable_label(phosphor.palette == p, label).clicked() {
+                    phosphor.palette = p;
+                }
+            }
+        });
     });
 
     // Stimulus selection exists only on generating backends (the sim); on

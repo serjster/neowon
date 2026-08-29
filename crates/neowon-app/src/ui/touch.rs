@@ -19,6 +19,8 @@ use crate::ui::widgets::{FALLBACK_RATES, FALLBACK_VDIV};
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Drag {
     TriggerLevel,
+    TriggerPosition,
+    OffsetMarker(usize),
     Waveform,
 }
 
@@ -45,7 +47,7 @@ fn on_plot(l: &Layout, world: Vec2) -> bool {
 }
 
 /// World y of the trigger-level line (same mapping as `draw_trigger`).
-fn trigger_line_y(l: &Layout, link: &Link) -> f32 {
+pub fn trigger_line_y(l: &Layout, link: &Link) -> f32 {
     let src = link
         .config
         .trigger
@@ -139,11 +141,38 @@ pub fn plot_pointer(
     }
 
     if mouse.just_pressed(MouseButton::Left) && on_plot(&layout, world) {
-        touch.drag = if (world.y - trigger_line_y(&layout, &link)).abs() < 12.0 {
-            Some(Drag::TriggerLevel)
-        } else {
-            Some(Drag::Waveform)
-        };
+        let left = layout.plot_center.x - layout.plot.width() / 2.0;
+        let top = layout.plot_center.y + layout.plot.height() / 2.0;
+        // Hit priority: channel offset markers (left edge) > trigger
+        // position marker (top edge) > trigger level line > waveform.
+        let mut drag = None;
+        if world.x - left < 20.0 {
+            for ch in 0..2 {
+                let c = link.config.channels[ch];
+                if c.enabled {
+                    let y = layout.frac_to_world_y(c.offset as f32);
+                    if (world.y - y).abs() < 12.0 {
+                        drag = Some(Drag::OffsetMarker(ch));
+                        link.selected = ch;
+                        break;
+                    }
+                }
+            }
+        }
+        if drag.is_none() && top - world.y < 20.0 {
+            let x = left + link.config.position as f32 * layout.plot.width();
+            if (world.x - x).abs() < 14.0 {
+                drag = Some(Drag::TriggerPosition);
+            }
+        }
+        if drag.is_none() {
+            drag = if (world.y - trigger_line_y(&layout, &link)).abs() < 12.0 {
+                Some(Drag::TriggerLevel)
+            } else {
+                Some(Drag::Waveform)
+            };
+        }
+        touch.drag = drag;
         touch.last_world = world;
     }
     if !mouse.pressed(MouseButton::Left) {
@@ -161,6 +190,17 @@ pub fn plot_pointer(
     // config uses; the visible window is 8 of those 10).
     let dfrac = (delta.y / (10.0 * layout.div.y)) as f64;
     match drag {
+        Drag::TriggerPosition => {
+            let pos =
+                (link.config.position + (delta.x / layout.plot.width()) as f64).clamp(0.0, 1.0);
+            link.config.position = pos;
+            link.dirty = true;
+        }
+        Drag::OffsetMarker(ch) => {
+            let off = (link.config.channels[ch].offset + dfrac).clamp(-0.5, 0.5);
+            link.config.channels[ch].offset = off;
+            link.dirty = true;
+        }
         Drag::TriggerLevel => {
             let src = link.config.trigger.source.min(1);
             let ch = link.config.channels[src];

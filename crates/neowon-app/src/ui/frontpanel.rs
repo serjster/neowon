@@ -47,17 +47,17 @@ pub fn show(
 
                 // Vertical (manual 8.2): channel + math keys.
                 group(ui, "VERTICAL", |ui| {
+                    // CH keys toggle the channel on/off only — configuring
+                    // happens in the dock or via the descriptor box.
                     for ch in 0..2 {
                         let enabled = link.config.channels[ch].enabled;
                         if color_key(ui, format!("CH{}", ch + 1), channel_color(ch), enabled) {
                             link.config.channels[ch].enabled = !enabled;
                             link.dirty = true;
-                            menus.open = Some(Menu::Channel(ch));
                         }
                     }
                     if key(ui, "Math", math.enabled) {
                         math.enabled = !math.enabled;
-                        menus.open = Some(Menu::Math);
                     }
                 });
 
@@ -74,9 +74,6 @@ pub fn show(
 
                 // Trigger (manual 8.4): mode keys + level-to-50%.
                 group(ui, "TRIGGER", |ui| {
-                    if key(ui, "Menu", matches!(menus.open, Some(Menu::Trigger))) {
-                        menus.toggle(Menu::Trigger);
-                    }
                     for (label, s) in [
                         ("Auto", Sweep::Auto),
                         ("Normal", Sweep::Normal),

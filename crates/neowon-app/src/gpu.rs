@@ -39,6 +39,17 @@ pub enum TraceMode {
     Xy,
 }
 
+/// Display colormap for the composed trace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Palette {
+    /// Per-channel phosphor colors (default).
+    Phosphor,
+    /// Intensity-graded thermal map (DPO-style, all channels combined).
+    Thermal,
+    /// Monochrome green CRT.
+    Green,
+}
+
 /// Phosphor persistence setting.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Persistence {
@@ -77,6 +88,7 @@ pub struct Phosphor {
     pub gain: f32,
     /// CRT styling (phosphor halo, scanlines, vignette) in the compose pass.
     pub crt: bool,
+    pub palette: Palette,
     /// One-shot: a new record arrived since the last render frame.
     pub new_frame: bool,
 }
@@ -91,6 +103,7 @@ impl Default for Phosphor {
             decay: 1.0,
             gain: 0.8,
             crt: true,
+            palette: Palette::Phosphor,
             new_frame: false,
         }
     }
@@ -131,7 +144,7 @@ struct Params {
     en1: u32,
     en2: u32,
     crt: u32,
-    _pad1: u32,
+    palette: u32,
     _pad2: u32,
     col0: Vec4,
     col1: Vec4,
@@ -281,7 +294,11 @@ fn prepare_buffers(
         en1: en[1],
         en2: en[2],
         crt: phosphor.crt as u32,
-        _pad1: 0,
+        palette: match phosphor.palette {
+            Palette::Phosphor => 0,
+            Palette::Thermal => 1,
+            Palette::Green => 2,
+        },
         _pad2: 0,
         col0: Vec4::new(1.0, 0.85, 0.1, 1.0),
         col1: Vec4::new(0.2, 0.75, 1.0, 1.0),

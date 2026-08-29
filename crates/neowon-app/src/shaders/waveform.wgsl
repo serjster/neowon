@@ -20,7 +20,7 @@ struct Params {
     en1: u32,
     en2: u32,
     crt: u32,
-    _pad1: u32,
+    palette: u32,
     _pad2: u32,
     col0: vec4f,
     col1: vec4f,
@@ -135,6 +135,16 @@ fn raster(@builtin(global_invocation_id) id: vec3<u32>) {
     }
 }
 
+// Heat colormap for the thermal palette (dark red -> orange -> white).
+fn thermal(t: f32) -> vec3f {
+    let x = clamp(t, 0.0, 1.0);
+    return vec3f(
+        smoothstep(0.02, 0.45, x),
+        smoothstep(0.30, 0.80, x),
+        smoothstep(0.70, 1.00, x) * 0.9 + 0.10 * (1.0 - smoothstep(0.0, 0.25, x)),
+    );
+}
+
 // Per-channel accumulated intensity at a (clamped) texel.
 fn amp3(x: i32, y: i32) -> vec3f {
     let cx = u32(clamp(x, 0, i32(params.width) - 1));
@@ -158,9 +168,19 @@ fn compose(@builtin(global_invocation_id) id: vec3<u32>) {
             + (amp3(x - 2, y) + amp3(x + 2, y) + amp3(x, y - 2) + amp3(x, y + 2)) * 0.08;
     }
     var rgb = vec3f(0.008, 0.010, 0.014);
-    rgb += params.col0.rgb * (1.0 - exp(-a.x * params.gain));
-    rgb += params.col1.rgb * (1.0 - exp(-a.y * params.gain));
-    rgb += params.col2.rgb * (1.0 - exp(-a.z * params.gain));
+    if (params.palette == 1u) {
+        // Thermal DPO grading: combined dwell intensity -> heat colormap.
+        let t = 1.0 - exp(-(a.x + a.y + a.z) * params.gain);
+        rgb += thermal(t);
+    } else if (params.palette == 2u) {
+        // Monochrome green CRT (P31 phosphor).
+        let t = 1.0 - exp(-(a.x + a.y + a.z) * params.gain);
+        rgb += vec3f(0.25, 1.0, 0.35) * t + vec3f(0.4, 0.25, 0.1) * t * t;
+    } else {
+        rgb += params.col0.rgb * (1.0 - exp(-a.x * params.gain));
+        rgb += params.col1.rgb * (1.0 - exp(-a.y * params.gain));
+        rgb += params.col2.rgb * (1.0 - exp(-a.z * params.gain));
+    }
     if (params.crt == 1u) {
         // Scanlines + gentle vignette; subtle enough to keep traces crisp.
         let scan = 0.88 + 0.12 * cos(6.2831853 * f32(id.y) / 3.0);

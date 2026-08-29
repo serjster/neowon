@@ -139,7 +139,7 @@ fn every_dialog_opens_and_geometry_holds() {
     // the middle area (runtime layout); the dialog overlays its right side.
     let plot = roi(&final_json, "plot");
     assert!((plot[0] - MARGIN).abs() < 0.5);
-    assert!((plot[2] - (WINDOW_W - 2.0 * MARGIN)).abs() < 0.5);
+    assert!((plot[2] - (WINDOW_W - DIALOG_W - 2.0 * MARGIN)).abs() < 0.5);
     let expect_h = WINDOW_H - MENU_H - FRONT_PANEL_H - DESC_H - DESC_GAP - 2.0 * MARGIN;
     assert!((plot[3] - expect_h).abs() < 0.5, "plot h {}", plot[3]);
 

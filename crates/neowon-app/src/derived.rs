@@ -139,6 +139,10 @@ pub struct FftState {
     pub source: usize,
     pub window: Window,
     pub spectrum: Option<Spectrum>,
+    /// Zoomed frequency view as fractions of Nyquist (0..1).
+    pub view: (f64, f64),
+    /// dB axis range.
+    pub db: (f32, f32),
 }
 
 impl Default for FftState {
@@ -148,6 +152,8 @@ impl Default for FftState {
             source: 0,
             window: Window::Hann,
             spectrum: None,
+            view: (0.0, 1.0),
+            db: (-100.0, 20.0),
         }
     }
 }

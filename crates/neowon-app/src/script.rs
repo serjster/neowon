@@ -41,6 +41,9 @@
 //! pfcapture
 //! pfreset
 //! menu <channel <ch>|horizontal|trigger|acquire|display|measure|math|cursor|utility|none>
+//! markers <0|1>                         # on-graph drag handles
+//! palette <phosphor|thermal|green>
+//! window <W>x<H>                        # resize (layout tests)
 //! layout <path.json>                    # named-ROI map + open menu
 //! shot <path.ppm> [x y w h]             # plot-texture region (default: all)
 //! quit
@@ -110,6 +113,9 @@ pub enum Action {
     Crt(bool),
     Select(usize),
     Guides(bool),
+    Markers(bool),
+    PaletteSet(crate::gpu::Palette),
+    WindowSize(f32, f32),
     Math(Option<MathOp>),
     Run(bool),
     Multi(MultiMode),
@@ -296,6 +302,21 @@ fn parse(text: &str) -> Result<VecDeque<(f64, Action)>, String> {
             "crt" => Action::Crt(rest()? == "1"),
             "select" => Action::Select(rest()?.parse().map_err(|_| err("bad ch"))?),
             "guides" => Action::Guides(rest()? == "1"),
+            "markers" => Action::Markers(rest()? == "1"),
+            "palette" => Action::PaletteSet(match rest()? {
+                "phosphor" => crate::gpu::Palette::Phosphor,
+                "thermal" => crate::gpu::Palette::Thermal,
+                "green" => crate::gpu::Palette::Green,
+                _ => return Err(err("bad palette")),
+            }),
+            "window" => {
+                let arg = rest()?;
+                let (w, h) = arg.split_once('x').ok_or_else(|| err("expected WxH"))?;
+                Action::WindowSize(
+                    w.parse().map_err(|_| err("bad width"))?,
+                    h.parse().map_err(|_| err("bad height"))?,
+                )
+            }
             "math" => Action::Math(match rest()? {
                 "off" => None,
                 "add" => Some(MathOp::Add),
@@ -384,6 +405,7 @@ fn parse(text: &str) -> Result<VecDeque<(f64, Action)>, String> {
 pub fn run_script(
     time: Res<Time>,
     layout: Res<crate::ui::layout::Layout>,
+    mut windows: Query<&mut bevy::window::Window>,
     mut script: ResMut<Script>,
     mut commands: Commands,
     mut link: ResMut<Link>,
@@ -500,6 +522,13 @@ pub fn run_script(
             Action::Crt(on) => phosphor.crt = on,
             Action::Select(ch) => link.selected = ch.min(1),
             Action::Guides(on) => meas.guides = on,
+            Action::Markers(on) => cur.markers = on,
+            Action::PaletteSet(p) => phosphor.palette = p,
+            Action::WindowSize(w, h) => {
+                if let Ok(mut window) = windows.single_mut() {
+                    window.resolution.set(w, h);
+                }
+            }
             Action::Math(op) => match op {
                 None => math.enabled = false,
                 Some(op) => {
