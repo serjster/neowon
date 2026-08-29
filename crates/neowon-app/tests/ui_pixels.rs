@@ -60,10 +60,7 @@ fn load_ppm(path: &PathBuf) -> (usize, usize, Vec<[u8; 3]>) {
     let mut dims = header.lines().nth(1).unwrap().split_whitespace();
     let w: usize = dims.next().unwrap().parse().unwrap();
     let h: usize = dims.next().unwrap().parse().unwrap();
-    let px = data[header_end..]
-        .chunks_exact(3)
-        .map(|c| [c[0], c[1], c[2]])
-        .collect::<Vec<_>>();
+    let px = data[header_end..].as_chunks::<3>().0.to_vec();
     assert_eq!(px.len(), w * h);
     (w, h, px)
 }

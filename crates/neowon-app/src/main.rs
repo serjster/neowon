@@ -283,7 +283,7 @@ fn readback_hook(mut commands: Commands, link: Res<Link>, phosphor: Res<Phosphor
                 let stride = rgba.len() / PLOT_H as usize;
                 let mut ppm = format!("P6\n{PLOT_W} {PLOT_H}\n255\n").into_bytes();
                 for row in rgba.chunks_exact(stride) {
-                    for px in row[..(PLOT_W * 4) as usize].chunks_exact(4) {
+                    for px in row[..(PLOT_W * 4) as usize].as_chunks::<4>().0 {
                         ppm.extend_from_slice(&px[..3]);
                     }
                 }

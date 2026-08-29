@@ -684,7 +684,7 @@ fn write_shot(rgba: &[u8], path: &str, roi: Option<(u32, u32, u32, u32)>) {
     let mut ppm = format!("P6\n{w} {h}\n255\n").into_bytes();
     for row in y0..y0 + h {
         let base = row as usize * stride + x0 as usize * 4;
-        for px in rgba[base..base + w as usize * 4].chunks_exact(4) {
+        for px in rgba[base..base + w as usize * 4].as_chunks::<4>().0 {
             ppm.extend_from_slice(&px[..3]);
         }
     }
