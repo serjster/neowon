@@ -1,0 +1,18 @@
+[package]
+name = "neowon-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "neowon"
+path = "src/main.rs"
+
+[dependencies]
+neowon-core.workspace = true
+neowon-dsp.workspace = true
+neowon-vds1022.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

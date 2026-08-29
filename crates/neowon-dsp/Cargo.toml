@@ -1,0 +1,8 @@
+[package]
+name = "neowon-dsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+neowon-core.workspace = true

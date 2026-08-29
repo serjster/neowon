@@ -1,0 +1,46 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/neowon-core",
+    "crates/neowon-dsp",
+    "crates/neowon-sim",
+    "crates/neowon-vds1022",
+    "crates/neowon-cli",
+    "crates/neowon-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+neowon-core = { path = "crates/neowon-core" }
+neowon-dsp = { path = "crates/neowon-dsp" }
+neowon-sim = { path = "crates/neowon-sim" }
+neowon-vds1022 = { path = "crates/neowon-vds1022" }
+
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+crossbeam-channel = "0.5"
+clap = { version = "4", features = ["derive", "env"] }
+nusb = "0.2"
+
+bevy = "=0.19.1"
+bevy_egui = "0.42"
+
+# Fast dev builds: light optimization for our code, full for dependencies.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+# The "*" wildcard does not cover workspace members; list hot ones explicitly.
+[profile.dev.package.neowon-dsp]
+opt-level = 3
+
+[profile.dev.package.neowon-vds1022]
+opt-level = 3

@@ -1,0 +1,15 @@
+[package]
+name = "neowon-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "neowon-app"
+path = "src/main.rs"
+
+[dependencies]
+neowon-core.workspace = true
+neowon-dsp.workspace = true
+neowon-sim.workspace = true
+bevy.workspace = true
