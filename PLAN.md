@@ -149,7 +149,7 @@ Each phase ends with something runnable and testable — most against the real s
 > untested until a power-cycle; roll-mode incremental streaming, sin(x)/x,
 > GPU FFT deferred. **Phase 6.5 inserted** (virtual testbench + scope-grade
 > UI): pillars 1–3 done and green (see that phase's status block). Next:
-> Phase 6.5 pillar 4 (scope-grade UI), then Phase 7.
+> Phase 6.5 DONE (all four pillars). Next: Phase 7 (capture workflows).
 
 ### Phase 0 — Scaffold + simulated trace (½ day)
 
@@ -213,7 +213,13 @@ Pulse/slope/video triggers and alternate mode (bit layouts from the Java app —
 > 3 tests, run with `-- --ignored`) are green. Implementing the testbench
 > surfaced and fixed one real render bug: XY mode splatted isolated points,
 > so coherent sampling drew a dotted ring; XY now rasterizes beam-continuous
-> segments like a real scope. **Open: pillar 4 (scope-grade UI).**
+> segments like a real scope. **Pillar 4 DONE:** the UI is restructured to
+> the SDS2000X Plus anatomy (top menu bar + status, 10x8 graticule, channel
+> /timebase/trigger descriptor boxes under the grid, right-side dialog,
+> virtual front panel; features we lack omitted). Every control is
+> script-reachable; `layout` dumps the named-ROI map and `ui_layout` tests
+> assert geometry + that every dialog opens (spec + one deviation: pass/fail
+> lives in the Utility dialog).
 > Repo now governed by `AGENTS.md` (`CLAUDE.md` symlinks to it).
 
 The correctness backbone for everything after it. Four pillars:

@@ -90,9 +90,14 @@ pf <on|off> ; pfsrc <slot> ; pftol <h_div> <v_div> ; pfcapture ; pfreset
 cursor <time|amp> <on|off> ; cursorpos <0..3> <frac>
 stats <slot> ; statsreset
 fft <on|off> ; fftsrc <slot> ; fftwnd <window>
-menu <channel <ch>|horizontal|trigger|acquire|display|measure|math|cursor|utility|passfail|none>
+menu <channel <ch>|horizontal|trigger|acquire|display|measure|math|cursor|utility|none>
 layout <path.json>
 ```
+
+Deviation (recorded at completion): the pass/fail controls live in the
+Utility dialog (no separate `passfail` menu entry); the `menu` action maps
+pass/fail access to `menu utility`. All pass/fail controls remain script-
+reachable via `pf`/`pfsrc`/`pftol`/`pfcapture`/`pfreset`.
 
 ### 5. Layout test (`tests/ui_layout.rs`)
 
