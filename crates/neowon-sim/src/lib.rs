@@ -1,129 +1,127 @@
-//! Simulated acquisition source. Deterministic (seeded LCG noise), produces
-//! frames in the same encoding as real hardware so every downstream consumer
-//! is exercised identically. Also the golden-signal source for DSP tests.
+//! Simulated acquisition source — the virtual testbench generator.
+//! Deterministic (seeded xorshift noise only), produces frames in the same
+//! i8 encoding as real hardware so every downstream consumer is exercised
+//! identically. Also the golden-signal source for DSP tests.
 
-use neowon_core::{CaptureFrame, ChannelCapture};
+use neowon_core::{AcqMode, CaptureFrame, ChannelCapture};
 
 pub mod backend;
-pub use backend::SimBackend;
+pub mod figures;
+pub mod scenario;
+pub mod signal;
 
+pub use backend::SimBackend;
+pub use figures::XyFigure;
+pub use scenario::Scenario;
+pub use signal::{Component, SignalSpec, Xorshift};
+
+/// Samples per record, matching the VDS1022 frame shape.
 pub const SAMPLES: usize = 5000;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Waveform {
-    Sine,
-    Square,
-    Triangle,
-}
-
-#[derive(Debug, Clone)]
-pub struct SimChannel {
-    pub enabled: bool,
-    pub waveform: Waveform,
-    /// Signal frequency in Hz.
-    pub freq: f64,
-    /// Peak-to-peak amplitude in volts.
-    pub amplitude: f64,
-    /// DC offset of the signal itself, volts.
-    pub dc: f64,
-    /// Full-scale vertical range in volts (10 divisions).
-    pub range: f64,
-    /// RMS noise in volts.
-    pub noise: f64,
-}
-
-impl Default for SimChannel {
-    fn default() -> Self {
-        // Mirrors the probe-comp test signal: 1 kHz, 0..5 V square.
-        Self {
-            enabled: true,
-            waveform: Waveform::Square,
-            freq: 1000.0,
-            amplitude: 5.0,
-            dc: 2.5,
-            range: 10.0,
-            noise: 0.02,
-        }
-    }
-}
-
+/// Deterministic signal generator over a [`Scenario`].
 #[derive(Debug, Clone)]
 pub struct SimSource {
     pub sample_rate: f64,
-    pub channels: Vec<SimChannel>,
+    scenario: Scenario,
+    enabled: [bool; 2],
+    /// Full-scale vertical range per channel in volts (10 divisions).
+    ranges: [f64; 2],
     seq: u64,
-    /// Continuous phase in seconds, so consecutive frames join seamlessly.
+    /// Continuous time origin in seconds, so consecutive frames join
+    /// seamlessly.
     t0: f64,
-    rng: u64,
+    rng: Xorshift,
 }
 
 impl Default for SimSource {
     fn default() -> Self {
-        Self::new(250_000.0, vec![SimChannel::default()])
+        Self::new(250_000.0, Scenario::default())
     }
 }
 
 impl SimSource {
-    pub fn new(sample_rate: f64, channels: Vec<SimChannel>) -> Self {
-        Self { sample_rate, channels, seq: 0, t0: 0.0, rng: 0x9E37_79B9_7F4A_7C15 }
+    pub fn new(sample_rate: f64, scenario: Scenario) -> Self {
+        Self {
+            sample_rate,
+            scenario,
+            // CH1 on by default, like a freshly powered scope.
+            enabled: [true, false],
+            ranges: [10.0, 10.0],
+            seq: 0,
+            t0: 0.0,
+            rng: Xorshift::default(),
+        }
     }
 
-    fn next_noise(&mut self) -> f64 {
-        // xorshift64* — deterministic, no rand dependency.
-        let mut x = self.rng;
-        x ^= x >> 12;
-        x ^= x << 25;
-        x ^= x >> 27;
-        self.rng = x;
-        let u = (x.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f64 / (1u64 << 53) as f64;
-        u - 0.5
+    pub fn set_scenario(&mut self, s: Scenario) {
+        self.scenario = s;
+    }
+
+    pub fn scenario(&self) -> &Scenario {
+        &self.scenario
+    }
+
+    pub fn set_enabled(&mut self, ch: usize, on: bool) {
+        if ch < 2 {
+            self.enabled[ch] = on;
+        }
+    }
+
+    /// Full-scale vertical range of `ch` in volts (10 divisions).
+    pub fn set_range(&mut self, ch: usize, full_scale: f64) {
+        if ch < 2 {
+            self.ranges[ch] = full_scale;
+        }
+    }
+
+    pub fn time(&self) -> f64 {
+        self.t0
+    }
+
+    /// Reposition the sample-time origin; used to align a trigger crossing
+    /// with the requested horizontal trigger position.
+    pub fn set_time(&mut self, t: f64) {
+        self.t0 = t;
+    }
+
+    /// Noise-free scenario voltages at `t` (trigger searches use these).
+    pub fn volts_quiet(&self, t: f64) -> [f64; 2] {
+        self.scenario.sample_quiet(t)
     }
 
     pub fn next_frame(&mut self) -> CaptureFrame {
-        let mut channels = Vec::new();
-        for ci in 0..self.channels.len() {
-            let ch = self.channels[ci].clone();
-            if !ch.enabled {
-                continue;
-            }
-            let lsb = ch.range / 250.0;
-            let mut raw = Vec::with_capacity(SAMPLES);
-            let mut clipped = false;
-            for i in 0..SAMPLES {
-                let t = self.t0 + i as f64 / self.sample_rate;
-                let phase = (t * ch.freq).fract();
-                let unit = match ch.waveform {
-                    Waveform::Sine => (phase * std::f64::consts::TAU).sin() * 0.5,
-                    Waveform::Square => {
-                        if phase < 0.5 { 0.5 } else { -0.5 }
-                    }
-                    Waveform::Triangle => {
-                        if phase < 0.5 { 2.0 * phase - 0.5 } else { 1.5 - 2.0 * phase }
-                    }
-                };
-                let volts = unit * ch.amplitude + ch.dc + self.next_noise() * ch.noise * 3.46;
-                let q = (volts / lsb).round();
+        let mut raws = [Vec::with_capacity(SAMPLES), Vec::with_capacity(SAMPLES)];
+        let mut clipped = [false, false];
+        for i in 0..SAMPLES {
+            let t = self.t0 + i as f64 / self.sample_rate;
+            let v = self.scenario.sample(t, &mut self.rng);
+            for ch in 0..2 {
+                let lsb = self.ranges[ch] / 250.0;
+                let q = (v[ch] / lsb).round();
                 let r = q.clamp(-125.0, 125.0);
                 if r != q {
-                    clipped = true;
+                    clipped[ch] = true;
                 }
-                raw.push(r as i8);
+                raws[ch].push(r as i8);
             }
-            channels.push(ChannelCapture {
-                ch: ci,
-                raw,
-                volts_per_lsb: lsb,
-                zero_volts: 0.0,
-                clipped,
-                freq_meter: Some(ch.freq),
-            });
         }
         self.t0 += SAMPLES as f64 / self.sample_rate;
         self.seq += 1;
+        let channels = (0..2)
+            .filter(|&ch| self.enabled[ch])
+            .map(|ch| ChannelCapture {
+                ch,
+                raw: std::mem::take(&mut raws[ch]),
+                volts_per_lsb: self.ranges[ch] / 250.0,
+                zero_volts: 0.0,
+                clipped: clipped[ch],
+                freq_meter: self.scenario.fundamental(ch),
+            })
+            .collect();
         CaptureFrame {
             seq: self.seq,
             sample_rate: self.sample_rate,
-            acq: neowon_core::AcqMode::Sample,
+            acq: AcqMode::Sample,
             channels,
         }
     }
@@ -153,7 +151,18 @@ mod tests {
     fn frames_are_phase_continuous() {
         let mut src = SimSource::new(
             250_000.0,
-            vec![SimChannel { noise: 0.0, ..SimChannel::default() }],
+            Scenario::PerChannel([
+                SignalSpec {
+                    // Noise-free so the comparison is exact.
+                    components: vec![Component::Square {
+                        freq: 1000.0,
+                        amp: 2.5,
+                        duty: 0.5,
+                        phase: 0.0,
+                    }],
+                },
+                SignalSpec::default(),
+            ]),
         );
         let a = src.next_frame();
         let b = src.next_frame();
@@ -167,6 +176,9 @@ mod tests {
     fn deterministic() {
         let mut a = SimSource::default();
         let mut b = SimSource::default();
-        assert_eq!(a.next_frame().channels[0].raw, b.next_frame().channels[0].raw);
+        assert_eq!(
+            a.next_frame().channels[0].raw,
+            b.next_frame().channels[0].raw
+        );
     }
 }

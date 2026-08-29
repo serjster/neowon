@@ -1,17 +1,19 @@
 //! `Backend` implementation for the simulated source: paces frames at
-//! ~30/s and maps the generic config onto the generator.
+//! ~30/s, maps the generic config onto the generator, and honors edge
+//! triggering like real hardware (including starving on impossible levels).
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use neowon_backend::{Backend, BackendError, Capabilities, ScopeConfig};
-use neowon_core::SharedFrame;
+use neowon_core::{CaptureFrame, SharedFrame, Slope, Sweep, TriggerKind};
 
-use crate::{SimChannel, SimSource, Waveform};
+use crate::{SAMPLES, Scenario, SimSource};
 
 pub struct SimBackend {
     src: SimSource,
     caps: Capabilities,
+    cfg: ScopeConfig,
     next_at: Instant,
     interval: Duration,
 }
@@ -29,9 +31,61 @@ impl SimBackend {
                 probes: vec![1.0, 10.0, 100.0],
                 record_len: crate::SAMPLES,
             },
+            cfg: ScopeConfig::default(),
             next_at: Instant::now(),
             interval: Duration::from_millis(33),
         }
+    }
+
+    /// Next record honoring the applied trigger. `None` = the trigger is
+    /// starving, exactly like hardware in Normal sweep.
+    fn next_record(&mut self) -> Option<CaptureFrame> {
+        let trig = self.cfg.trigger;
+        let slope = match trig.kind {
+            TriggerKind::Edge { slope } => slope,
+            // Only edge triggering is simulated; pulse/slope/video kinds
+            // free-run like Auto.
+            _ => return Some(self.src.next_frame()),
+        };
+        if trig.sweep == Sweep::Auto {
+            return Some(self.src.next_frame());
+        }
+        self.triggered_record(trig.source, slope, trig.level)
+    }
+
+    /// Find the first edge crossing `level` with `slope` (noise-free scan of
+    /// up to 2 record lengths), then regenerate the record time-shifted so
+    /// the crossing lands on the trigger position index.
+    fn triggered_record(
+        &mut self,
+        source: usize,
+        slope: Slope,
+        level: f64,
+    ) -> Option<CaptureFrame> {
+        if source > 1 || !self.cfg.channels[source].enabled {
+            return None;
+        }
+        let trig_idx = (self.cfg.position * SAMPLES as f64)
+            .round()
+            .clamp(1.0, (SAMPLES - 2) as f64);
+        let dt = 1.0 / self.src.sample_rate;
+        let t0 = self.src.time();
+        let mut prev = self.src.volts_quiet(t0)[source];
+        for i in 1..(2 * SAMPLES) {
+            let v = self.src.volts_quiet(t0 + i as f64 * dt)[source];
+            let crossed = match slope {
+                Slope::Rising => prev < level && v >= level,
+                Slope::Falling => prev > level && v <= level,
+            };
+            if crossed {
+                let frac = (level - prev) / (v - prev);
+                let crossing = (i - 1) as f64 + frac;
+                self.src.set_time(t0 + (crossing - trig_idx) * dt);
+                return Some(self.src.next_frame());
+            }
+            prev = v;
+        }
+        None
     }
 }
 
@@ -48,21 +102,11 @@ impl Backend for SimBackend {
 
     fn apply(&mut self, cfg: &ScopeConfig) -> Result<(), BackendError> {
         self.src.sample_rate = cfg.sample_rate;
-        self.src.channels = cfg
-            .channels
-            .iter()
-            .enumerate()
-            .map(|(i, c)| SimChannel {
-                enabled: c.enabled,
-                // CH1 mimics the probe-comp signal; CH2 a quieter sine.
-                waveform: if i == 0 { Waveform::Square } else { Waveform::Sine },
-                freq: if i == 0 { 1000.0 } else { 2500.0 },
-                amplitude: if i == 0 { 5.0 } else { 1.0 },
-                dc: if i == 0 { 2.5 } else { 0.0 },
-                range: c.volts_div * 10.0 * c.probe,
-                noise: 0.02,
-            })
-            .collect();
+        for (i, c) in cfg.channels.iter().enumerate().take(2) {
+            self.src.set_enabled(i, c.enabled);
+            self.src.set_range(i, c.volts_div * 10.0 * c.probe);
+        }
+        self.cfg = cfg.clone();
         Ok(())
     }
 
@@ -76,6 +120,85 @@ impl Backend for SimBackend {
             }
         }
         self.next_at = Instant::now() + self.interval;
-        Ok(Some(Arc::new(self.src.next_frame())))
+        Ok(self.next_record().map(Arc::new))
+    }
+
+    fn set_stimulus(&mut self, name: &str) -> Result<bool, BackendError> {
+        match Scenario::preset(name) {
+            Some(s) => {
+                self.src.set_scenario(s);
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    fn stimuli(&self) -> Vec<&'static str> {
+        Scenario::PRESETS.to_vec()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use neowon_backend::{ChannelConfig, TriggerConfig};
+
+    fn armed(level: f64, sweep: Sweep) -> SimBackend {
+        let mut b = SimBackend::new();
+        assert!(b.set_stimulus("sine-1k").unwrap());
+        let cfg = ScopeConfig {
+            sample_rate: 250e3,
+            channels: vec![
+                ChannelConfig {
+                    enabled: true,
+                    volts_div: 1.0,
+                    ..Default::default()
+                },
+                ChannelConfig::default(),
+            ],
+            trigger: TriggerConfig {
+                source: 0,
+                kind: TriggerKind::Edge {
+                    slope: Slope::Rising,
+                },
+                level,
+                sweep,
+                holdoff: 100e-9,
+            },
+            position: 0.5,
+            ..Default::default()
+        };
+        b.apply(&cfg).unwrap();
+        b
+    }
+
+    #[test]
+    fn normal_sweep_aligns_trigger() {
+        let mut b = armed(0.0, Sweep::Normal);
+        let frame = b.poll_frame(Duration::from_millis(200)).unwrap().unwrap();
+        let raw = &frame.channels[0].raw;
+        // Crossing placed at index 2500; 0 V = 0 counts at 10 V range.
+        assert!(raw[2500].unsigned_abs() <= 4, "raw[2500] = {}", raw[2500]);
+        assert!(raw[2510] > raw[2490], "not rising at the trigger point");
+    }
+
+    #[test]
+    fn normal_sweep_starves_on_impossible_level() {
+        let mut b = armed(10.0, Sweep::Normal);
+        assert!(b.poll_frame(Duration::from_millis(200)).unwrap().is_none());
+    }
+
+    #[test]
+    fn auto_sweep_ignores_level() {
+        let mut b = armed(10.0, Sweep::Auto);
+        assert!(b.poll_frame(Duration::from_millis(200)).unwrap().is_some());
+    }
+
+    #[test]
+    fn stimulus_selection() {
+        let mut b = SimBackend::new();
+        assert!(b.set_stimulus("xy-heart").unwrap());
+        assert!(!b.set_stimulus("no-such").unwrap());
+        assert!(b.stimuli().contains(&"xy-heart"));
     }
 }
