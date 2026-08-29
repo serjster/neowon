@@ -88,6 +88,11 @@ macOS, nusb). The full register map lives in
   behavior of the MULTI port not yet scoped.
 - Test harness: `cargo run -p neowon-vds1022 --example trigtest` (requires
   the probe-comp signal on CH1).
+- **Post-reconnect arm transient**: the first Normal-gated capture in a
+  session that starts immediately after another session used the device can
+  take >2 s to arm (observed once: edge control starved at a 2 s deadline
+  right after a `smoke` run, then passed standalone repeatedly). Allow ~4 s
+  for the first gated capture after reconnect.
 
 ## Still to verify
 

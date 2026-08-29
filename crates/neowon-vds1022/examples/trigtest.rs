@@ -99,8 +99,10 @@ fn main() {
     for (name, kind, level, expect) in cases {
         dev.set_trigger(0, &kind, level, Sweep::Normal).unwrap();
         dev.run().unwrap();
-        std::thread::sleep(Duration::from_millis(150));
-        let got = dev.capture(Duration::from_secs(2)).is_ok();
+        std::thread::sleep(Duration::from_millis(300));
+        // 4 s: the first gated capture right after another session used the
+        // device can take >2 s to arm (post-reconnect transient).
+        let got = dev.capture(Duration::from_secs(4)).is_ok();
         let ok = got == expect;
         if !ok {
             failures += 1;
