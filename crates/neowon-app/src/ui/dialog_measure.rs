@@ -20,6 +20,7 @@ pub fn show(ui: &mut egui::Ui, meas: &mut MeasureState) {
         if ui.button("Reset stats").clicked() {
             meas.reset_stats();
         }
+        ui.checkbox(&mut meas.guides, "Guides");
     });
     egui::ScrollArea::vertical().show(ui, |ui| {
         egui::Grid::new("meas-grid")

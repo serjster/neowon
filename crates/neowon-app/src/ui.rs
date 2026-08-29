@@ -16,6 +16,7 @@ pub mod frontpanel;
 pub mod layout;
 pub mod menu;
 pub mod menubar;
+pub mod touch;
 pub mod widgets;
 
 use bevy::prelude::*;
@@ -25,6 +26,7 @@ use crate::Link;
 use crate::cursors::CursorState;
 use crate::derived::{FftState, MathState, MeasureState, PfState, fmt_si};
 use crate::gpu::Phosphor;
+use crate::ui::layout::Layout;
 
 pub use menu::{Menu, MenuState};
 
@@ -32,6 +34,7 @@ pub use menu::{Menu, MenuState};
 pub fn panel(
     mut contexts: EguiContexts,
     time: Res<Time>,
+    layout: Res<Layout>,
     mut link: ResMut<Link>,
     mut phosphor: ResMut<Phosphor>,
     mut math: ResMut<MathState>,
@@ -45,10 +48,11 @@ pub fn panel(
     let ctx = ctx.clone();
     let now = time.elapsed_secs_f64();
 
-    menubar::show(&ctx, &mut link, &mut menus, now);
-    descriptors::show(&ctx, &mut link, &phosphor, &meas, &mut menus);
+    menubar::show(&ctx, &layout, &mut link, &mut menus, now);
+    descriptors::show(&ctx, &layout, &mut link, &phosphor, &meas, &mut menus);
     frontpanel::show(
         &ctx,
+        &layout,
         &mut link,
         &mut phosphor,
         &mut math,
@@ -57,6 +61,7 @@ pub fn panel(
     );
     menu::show(
         &ctx,
+        &layout,
         &mut menus,
         &mut link,
         &mut phosphor,

@@ -83,17 +83,23 @@ pub fn chip(
     text: &str,
     enabled: bool,
     width: f32,
+    selected: bool,
 ) -> egui::Response {
     let sense = egui::Sense::click();
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 40.0), sense);
     let alpha = if enabled { 255 } else { 90 };
-    let fill = egui::Color32::from_rgb(16, 18, 24);
+    // The selected (pointer-controlled) channel gets a brighter, thicker box.
+    let fill = if selected {
+        egui::Color32::from_rgb(28, 30, 38)
+    } else {
+        egui::Color32::from_rgb(16, 18, 24)
+    };
     let border = egui::Color32::from_rgba_premultiplied(color.r(), color.g(), color.b(), alpha);
     ui.painter().rect(
         rect,
         4.0,
         fill,
-        egui::Stroke::new(1.5, border),
+        egui::Stroke::new(if selected { 2.5 } else { 1.5 }, border),
         egui::StrokeKind::Middle,
     );
     let text_color = if enabled { color } else { egui::Color32::GRAY };

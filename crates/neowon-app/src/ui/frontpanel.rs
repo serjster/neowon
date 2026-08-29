@@ -10,7 +10,7 @@ use crate::Link;
 use crate::derived::{MathState, MeasureState};
 use crate::gpu::{Persistence, Phosphor};
 
-use super::layout::Roi;
+use super::layout::{Layout, Roi};
 use super::menu::{Menu, MenuState};
 use super::widgets::{RUN_COLOR, STOP_COLOR, channel_color};
 
@@ -29,13 +29,14 @@ fn key(ui: &mut egui::Ui, label: &str, active: bool) -> bool {
 #[allow(clippy::too_many_arguments)]
 pub fn show(
     ctx: &egui::Context,
+    l: &Layout,
     link: &mut Link,
     phosphor: &mut Phosphor,
     math: &mut MathState,
     meas: &mut MeasureState,
     menus: &mut MenuState,
 ) {
-    let rect = Roi::FrontPanel.rect();
+    let rect = Roi::FrontPanel.rect(l);
     egui::Area::new("frontpanel".into())
         .fixed_pos(rect.min)
         .show(ctx, |ui| {

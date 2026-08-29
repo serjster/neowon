@@ -4,9 +4,7 @@
 use bevy::prelude::*;
 use bevy_egui::input::EguiWantsInput;
 
-use crate::PLOT_OFFSET;
-use crate::gpu::{PLOT_H, PLOT_W};
-use crate::ui::layout::DIV_Y;
+use crate::ui::layout::Layout;
 
 /// Cursor indices: 0/1 = time (x, fraction 0..1 of the record),
 /// 2/3 = amplitude (y, fraction -0.5..0.5 of full scale = +-5 divisions;
@@ -31,12 +29,17 @@ impl Default for CursorState {
 }
 
 impl CursorState {
-    fn x_world(&self, i: usize) -> f32 {
-        PLOT_OFFSET.x + (self.pos[i] - 0.5) * PLOT_W as f32
+    /// True while a cursor drag owns the pointer (touch control stands down).
+    pub fn dragging(&self) -> bool {
+        self.drag.is_some()
     }
 
-    fn y_world(&self, i: usize) -> f32 {
-        PLOT_OFFSET.y + self.pos[i] * 10.0 * DIV_Y
+    fn x_world(&self, l: &Layout, i: usize) -> f32 {
+        l.plot_center.x + (self.pos[i] - 0.5) * l.plot.width()
+    }
+
+    fn y_world(&self, l: &Layout, i: usize) -> f32 {
+        l.frac_to_world_y(self.pos[i])
     }
 }
 
@@ -45,6 +48,7 @@ pub fn cursor_input(
     windows: Query<&Window>,
     camera: Query<(&Camera, &GlobalTransform)>,
     egui_wants: Res<EguiWantsInput>,
+    layout: Res<Layout>,
     mut cur: ResMut<CursorState>,
 ) {
     if cur.drag.is_none() && egui_wants.wants_any_pointer_input() {
@@ -68,21 +72,23 @@ pub fn cursor_input(
             }
         };
         if cur.time_on {
-            consider(0, (world.x - cur.x_world(0)).abs());
-            consider(1, (world.x - cur.x_world(1)).abs());
+            consider(0, (world.x - cur.x_world(&layout, 0)).abs());
+            consider(1, (world.x - cur.x_world(&layout, 1)).abs());
         }
         if cur.amp_on {
-            consider(2, (world.y - cur.y_world(2)).abs());
-            consider(3, (world.y - cur.y_world(3)).abs());
+            consider(2, (world.y - cur.y_world(&layout, 2)).abs());
+            consider(3, (world.y - cur.y_world(&layout, 3)).abs());
         }
         cur.drag = best.map(|(i, _)| i);
     }
     if mouse.pressed(MouseButton::Left) {
         if let Some(i) = cur.drag {
             if i < 2 {
-                cur.pos[i] = ((world.x - PLOT_OFFSET.x) / PLOT_W as f32 + 0.5).clamp(0.0, 1.0);
+                cur.pos[i] =
+                    ((world.x - layout.plot_center.x) / layout.plot.width() + 0.5).clamp(0.0, 1.0);
             } else {
-                cur.pos[i] = ((world.y - PLOT_OFFSET.y) / (10.0 * DIV_Y)).clamp(-0.4, 0.4);
+                cur.pos[i] =
+                    ((world.y - layout.plot_center.y) / (10.0 * layout.div.y)).clamp(-0.4, 0.4);
             }
         }
     } else {
@@ -90,26 +96,27 @@ pub fn cursor_input(
     }
 }
 
-pub fn draw_cursors(cur: Res<CursorState>, mut gizmos: Gizmos) {
-    let w = PLOT_W as f32;
-    let h = PLOT_H as f32;
+pub fn draw_cursors(cur: Res<CursorState>, layout: Res<Layout>, mut gizmos: Gizmos) {
+    let w = layout.plot.width();
+    let h = layout.plot.height();
+    let o = layout.plot_center;
     let color = Color::srgba(0.4, 1.0, 0.6, 0.7);
     if cur.time_on {
         for i in 0..2 {
-            let x = cur.x_world(i);
+            let x = cur.x_world(&layout, i);
             gizmos.line_2d(
-                Vec2::new(x, PLOT_OFFSET.y - h / 2.0),
-                Vec2::new(x, PLOT_OFFSET.y + h / 2.0),
+                Vec2::new(x, o.y - h / 2.0),
+                Vec2::new(x, o.y + h / 2.0),
                 color,
             );
         }
     }
     if cur.amp_on {
         for i in 2..4 {
-            let y = cur.y_world(i);
+            let y = cur.y_world(&layout, i);
             gizmos.line_2d(
-                Vec2::new(PLOT_OFFSET.x - w / 2.0, y),
-                Vec2::new(PLOT_OFFSET.x + w / 2.0, y),
+                Vec2::new(o.x - w / 2.0, y),
+                Vec2::new(o.x + w / 2.0, y),
                 color,
             );
         }

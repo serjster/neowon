@@ -116,6 +116,9 @@ pub struct MeasureState {
     pub stats: Vec<[StatTrack; N_METRICS]>,
     /// Which slot the statistics columns show.
     pub stats_slot: usize,
+    /// Draw measurement guide lines on the plot while the Measure dialog is
+    /// open.
+    pub guides: bool,
     pub sample_rate: f64,
 }
 

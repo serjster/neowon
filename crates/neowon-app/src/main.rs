@@ -33,12 +33,9 @@ use gpu::{PLOT_H, PLOT_W, Persistence, Phosphor, PhosphorPlugin, TraceMode};
 use neowon_backend::{Backend, Capabilities, Command, Event, MultiMode, ScopeConfig, Supervisor};
 use neowon_core::{AcqMode, Coupling, SharedFrame, Slope, Sweep, TriggerKind};
 /// Screen geometry follows the reference scope: 10 horizontal x 8
-/// vertical divisions (docs/ui-ux-research.md §6).
-use ui::layout::{DIV_X, DIV_Y, H_DIVS, V_DIVS};
-
-/// World-space offset of the plot center — fixed by the scope-grade
-/// screen layout (`ui::layout`).
-pub const PLOT_OFFSET: Vec2 = ui::layout::PLOT_CENTER;
+/// vertical divisions (docs/ui-ux-research.md §6), computed at runtime
+/// from the window size (`ui::layout::Layout`).
+use ui::layout::{H_DIVS, Layout, V_DIVS};
 
 #[derive(Resource)]
 pub struct Link {
@@ -56,6 +53,8 @@ pub struct Link {
     pub last_frame_at: f64,
     /// Name of the active stimulus (generating backends only).
     pub stimulus: String,
+    /// The channel pointer gestures and scroll steps act on.
+    pub selected: usize,
 }
 
 fn main() {
@@ -82,13 +81,27 @@ fn main() {
     };
     sup.apply(config.clone());
 
+    // NEOWON_WINDOW=WxH overrides the initial size (layout tests).
+    let (win_w, win_h) = std::env::var("NEOWON_WINDOW")
+        .ok()
+        .and_then(|v| {
+            let (w, h) = v.split_once('x')?;
+            Some((w.parse().ok()?, h.parse().ok()?))
+        })
+        .unwrap_or((1520u32, 820u32));
+
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "neowon".into(),
-                resolution: [1520, 820].into(),
+                resolution: [win_w, win_h].into(),
                 // Fixed position so ROI screenshots map 1:1 to screen space.
                 position: WindowPosition::At(IVec2::new(40, 40)),
+                resize_constraints: WindowResizeConstraints {
+                    min_width: ui::layout::MIN_W,
+                    min_height: ui::layout::MIN_H,
+                    ..default()
+                },
                 ..default()
             }),
             ..default()
@@ -106,11 +119,17 @@ fn main() {
             multi: MultiMode::TriggerOut,
             last_frame_at: 0.0,
             stimulus: "probe-comp".into(),
+            selected: 0,
         })
         .init_resource::<Phosphor>()
+        .init_resource::<Layout>()
+        .init_resource::<ui::touch::TouchState>()
         .init_resource::<ui::MenuState>()
         .init_resource::<derived::MathState>()
-        .init_resource::<derived::MeasureState>()
+        .insert_resource(derived::MeasureState {
+            guides: true,
+            ..Default::default()
+        })
         .init_resource::<derived::FftState>()
         .init_resource::<derived::PfState>()
         .init_resource::<cursors::CursorState>()
@@ -120,11 +139,13 @@ fn main() {
         .add_systems(
             Update,
             (
+                sync_layout,
                 clear_one_shot,
                 ingest,
                 input,
                 phosphor_input,
                 cursors::cursor_input,
+                ui::touch::plot_pointer,
                 script::run_script,
                 flush,
                 derived::compute_derived,
@@ -133,6 +154,7 @@ fn main() {
                 draw_graticule,
                 draw_trigger,
                 draw_pf_mask,
+                draw_guides,
                 draw_clip_warnings,
                 cursors::draw_cursors,
                 update_title,
@@ -166,11 +188,39 @@ fn setup(
         | TextureUsages::COPY_DST
         | TextureUsages::COPY_SRC;
     let handle = images.add(image);
-    commands.spawn((
-        Sprite::from_image(handle.clone()),
-        Transform::from_translation(PLOT_OFFSET.extend(0.0)),
-    ));
+    commands.spawn((Sprite::from_image(handle.clone()), PlotSprite));
     phosphor.display_image = handle;
+}
+
+/// Marker for the plot sprite; `sync_layout` sizes and places it.
+#[derive(Component)]
+struct PlotSprite;
+
+/// Recompute the layout when the window size changes and keep the plot
+/// sprite stretched over the plot region.
+fn sync_layout(
+    windows: Query<&Window>,
+    mut layout: ResMut<Layout>,
+    mut sprite: Query<(&mut Sprite, &mut Transform), With<PlotSprite>>,
+) {
+    let Ok(window) = windows.single() else { return };
+    let next = Layout::compute(window.width(), window.height());
+    if *layout != next {
+        *layout = next;
+    }
+    if let Ok((mut sprite, mut tf)) = sprite.single_mut() {
+        let size = Some(bevy::math::Vec2::new(
+            layout.plot.width(),
+            layout.plot.height(),
+        ));
+        if sprite.custom_size != size {
+            sprite.custom_size = size;
+        }
+        let pos = layout.plot_center.extend(0.0);
+        if tf.translation != pos {
+            tf.translation = pos;
+        }
+    }
 }
 
 /// One-shot flags live for exactly one frame (extracted at frame end,
@@ -417,26 +467,27 @@ fn flush(mut link: ResMut<Link>) {
     }
 }
 
-fn draw_graticule(mut gizmos: Gizmos) {
-    let w = H_DIVS as f32 * DIV_X;
-    let h = V_DIVS as f32 * DIV_Y;
-    let o = PLOT_OFFSET;
+fn draw_graticule(layout: Res<Layout>, mut gizmos: Gizmos) {
+    let w = layout.plot.width();
+    let h = layout.plot.height();
+    let o = layout.plot_center;
     let dim = Color::srgba(0.5, 0.55, 0.6, 0.25);
     let axis = Color::srgba(0.6, 0.65, 0.7, 0.6);
     for i in 0..=H_DIVS {
-        let x = o.x - w / 2.0 + i as f32 * DIV_X;
+        let x = o.x - w / 2.0 + i as f32 * layout.div.x;
         let c = if i == H_DIVS / 2 { axis } else { dim };
         gizmos.line_2d(Vec2::new(x, o.y - h / 2.0), Vec2::new(x, o.y + h / 2.0), c);
     }
     for i in 0..=V_DIVS {
-        let y = o.y - h / 2.0 + i as f32 * DIV_Y;
+        let y = o.y - h / 2.0 + i as f32 * layout.div.y;
         let c = if i == V_DIVS / 2 { axis } else { dim };
         gizmos.line_2d(Vec2::new(o.x - w / 2.0, y), Vec2::new(o.x + w / 2.0, y), c);
     }
 }
 
-fn draw_trigger(link: Res<Link>, mut gizmos: Gizmos) {
-    let w = H_DIVS as f32 * DIV_X;
+fn draw_trigger(link: Res<Link>, layout: Res<Layout>, mut gizmos: Gizmos) {
+    let w = layout.plot.width();
+    let o = layout.plot_center;
     let src = link
         .config
         .trigger
@@ -446,27 +497,28 @@ fn draw_trigger(link: Res<Link>, mut gizmos: Gizmos) {
     let range = ch.volts_div * 10.0 * ch.probe;
     // Fraction of full (10 div) range; the display window is +-4 div.
     let frac = (link.config.trigger.level / range + ch.offset).clamp(-0.44, 0.44);
-    let y = PLOT_OFFSET.y + frac as f32 * 10.0 * DIV_Y;
+    let y = layout.frac_to_world_y(frac as f32);
     gizmos.line_2d(
-        Vec2::new(PLOT_OFFSET.x - w / 2.0, y),
-        Vec2::new(PLOT_OFFSET.x + w / 2.0, y),
+        Vec2::new(o.x - w / 2.0, y),
+        Vec2::new(o.x + w / 2.0, y),
         Color::srgba(1.0, 0.5, 0.2, 0.5),
     );
 }
 
 /// The pass/fail envelope as two dim-green polylines (lo and hi bounds).
-fn draw_pf_mask(pf: Res<derived::PfState>, mut gizmos: Gizmos) {
+fn draw_pf_mask(pf: Res<derived::PfState>, layout: Res<Layout>, mut gizmos: Gizmos) {
     let Some(mask) = &pf.mask else { return };
     if !pf.enabled || mask.lo.is_empty() {
         return;
     }
-    let w = H_DIVS as f32 * DIV_X;
+    let w = layout.plot.width();
+    let o = layout.plot_center;
     let n = mask.lo.len();
     // Decimate so the gizmo stays cheap on a 5000-sample record.
     let step = (n / 500).max(1);
-    let x_at = |i: usize| PLOT_OFFSET.x - w / 2.0 + i as f32 / (n - 1).max(1) as f32 * w;
+    let x_at = |i: usize| o.x - w / 2.0 + i as f32 / (n - 1).max(1) as f32 * w;
     // The display window is +-100 counts (+-4 div); pin beyond that.
-    let y_at = |raw: i8| PLOT_OFFSET.y + raw.clamp(-100, 100) as f32 * (PLOT_H as f32 / 200.0);
+    let y_at = |raw: i8| layout.frac_to_world_y(raw.clamp(-100, 100) as f32 / 250.0);
     let color = Color::srgba(0.2, 0.6, 0.3, 0.6);
     for bounds in [&mask.lo, &mask.hi] {
         let points: Vec<Vec2> = (0..n)
@@ -474,6 +526,62 @@ fn draw_pf_mask(pf: Res<derived::PfState>, mut gizmos: Gizmos) {
             .map(|i| Vec2::new(x_at(i), y_at(bounds[i])))
             .collect();
         gizmos.linestrip_2d(points, color);
+    }
+}
+
+/// Measurement guides: dashed levels at Vtop/Vbase/Vavg and the 10%/90%
+/// rise-time thresholds of the stats trace, drawn while the Measure dialog
+/// is open (toggleable there).
+fn draw_guides(
+    meas: Res<derived::MeasureState>,
+    math: Res<derived::MathState>,
+    menus: Res<ui::MenuState>,
+    link: Res<Link>,
+    layout: Res<Layout>,
+    mut gizmos: Gizmos,
+) {
+    if !meas.guides || menus.open != Some(ui::Menu::Measure) {
+        return;
+    }
+    let slot = meas.stats_slot;
+    let Some(m) = &meas.latest[slot] else { return };
+    let scale = match slot {
+        2 => math.trace.as_ref().map(|t| (t.volts_per_lsb, t.zero_volts)),
+        s => link
+            .latest
+            .as_ref()
+            .and_then(|f| f.channels.iter().find(|c| c.ch == s))
+            .map(|c| (c.volts_per_lsb, c.zero_volts)),
+    };
+    let Some((lsb, zero)) = scale else { return };
+    let base = match slot {
+        0 => Color::srgb(1.0, 0.85, 0.1),
+        1 => Color::srgb(0.2, 0.75, 1.0),
+        _ => Color::srgb(1.0, 0.35, 0.85),
+    };
+    let w = layout.plot.width();
+    let o = layout.plot_center;
+    let lines = [
+        (m.vtop, 0.55),
+        (m.vbase, 0.55),
+        (m.vavg, 0.4),
+        (m.vbase + 0.1 * (m.vtop - m.vbase), 0.25),
+        (m.vbase + 0.9 * (m.vtop - m.vbase), 0.25),
+    ];
+    for (v, alpha) in lines {
+        let frac = (((v - zero) / lsb) / 250.0) as f32;
+        if frac.abs() > 0.4 {
+            continue; // outside the visible +-4-division window
+        }
+        let y = layout.frac_to_world_y(frac);
+        let color = base.with_alpha(alpha);
+        // Dashed: 6 px on / 6 px off.
+        let mut x = o.x - w / 2.0;
+        while x < o.x + w / 2.0 {
+            let x2 = (x + 6.0).min(o.x + w / 2.0);
+            gizmos.line_2d(Vec2::new(x, y), Vec2::new(x2, y), color);
+            x += 12.0;
+        }
     }
 }
 
@@ -490,11 +598,11 @@ fn update_title(link: Res<Link>, mut windows: Query<&mut Window>) {
 
 /// Red clip arrows at the plot edge when a channel's samples sit on the ADC
 /// rails — the honest companion to the shader's off-screen suppression.
-fn draw_clip_warnings(link: Res<Link>, mut gizmos: Gizmos) {
+fn draw_clip_warnings(link: Res<Link>, layout: Res<Layout>, mut gizmos: Gizmos) {
     let Some(frame) = &link.latest else { return };
-    let w = ui::layout::PLOT_W;
-    let h = ui::layout::PLOT_H;
-    let o = PLOT_OFFSET;
+    let w = layout.plot.width();
+    let h = layout.plot.height();
+    let o = layout.plot_center;
     let red = Color::srgb(1.0, 0.25, 0.2);
     for cap in &frame.channels {
         if !cap.clipped {

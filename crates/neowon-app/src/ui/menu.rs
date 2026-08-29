@@ -9,7 +9,7 @@ use crate::cursors::CursorState;
 use crate::derived::{FftState, MathState, MeasureState, PfState};
 use crate::gpu::Phosphor;
 
-use super::layout::Roi;
+use super::layout::{Layout, Roi};
 use super::{
     dialog_acquire, dialog_channel, dialog_cursor, dialog_display, dialog_horizontal, dialog_math,
     dialog_measure, dialog_trigger, dialog_utility,
@@ -68,6 +68,7 @@ impl MenuState {
 #[allow(clippy::too_many_arguments)]
 pub fn show(
     ctx: &egui::Context,
+    l: &Layout,
     menus: &mut MenuState,
     link: &mut Link,
     phosphor: &mut Phosphor,
@@ -78,7 +79,7 @@ pub fn show(
     pf: &mut PfState,
 ) {
     let Some(menu) = menus.open else { return };
-    let rect = Roi::Dialog.rect();
+    let rect = Roi::Dialog.rect(l);
     let mut frame = egui::Frame::new();
     frame.fill = egui::Color32::from_rgb(12, 14, 18);
     frame.stroke = egui::Stroke::new(1.0, egui::Color32::from_gray(60));

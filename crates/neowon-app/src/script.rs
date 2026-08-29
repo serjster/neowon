@@ -108,6 +108,8 @@ pub enum Action {
     Persist(Persistence),
     Gain(f32),
     Crt(bool),
+    Select(usize),
+    Guides(bool),
     Math(Option<MathOp>),
     Run(bool),
     Multi(MultiMode),
@@ -292,6 +294,8 @@ fn parse(text: &str) -> Result<VecDeque<(f64, Action)>, String> {
             }),
             "gain" => Action::Gain(rest()?.parse().map_err(|_| err("bad gain"))?),
             "crt" => Action::Crt(rest()? == "1"),
+            "select" => Action::Select(rest()?.parse().map_err(|_| err("bad ch"))?),
+            "guides" => Action::Guides(rest()? == "1"),
             "math" => Action::Math(match rest()? {
                 "off" => None,
                 "add" => Some(MathOp::Add),
@@ -379,6 +383,7 @@ fn parse(text: &str) -> Result<VecDeque<(f64, Action)>, String> {
 #[allow(clippy::too_many_arguments)]
 pub fn run_script(
     time: Res<Time>,
+    layout: Res<crate::ui::layout::Layout>,
     mut script: ResMut<Script>,
     mut commands: Commands,
     mut link: ResMut<Link>,
@@ -493,6 +498,8 @@ pub fn run_script(
             Action::Persist(p) => phosphor.persistence = p,
             Action::Gain(g) => phosphor.gain = g,
             Action::Crt(on) => phosphor.crt = on,
+            Action::Select(ch) => link.selected = ch.min(1),
+            Action::Guides(on) => meas.guides = on,
             Action::Math(op) => match op {
                 None => math.enabled = false,
                 Some(op) => {
@@ -555,7 +562,7 @@ pub fn run_script(
             Action::Menu(m) => menus.open = m,
             Action::Layout(path) => {
                 let open = menus.open.map(menu_name);
-                let json = dump_json(open);
+                let json = dump_json(&layout, open);
                 match std::fs::write(&path, json) {
                     Ok(()) => info!("script: wrote layout {path}"),
                     Err(e) => error!("script: cannot write {path}: {e}"),

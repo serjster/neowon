@@ -5,9 +5,9 @@
 //! These need a window (briefly) so they are `#[ignore]` by default:
 //!   cargo test -p neowon-app --test ui_layout -- --ignored
 //!
-//! The geometry under test is compile-time fixed in `src/ui/layout.rs`;
-//! this test guards against accidental drift and proves every dialog is
-//! script-openable.
+//! The geometry under test is computed at runtime from the window size
+//! (`src/ui/layout.rs`); this test asserts the relational invariants of the
+//! published map and proves every dialog is script-openable.
 //!
 //! For manual full-window visual checks you can additionally grab the
 //! window with `screencapture -R x,y,w,h` (macOS) — not asserted here.
@@ -15,16 +15,16 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-// Published geometry — must match src/ui/layout.rs.
+// Fixed chrome sizes — must match src/ui/layout.rs; everything else is
+// asserted relationally against the dumped window size.
 const WINDOW_W: f64 = 1520.0;
 const WINDOW_H: f64 = 820.0;
 const MENU_H: f64 = 36.0;
 const FRONT_PANEL_H: f64 = 96.0;
 const DIALOG_W: f64 = 320.0;
-const PLOT_W: f64 = 1000.0;
-const PLOT_H: f64 = 500.0;
 const DESC_H: f64 = 54.0;
 const DESC_GAP: f64 = 4.0;
+const MARGIN: f64 = 8.0;
 
 const MENUS: [&str; 9] = [
     "horizontal",
@@ -135,10 +135,13 @@ fn every_dialog_opens_and_geometry_holds() {
     let final_json = std::fs::read_to_string(&outs[MENUS.len()]).unwrap();
     assert_eq!(open_menu(&final_json), None);
 
-    // Published geometry, checked against the last dump.
+    // Published geometry, checked against the last dump. The plot fills
+    // the middle area (runtime layout); the dialog overlays its right side.
     let plot = roi(&final_json, "plot");
-    assert!((plot[2] - PLOT_W).abs() < 0.5);
-    assert!((plot[3] - PLOT_H).abs() < 0.5);
+    assert!((plot[0] - MARGIN).abs() < 0.5);
+    assert!((plot[2] - (WINDOW_W - 2.0 * MARGIN)).abs() < 0.5);
+    let expect_h = WINDOW_H - MENU_H - FRONT_PANEL_H - DESC_H - DESC_GAP - 2.0 * MARGIN;
+    assert!((plot[3] - expect_h).abs() < 0.5, "plot h {}", plot[3]);
 
     let menu_bar = roi(&final_json, "menu_bar");
     assert!((menu_bar[2] - WINDOW_W).abs() < 0.5);
@@ -156,7 +159,7 @@ fn every_dialog_opens_and_geometry_holds() {
     // Descriptors hug the plot bottom.
     let desc = roi(&final_json, "descriptors");
     assert!((desc[3] - DESC_H).abs() < 0.5);
-    assert!((desc[1] - (plot[1] + PLOT_H + DESC_GAP)).abs() < 0.5);
+    assert!((desc[1] - (plot[1] + plot[3] + DESC_GAP)).abs() < 0.5);
     assert!((desc[0] - plot[0]).abs() < 0.5);
 
     // Window sanity.

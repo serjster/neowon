@@ -7,7 +7,7 @@ use neowon_core::Sweep;
 use crate::Link;
 use crate::derived::fmt_si;
 
-use super::layout::Roi;
+use super::layout::{Layout, Roi};
 use super::menu::{Menu, MenuState};
 use super::widgets::{RUN_COLOR, STOP_COLOR, WAIT_COLOR};
 
@@ -25,8 +25,8 @@ pub fn run_state(link: &Link, now: f64) -> (&'static str, egui::Color32) {
     }
 }
 
-pub fn show(ctx: &egui::Context, link: &mut Link, menus: &mut MenuState, now: f64) {
-    let rect = Roi::MenuBar.rect();
+pub fn show(ctx: &egui::Context, l: &Layout, link: &mut Link, menus: &mut MenuState, now: f64) {
+    let rect = Roi::MenuBar.rect(l);
     egui::Area::new("menubar".into())
         .fixed_pos(rect.min)
         .show(ctx, |ui| {

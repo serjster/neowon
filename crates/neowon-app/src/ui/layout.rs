@@ -1,46 +1,91 @@
-//! Fixed screen geometry of the scope-grade UI — the SDS2000X Plus screen
-//! anatomy (docs/ui-ux-research.md §1, vendor manual chapters 7–9). One
-//! source of truth: egui panels, Bevy plot placement, and the layout tests
-//! all read these constants. Window space: screen pixels, top-left origin.
-//! Bevy world space: window-center origin, +y up.
+//! Screen geometry of the scope-grade UI — the SDS2000X Plus screen anatomy
+//! (docs/ui-ux-research.md §1, vendor manual chapters 7–9), computed at
+//! runtime from the window size so the app resizes like an application, not
+//! a bitmap. One source of truth: egui panels, Bevy plot placement, and the
+//! layout tests all read the `Layout` resource. Window space: logical
+//! pixels, top-left origin. Bevy world space: window-center origin, +y up.
 
 use bevy::math::Vec2;
+use bevy::prelude::Resource;
 use bevy_egui::egui::{Pos2, Rect, Vec2 as EVec2};
-
-pub const WINDOW_W: f32 = 1520.0;
-pub const WINDOW_H: f32 = 820.0;
-
-/// Plot texture size — must match `gpu::PLOT_W/H`.
-pub const PLOT_W: f32 = 1000.0;
-pub const PLOT_H: f32 = 500.0;
 
 pub const MENU_H: f32 = 36.0;
 pub const FRONT_PANEL_H: f32 = 96.0;
 pub const DIALOG_W: f32 = 320.0;
 pub const DESC_H: f32 = 54.0;
 const DESC_GAP: f32 = 4.0;
-
-const MID_TOP: f32 = MENU_H;
-const MID_BOTTOM: f32 = WINDOW_H - FRONT_PANEL_H;
-const BLOCK_H: f32 = PLOT_H + DESC_GAP + DESC_H;
-
-pub const PLOT_LEFT: f32 = (WINDOW_W - DIALOG_W - PLOT_W) / 2.0;
-pub const PLOT_TOP: f32 = MID_TOP + (MID_BOTTOM - MID_TOP - BLOCK_H) / 2.0;
-pub const DESC_TOP: f32 = PLOT_TOP + PLOT_H + DESC_GAP;
-pub const DIALOG_LEFT: f32 = WINDOW_W - DIALOG_W;
+const MARGIN: f32 = 8.0;
 
 /// Graticule: the reference divides the grid into 8 vertical x 10
 /// horizontal divisions.
 pub const H_DIVS: i32 = 10;
 pub const V_DIVS: i32 = 8;
-pub const DIV_X: f32 = PLOT_W / H_DIVS as f32;
-pub const DIV_Y: f32 = PLOT_H / V_DIVS as f32;
 
-/// Plot center in Bevy world space (sprite + gizmo placement).
-pub const PLOT_CENTER: Vec2 = Vec2::new(
-    PLOT_LEFT + PLOT_W / 2.0 - WINDOW_W / 2.0,
-    WINDOW_H / 2.0 - (PLOT_TOP + PLOT_H / 2.0),
-);
+/// Smallest window the layout stays usable at (also the Window resize
+/// constraint).
+pub const MIN_W: f32 = 1100.0;
+pub const MIN_H: f32 = 700.0;
+
+#[derive(Resource, Debug, Clone, Copy, PartialEq)]
+pub struct Layout {
+    pub window: EVec2,
+    pub menu_bar: Rect,
+    pub plot: Rect,
+    pub descriptors: Rect,
+    pub dialog: Rect,
+    pub front_panel: Rect,
+    /// Plot center in Bevy world space (sprite + gizmo placement).
+    pub plot_center: Vec2,
+    /// One graticule division, in screen pixels.
+    pub div: Vec2,
+}
+
+impl Default for Layout {
+    fn default() -> Self {
+        Self::compute(1520.0, 820.0)
+    }
+}
+
+impl Layout {
+    pub fn compute(win_w: f32, win_h: f32) -> Self {
+        let win_w = win_w.max(MIN_W);
+        let win_h = win_h.max(MIN_H);
+        let mid_top = MENU_H;
+        let mid_bottom = win_h - FRONT_PANEL_H;
+
+        // The plot stretches to fill the middle area (a scope grid's
+        // divisions are just rectangles); the dialog OVERLAYS its right
+        // side while open, exactly like the reference scope, so no space
+        // is wasted when it is closed.
+        let plot = Rect::from_min_max(
+            Pos2::new(MARGIN, mid_top + MARGIN),
+            Pos2::new(win_w - MARGIN, mid_bottom - DESC_GAP - DESC_H - MARGIN),
+        );
+        let descriptors = Rect::from_min_size(
+            Pos2::new(plot.left(), plot.bottom() + DESC_GAP),
+            EVec2::new(plot.width(), DESC_H),
+        );
+        Self {
+            window: EVec2::new(win_w, win_h),
+            menu_bar: Rect::from_min_max(Pos2::ZERO, Pos2::new(win_w, MENU_H)),
+            plot,
+            descriptors,
+            dialog: Rect::from_min_max(
+                Pos2::new(win_w - DIALOG_W, mid_top),
+                Pos2::new(win_w, mid_bottom),
+            ),
+            front_panel: Rect::from_min_max(Pos2::new(0.0, mid_bottom), Pos2::new(win_w, win_h)),
+            plot_center: Vec2::new(plot.center().x - win_w / 2.0, win_h / 2.0 - plot.center().y),
+            div: Vec2::new(plot.width() / H_DIVS as f32, plot.height() / V_DIVS as f32),
+        }
+    }
+
+    /// Screen y of a value expressed as a fraction of the full 10-division
+    /// encoding (visible window = ±4 of 8 shown divisions), in world space.
+    pub fn frac_to_world_y(&self, frac: f32) -> f32 {
+        self.plot_center.y + frac * 10.0 * self.div.y
+    }
+}
 
 /// Named screen regions — the stable ROI map for UI tests
 /// (docs/ui-ux-research.md §5).
@@ -80,41 +125,31 @@ impl Roi {
         }
     }
 
-    pub fn rect(self) -> Rect {
+    pub fn rect(self, l: &Layout) -> Rect {
         match self {
-            Roi::MenuBar => Rect::from_min_max(Pos2::ZERO, Pos2::new(WINDOW_W, MENU_H)),
-            Roi::Plot => {
-                Rect::from_min_size(Pos2::new(PLOT_LEFT, PLOT_TOP), EVec2::new(PLOT_W, PLOT_H))
-            }
-            Roi::Descriptors => {
-                Rect::from_min_size(Pos2::new(PLOT_LEFT, DESC_TOP), EVec2::new(PLOT_W, DESC_H))
-            }
-            Roi::Dialog => Rect::from_min_max(
-                Pos2::new(DIALOG_LEFT, MID_TOP),
-                Pos2::new(WINDOW_W, MID_BOTTOM),
-            ),
-            Roi::FrontPanel => {
-                Rect::from_min_max(Pos2::new(0.0, MID_BOTTOM), Pos2::new(WINDOW_W, WINDOW_H))
-            }
+            Roi::MenuBar => l.menu_bar,
+            Roi::Plot => l.plot,
+            Roi::Descriptors => l.descriptors,
+            Roi::Dialog => l.dialog,
+            Roi::FrontPanel => l.front_panel,
             Roi::TrigBadge => Rect::from_min_size(
-                Pos2::new(PLOT_LEFT + PLOT_W - 64.0, PLOT_TOP + PLOT_H / 2.0 - 40.0),
+                Pos2::new(l.plot.right() - 64.0, l.plot.center().y - 40.0),
                 EVec2::new(56.0, 80.0),
             ),
             Roi::MeasOverlay => Rect::from_min_size(
-                Pos2::new(PLOT_LEFT, PLOT_TOP + PLOT_H - 30.0),
-                EVec2::new(PLOT_W, 30.0),
+                Pos2::new(l.plot.left(), l.plot.bottom() - 30.0),
+                EVec2::new(l.plot.width(), 30.0),
             ),
         }
     }
 }
 
 /// Serialize the named-ROI map plus dynamic UI state as JSON — the
-/// `layout <path>` script action writes this for UI tests. Geometry is
-/// compile-time fixed; only the open menu varies.
-pub fn dump_json(open_menu: Option<&str>) -> String {
+/// `layout <path>` script action writes this for UI tests.
+pub fn dump_json(l: &Layout, open_menu: Option<&str>) -> String {
     let mut rois = String::new();
     for (i, r) in Roi::ALL.iter().enumerate() {
-        let rect = r.rect();
+        let rect = r.rect(l);
         if i > 0 {
             rois.push(',');
         }
@@ -133,7 +168,7 @@ pub fn dump_json(open_menu: Option<&str>) -> String {
     };
     format!(
         "{{\n  \"window\": [{:.1}, {:.1}],\n  \"plot_center\": [{:.1}, {:.1}],\n  \"menu\": {menu},\n  \"rois\": {{{rois}\n  }}\n}}\n",
-        WINDOW_W, WINDOW_H, PLOT_CENTER.x, PLOT_CENTER.y,
+        l.window.x, l.window.y, l.plot_center.x, l.plot_center.y,
     )
 }
 
@@ -141,43 +176,62 @@ pub fn dump_json(open_menu: Option<&str>) -> String {
 mod tests {
     use super::*;
 
+    const SIZES: [(f32, f32); 3] = [(1100.0, 700.0), (1520.0, 820.0), (1920.0, 1080.0)];
+
     #[test]
-    fn regions_fit_and_relate() {
-        let plot = Roi::Plot.rect();
-        let desc = Roi::Descriptors.rect();
-        let dialog = Roi::Dialog.rect();
-        // Descriptors hug the plot bottom, same width.
-        assert_eq!(desc.top() - plot.bottom(), DESC_GAP);
-        assert_eq!(desc.width(), PLOT_W);
-        assert_eq!(desc.left(), plot.left());
-        // Dialog sits to the right of the plot.
-        assert!(dialog.left() >= plot.right());
-        assert_eq!(dialog.width(), DIALOG_W);
-        // Chrome strips span the full width.
-        assert_eq!(Roi::MenuBar.rect().width(), WINDOW_W);
-        assert_eq!(Roi::FrontPanel.rect().width(), WINDOW_W);
-        // Everything stays on screen and nothing overlaps the plot.
-        for r in Roi::ALL {
-            let r = r.rect();
-            assert!(r.min.x >= 0.0 && r.min.y >= 0.0, "{r:?}");
-            assert!(r.max.x <= WINDOW_W && r.max.y <= WINDOW_H, "{r:?}");
+    fn regions_fit_and_relate_at_all_sizes() {
+        for (w, h) in SIZES {
+            let l = Layout::compute(w, h);
+            let plot = l.plot;
+            // Descriptors hug the plot bottom, same width.
+            assert_eq!(l.descriptors.top() - plot.bottom(), DESC_GAP);
+            assert_eq!(l.descriptors.width(), plot.width());
+            assert_eq!(l.descriptors.left(), plot.left());
+            // Dialog flush right, fixed width; it overlays the plot's
+            // right side while open (reference-scope behavior).
+            assert_eq!(l.dialog.width(), DIALOG_W);
+            assert_eq!(l.dialog.right(), w);
+            // Chrome strips span the full width.
+            assert_eq!(l.menu_bar.width(), w);
+            assert_eq!(l.front_panel.width(), w);
+            // The plot stays usefully large.
+            assert!(plot.width() >= 600.0, "{w}x{h}: plot {plot:?}");
+            assert!(plot.height() >= 320.0, "{w}x{h}: plot {plot:?}");
+            // Everything on screen, nothing overlapping the plot.
+            for r in Roi::ALL {
+                let r = r.rect(&l);
+                assert!(r.min.x >= 0.0 && r.min.y >= 0.0, "{r:?}");
+                assert!(r.max.x <= w && r.max.y <= h, "{r:?}");
+            }
+            assert!(!plot.intersects(l.front_panel));
+            assert!(!plot.intersects(l.menu_bar));
         }
-        assert!(!plot.intersects(Roi::FrontPanel.rect()));
-        assert!(!plot.intersects(Roi::MenuBar.rect()));
     }
 
     #[test]
     fn plot_center_matches_screen_geometry() {
-        let plot = Roi::Plot.rect();
-        let cx = plot.center().x - WINDOW_W / 2.0;
-        let cy = WINDOW_H / 2.0 - plot.center().y;
-        assert!((cx - PLOT_CENTER.x).abs() < 1e-3);
-        assert!((cy - PLOT_CENTER.y).abs() < 1e-3);
+        for (w, h) in SIZES {
+            let l = Layout::compute(w, h);
+            let cx = l.plot.center().x - w / 2.0;
+            let cy = h / 2.0 - l.plot.center().y;
+            assert!((cx - l.plot_center.x).abs() < 1e-3);
+            assert!((cy - l.plot_center.y).abs() < 1e-3);
+        }
     }
 
     #[test]
     fn graticule_tiles_the_plot() {
-        assert_eq!(DIV_X * H_DIVS as f32, PLOT_W);
-        assert_eq!(DIV_Y * V_DIVS as f32, PLOT_H);
+        for (w, h) in SIZES {
+            let l = Layout::compute(w, h);
+            assert!((l.div.x * H_DIVS as f32 - l.plot.width()).abs() < 1e-3);
+            assert!((l.div.y * V_DIVS as f32 - l.plot.height()).abs() < 1e-3);
+        }
+    }
+
+    #[test]
+    fn tiny_windows_clamp_to_minimum() {
+        let l = Layout::compute(400.0, 300.0);
+        assert_eq!(l.window.x, MIN_W);
+        assert_eq!(l.window.y, MIN_H);
     }
 }

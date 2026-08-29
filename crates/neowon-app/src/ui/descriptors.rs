@@ -8,18 +8,29 @@ use crate::Link;
 use crate::derived::{MeasureState, SLOT_NAMES, fmt, fmt_si};
 use crate::gpu::{Phosphor, TraceMode};
 
-use super::layout::Roi;
+use super::layout::{Layout, Roi};
 use super::menu::{Menu, MenuState};
 use super::widgets::{CH1_COLOR, CH2_COLOR, MATH_COLOR, channel_color, chip};
 
 pub fn show(
     ctx: &egui::Context,
+    l: &Layout,
     link: &mut Link,
     phosphor: &Phosphor,
     meas: &MeasureState,
     menus: &mut MenuState,
 ) {
-    let rect = Roi::Descriptors.rect();
+    let rect = Roi::Descriptors.rect(l);
+    // Proportional widths so the boxes never collide: C1/C2 20% each,
+    // timebase 32%, trigger 28% of the strip (minus gaps and the math box).
+    let gaps = 6.0 * 5.0 + 8.0;
+    let math_w = if phosphor.mode != TraceMode::Xy && meas.latest[2].is_some() {
+        80.0
+    } else {
+        0.0
+    };
+    let avail = (rect.width() - gaps - math_w).max(400.0);
+    let (ch_w, tb_w, tg_w) = (avail * 0.20, avail * 0.32, avail * 0.28);
     egui::Area::new("descriptors".into())
         .fixed_pos(rect.min)
         .show(ctx, |ui| {
@@ -49,7 +60,9 @@ pub fn show(
                             fmt_si(c.offset * c.volts_div * 10.0 * c.probe, "V")
                         ));
                     }
-                    if chip(ui, channel_color(ch), &text, c.enabled, 170.0).clicked() {
+                    let selected = link.selected == ch;
+                    if chip(ui, channel_color(ch), &text, c.enabled, ch_w, selected).clicked() {
+                        link.selected = ch;
                         menus.open = Some(Menu::Channel(ch));
                     }
                 }
@@ -57,7 +70,7 @@ pub fn show(
                 // Math descriptor (F1) while the math trace is on.
                 if phosphor.mode != TraceMode::Xy
                     && meas.latest[2].is_some()
-                    && chip(ui, MATH_COLOR, "F Math", true, 90.0).clicked()
+                    && chip(ui, MATH_COLOR, "F Math", true, math_w.max(80.0), false).clicked()
                 {
                     menus.open = Some(Menu::Math);
                 }
@@ -73,7 +86,7 @@ pub fn show(
                     fmt_si(link.config.sample_rate, "S/s"),
                     record_len,
                 );
-                if chip(ui, egui::Color32::from_gray(150), &tb, true, 270.0).clicked() {
+                if chip(ui, egui::Color32::from_gray(150), &tb, true, tb_w, false).clicked() {
                     menus.open = Some(Menu::Horizontal);
                 }
 
@@ -99,18 +112,27 @@ pub fn show(
                     fmt(t.level, crate::derived::Unit::Volt),
                     sweep,
                 );
-                if chip(ui, egui::Color32::from_rgb(255, 128, 64), &tg, true, 210.0).clicked() {
+                if chip(
+                    ui,
+                    egui::Color32::from_rgb(255, 128, 64),
+                    &tg,
+                    true,
+                    tg_w,
+                    false,
+                )
+                .clicked()
+                {
                     menus.open = Some(Menu::Trigger);
                 }
             });
         });
 
-    measurement_overlay(ctx, meas);
+    measurement_overlay(ctx, l, meas);
 }
 
 /// Latest measurements per slot, source-colored, along the plot bottom.
-fn measurement_overlay(ctx: &egui::Context, meas: &MeasureState) {
-    let rect = Roi::MeasOverlay.rect();
+fn measurement_overlay(ctx: &egui::Context, l: &Layout, meas: &MeasureState) {
+    let rect = Roi::MeasOverlay.rect(l);
     egui::Area::new("meas-overlay".into())
         .fixed_pos(rect.min)
         .show(ctx, |ui| {

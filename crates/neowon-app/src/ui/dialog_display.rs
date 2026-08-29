@@ -33,6 +33,7 @@ pub fn show(ui: &mut egui::Ui, link: &mut Link, phosphor: &mut Phosphor) {
             }
         });
         ui.add(egui::Slider::new(&mut phosphor.gain, 0.05..=3.0).text("Intensity"));
+        ui.checkbox(&mut phosphor.crt, "CRT screen (halo, scanlines)");
     });
 
     // Stimulus selection exists only on generating backends (the sim); on
