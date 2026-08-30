@@ -83,10 +83,11 @@ cargo build --release
 ### FPGA bitstreams (hardware only)
 
 The VDS1022 needs an FPGA bitstream uploaded at every cold start. The
-bitstreams are OWON's and are not redistributed here — get them from a
-checkout of [OWON-VDS1022](https://github.com/florentbr/OWON-VDS1022)
-(`fwr/` directory) or an installed vendor app. neowon looks in
-`$NEOWON_FPGA_DIR`, `./fwr`, then `../OWON-VDS1022/fwr`.
+OWON bitstreams are vendored in [`3rdparty/fw/`](3rdparty/fw/) (see its
+README for provenance — they are OWON's, not covered by this repo's
+license), so a repo checkout works out of the box. neowon looks in
+`$NEOWON_FPGA_DIR`, `./fwr`, `./3rdparty/fw`, then
+`../OWON-VDS1022/fwr`.
 
 ## Running
 

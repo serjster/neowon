@@ -60,7 +60,9 @@ A real instrument is attached. Treat it with respect:
   retry-loop.
 - The device needs a keep-alive (`RUNSTOP=1` every ≤3 s) or the link drops;
   never leave a session wedged on the device — ctrl-C recovery must work.
-- FPGA bitstreams are vendor blobs referenced by path; never commit them.
+- FPGA bitstreams are OWON's vendor blobs, vendored in `3rdparty/fw/`
+  (user decision 2026-08-30; provenance in its README). Never commit new
+  binary blobs anywhere else without an explicit user decision.
 - Anything learned on hardware (register behavior, quirks like `HTP_ERR`,
   trigger-code swaps) goes into `docs/protocol-vds1022.md` in the same
   session.

@@ -356,13 +356,14 @@ fn part_acq(c: &ScopeConfig) -> ScopeConfigPart {
 }
 
 /// Default bitstream location: `NEOWON_FPGA_DIR`, else the first existing
-/// candidate — `./fwr`, or a sibling checkout of the community
-/// OWON-VDS1022 repo (`../OWON-VDS1022/fwr`).
+/// candidate — `./fwr`, the vendored `./3rdparty/fw` (present in a repo
+/// checkout), or a sibling checkout of the community OWON-VDS1022 repo
+/// (`../OWON-VDS1022/fwr`).
 pub fn default_fpga_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("NEOWON_FPGA_DIR") {
         return PathBuf::from(dir);
     }
-    for candidate in ["fwr", "../OWON-VDS1022/fwr"] {
+    for candidate in ["fwr", "3rdparty/fw", "../OWON-VDS1022/fwr"] {
         let p = PathBuf::from(candidate);
         if p.is_dir() {
             return p;
