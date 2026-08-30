@@ -21,8 +21,10 @@
 //! holdoff <seconds>
 //! autoset
 //! force
-//! zoom <h|v> <in|out>                 # one ladder rung (h=rate, v=selected ch)
-//! pan <left|right|up|down>            # one division of position/offset
+//! zoom <h|v> <in|out>                 # h = record window, v = selected ch V/div
+//! hzoom <in|out>                      # horizontal window zoom (about centre)
+//! hview <centre> <span>               # horizontal window, fractions of record
+//! pan <left|right|up|down>            # window (h) / offset (v), one step
 //! home                                # default zoom + centre position
 //! acq <sample|peak|avg4|avg16|avg64>
 //! mode <vectors|dots|xy>
@@ -132,6 +134,10 @@ pub enum Action {
         horiz: bool,
         inward: bool,
     },
+    HZoom {
+        inward: bool,
+    },
+    HView(f64, f64),
     Pan(crate::view::Pan),
     Home,
     Acq(AcqMode),
@@ -351,6 +357,17 @@ pub(crate) fn parse(text: &str) -> Result<VecDeque<(f64, Action)>, String> {
                     _ => return Err(err("bad zoom direction")),
                 },
             },
+            "hzoom" => Action::HZoom {
+                inward: match rest()? {
+                    "in" => true,
+                    "out" => false,
+                    _ => return Err(err("bad zoom direction")),
+                },
+            },
+            "hview" => Action::HView(
+                rest()?.parse().map_err(|_| err("bad centre"))?,
+                rest()?.parse().map_err(|_| err("bad span"))?,
+            ),
             "pan" => Action::Pan(match rest()? {
                 "left" => crate::view::Pan::Left,
                 "right" => crate::view::Pan::Right,
@@ -625,14 +642,18 @@ pub fn run_script(
             }
             Action::Zoom { horiz, inward } => {
                 if horiz {
-                    crate::view::zoom_rate(&mut link, inward);
+                    crate::view::hview_zoom(&mut phosphor, 0.5, inward);
                 } else {
                     let sel = link.selected.min(1);
                     crate::view::zoom_channel(&mut link, sel, inward);
                 }
             }
-            Action::Pan(dir) => crate::view::pan(&mut link, dir),
-            Action::Home => crate::view::home(&mut link),
+            Action::HZoom { inward } => crate::view::hview_zoom(&mut phosphor, 0.5, inward),
+            Action::HView(center, span) => {
+                phosphor.hview = crate::view::hview_clamp(center, span);
+            }
+            Action::Pan(dir) => crate::view::pan(&mut link, &mut phosphor, dir),
+            Action::Home => crate::view::home(&mut link, &mut phosphor),
             Action::Acq(a) => {
                 link.config.acq = a;
                 link.dirty = true;

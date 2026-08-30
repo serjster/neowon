@@ -283,7 +283,7 @@ fn config_json(
             r#"{{"ok":true,"sample_rate":{},"trigger_position":{},"acq":"{}","running":{},"#,
             r#""channels":[{}],"#,
             r#""trigger":{{"source":{},{},"level":{},"sweep":"{}","holdoff":{}}},"#,
-            r#""display":{{"mode":"{}","persist":{},"gain":{},"crt":{},"palette":"{}"}},"#,
+            r#""display":{{"mode":"{}","persist":{},"gain":{},"crt":{},"palette":"{}","hview":[{},{}]}},"#,
             r#""math":{{"enabled":{}}},"fft":{{"enabled":{},"source":{}}},"#,
             r#""pf":{{"enabled":{},"source":{},"pass":{},"fail":{}}},"#,
             r#""viz":{{"waterfall":{},"mode":"{}","effect":{}}}}}"#
@@ -303,6 +303,8 @@ fn config_json(
         num(phosphor.gain as f64),
         phosphor.crt,
         palette,
+        num(phosphor.hview.0),
+        num(phosphor.hview.1),
         math.enabled,
         fft.enabled,
         fft.source,

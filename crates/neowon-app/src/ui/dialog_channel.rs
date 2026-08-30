@@ -5,6 +5,7 @@ use neowon_core::Coupling;
 
 use crate::Link;
 
+use super::knob::knob;
 use super::widgets::{FALLBACK_VDIV, PROBES, ladder_combo};
 use crate::derived::fmt_si;
 
@@ -53,14 +54,30 @@ pub fn show(ui: &mut egui::Ui, link: &mut Link, ch: usize) {
             c.probe = probe;
             dirty = true;
         }
-        let mut off = c.offset as f32;
-        if ui
-            .add(egui::Slider::new(&mut off, -0.5..=0.5).text("Offset"))
-            .changed()
-        {
-            c.offset = off as f64;
-            dirty = true;
-        }
+        // Rotary controls for the two continuous-feeling vertical knobs —
+        // the mouse-scroll/drag substitutes on the front panel.
+        ui.horizontal(|ui| {
+            let mut vdiv = c.volts_div;
+            if knob(
+                ui,
+                "V/div",
+                &mut vdiv,
+                (vdiv_ladder[0], *vdiv_ladder.last().unwrap()),
+                Some(&vdiv_ladder),
+                1.0,
+                |v| fmt_si(v, "V"),
+            ) {
+                c.volts_div = vdiv;
+                dirty = true;
+            }
+            let mut off = c.offset;
+            if knob(ui, "Offset", &mut off, (-0.5, 0.5), None, 0.0, |v| {
+                format!("{:+.2} FS", v)
+            }) {
+                c.offset = off;
+                dirty = true;
+            }
+        });
         if dirty {
             link.config.channels[ch] = c;
             link.dirty = true;

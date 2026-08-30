@@ -4,7 +4,20 @@
 use bevy::prelude::*;
 use bevy_egui::input::EguiWantsInput;
 
+use crate::gpu::Phosphor;
 use crate::ui::layout::Layout;
+
+/// Record fraction -> visible fraction of the horizontal zoom window.
+fn view_frac(pos: f32, hview: (f64, f64)) -> f32 {
+    let (center, span) = hview;
+    ((pos as f64 - (center - span / 2.0)) / span) as f32
+}
+
+/// Visible fraction -> record fraction (inverse of `view_frac`).
+fn record_frac(xf: f32, hview: (f64, f64)) -> f32 {
+    let (center, span) = hview;
+    (xf as f64 * span + (center - span / 2.0)) as f32
+}
 
 /// Cursor indices: 0/1 = time (x, fraction 0..1 of the record),
 /// 2/3 = amplitude (y, fraction -0.5..0.5 of full scale = +-5 divisions;
@@ -40,8 +53,8 @@ impl CursorState {
         self.drag.is_some()
     }
 
-    fn x_world(&self, l: &Layout, i: usize) -> f32 {
-        l.plot_center.x + (self.pos[i] - 0.5) * l.plot.width()
+    fn x_world(&self, l: &Layout, hview: (f64, f64), i: usize) -> f32 {
+        l.plot_center.x + (view_frac(self.pos[i], hview) - 0.5) * l.plot.width()
     }
 
     fn y_world(&self, l: &Layout, i: usize) -> f32 {
@@ -55,6 +68,7 @@ pub fn cursor_input(
     camera: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
     egui_wants: Res<EguiWantsInput>,
     layout: Res<Layout>,
+    phosphor: Res<Phosphor>,
     mut cur: ResMut<CursorState>,
 ) {
     if cur.drag.is_none() && egui_wants.wants_any_pointer_input() {
@@ -80,8 +94,8 @@ pub fn cursor_input(
             }
         };
         if cur.time_on {
-            consider(0, (world.x - cur.x_world(&layout, 0)).abs());
-            consider(1, (world.x - cur.x_world(&layout, 1)).abs());
+            consider(0, (world.x - cur.x_world(&layout, phosphor.hview, 0)).abs());
+            consider(1, (world.x - cur.x_world(&layout, phosphor.hview, 1)).abs());
         }
         if cur.amp_on {
             consider(2, (world.y - cur.y_world(&layout, 2)).abs());
@@ -92,8 +106,8 @@ pub fn cursor_input(
     if mouse.pressed(MouseButton::Left) {
         if let Some(i) = cur.drag {
             if i < 2 {
-                cur.pos[i] =
-                    ((world.x - layout.plot_center.x) / layout.plot.width() + 0.5).clamp(0.0, 1.0);
+                let xf = (world.x - layout.plot_center.x) / layout.plot.width() + 0.5;
+                cur.pos[i] = record_frac(xf, phosphor.hview).clamp(0.0, 1.0);
             } else {
                 cur.pos[i] =
                     ((world.y - layout.plot_center.y) / (10.0 * layout.div.y)).clamp(-0.4, 0.4);
@@ -104,14 +118,24 @@ pub fn cursor_input(
     }
 }
 
-pub fn draw_cursors(cur: Res<CursorState>, layout: Res<Layout>, mut gizmos: Gizmos) {
+pub fn draw_cursors(
+    cur: Res<CursorState>,
+    layout: Res<Layout>,
+    phosphor: Res<Phosphor>,
+    mut gizmos: Gizmos,
+) {
     let w = layout.plot.width();
     let h = layout.plot.height();
     let o = layout.plot_center;
     let color = Color::srgba(0.4, 1.0, 0.6, 0.7);
     if cur.time_on {
         for i in 0..2 {
-            let x = cur.x_world(&layout, i);
+            // Cursors outside the zoom window hide at the plot edge.
+            let xf = view_frac(cur.pos[i], phosphor.hview);
+            if xf < 0.0 || xf > 1.0 {
+                continue;
+            }
+            let x = cur.x_world(&layout, phosphor.hview, i);
             gizmos.line_2d(
                 Vec2::new(x, o.y - h / 2.0),
                 Vec2::new(x, o.y + h / 2.0),

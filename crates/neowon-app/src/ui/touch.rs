@@ -1,10 +1,11 @@
 //! Touchscreen-style pointer control on the plot, mapped to the mouse the
 //! way modern scopes map gestures: drag the trigger-level line to move the
 //! level, drag the waveform to move the selected channel's offset
-//! (vertical) and the trigger position (horizontal), scroll to step
-//! volts/div, shift+scroll to step the sample rate, and a 2-D wheel's x
-//! axis to pan horizontally. Zoom/pan share the `view` ops with the dock
-//! toolbar, keys, and scripts.
+//! (vertical) and the horizontal zoom window (horizontal), scroll to step
+//! volts/div, shift+scroll to zoom the horizontal window at the pointer,
+//! and a 2-D wheel's x axis to pan the window. Double-click resets the
+//! window. Zoom/pan share the `view` ops with the dock toolbar, keys, and
+//! scripts.
 //!
 //! Priority: measurement-cursor drags (cursors.rs, runs earlier) win; this
 //! system stands down while one is active.
@@ -16,8 +17,12 @@ use neowon_backend::ScopeConfig;
 
 use crate::Link;
 use crate::cursors::CursorState;
+use crate::gpu::Phosphor;
 use crate::ui::layout::Layout;
 use crate::view;
+
+/// Second click within this window counts as a double-click.
+const DOUBLE_CLICK_S: f64 = 0.35;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Drag {
@@ -31,6 +36,8 @@ pub enum Drag {
 pub struct TouchState {
     drag: Option<Drag>,
     last_world: Vec2,
+    /// Time of the last press inside the plot (double-click detection).
+    last_click: f64,
 }
 
 fn world_pos(
@@ -92,6 +99,7 @@ pub fn hit_drag(layout: &Layout, config: &ScopeConfig, world: Vec2) -> Drag {
 
 #[allow(clippy::too_many_arguments)]
 pub fn plot_pointer(
+    time: Res<Time>,
     mouse: Res<ButtonInput<MouseButton>>,
     mut wheel: MessageReader<MouseWheel>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -102,6 +110,7 @@ pub fn plot_pointer(
     cursors: Res<CursorState>,
     mut touch: ResMut<TouchState>,
     mut link: ResMut<Link>,
+    mut phosphor: ResMut<Phosphor>,
 ) {
     // Measurement cursors (earlier in the chain) own the pointer while
     // dragging; egui owns it over panels.
@@ -118,8 +127,9 @@ pub fn plot_pointer(
         return;
     };
 
-    // Scroll: volts/div ladder on the selected channel; shift = sample rate;
-    // a 2-D wheel's x axis pans horizontally.
+    // Scroll: volts/div ladder on the selected channel; shift = horizontal
+    // zoom of the record window at the pointer; a 2-D wheel's x axis pans
+    // the window.
     if on_plot(&layout, world) {
         let mut steps = [0.0f32; 2];
         for ev in wheel.read() {
@@ -134,7 +144,11 @@ pub fn plot_pointer(
             // Scroll up = zoom in (finer scale).
             let inward = steps[0] > 0.0;
             if keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) {
-                view::zoom_rate(&mut link, inward);
+                let anchor = ((world.x - (layout.plot_center.x - layout.plot.width() / 2.0))
+                    / layout.plot.width())
+                .clamp(0.0, 1.0);
+                let (c, s) = phosphor.hview;
+                view::hview_zoom(&mut phosphor, (c - s / 2.0) + anchor as f64 * s, inward);
             } else {
                 let sel = link.selected.min(1);
                 view::zoom_channel(&mut link, sel, inward);
@@ -142,20 +156,25 @@ pub fn plot_pointer(
         }
         if steps[1].abs() >= 0.5 {
             // Content follows the finger: swipe right slides the waveform
-            // right (earlier trigger position).
-            let dir = if steps[1] > 0.0 {
-                view::Pan::Right
-            } else {
-                view::Pan::Left
-            };
-            view::pan(&mut link, dir);
+            // right (the window moves earlier in the record).
+            let d = -(steps[1] as f64) * 0.02 * phosphor.hview.1;
+            view::hview_pan(&mut phosphor, d);
         }
     } else {
         wheel.clear();
     }
 
     if mouse.just_pressed(MouseButton::Left) && on_plot(&layout, world) {
+        let now = time.elapsed_secs_f64();
         let drag = hit_drag(&layout, &link.config, world);
+        // Double-click on empty plot: reset the horizontal window.
+        if drag == Drag::Waveform && now - touch.last_click < DOUBLE_CLICK_S {
+            view::hview_home(&mut phosphor);
+            touch.drag = None;
+            touch.last_click = 0.0;
+            return;
+        }
+        touch.last_click = now;
         if let Drag::OffsetMarker(ch) = drag {
             link.selected = ch;
         }
@@ -200,10 +219,12 @@ pub fn plot_pointer(
             let sel = link.selected.min(1);
             let off = (link.config.channels[sel].offset + dfrac).clamp(-0.5, 0.5);
             link.config.channels[sel].offset = off;
-            let pos =
-                (link.config.position - (delta.x / layout.plot.width()) as f64).clamp(0.0, 1.0);
-            link.config.position = pos;
             link.dirty = true;
+            // Horizontal: pan the zoom window (instant; the trigger-position
+            // marker stays the acquisition control). Waveform follows the
+            // pointer, so dragging right moves the window earlier.
+            let d = -(delta.x / layout.plot.width()) as f64 * phosphor.hview.1;
+            view::hview_pan(&mut phosphor, d);
         }
     }
 }

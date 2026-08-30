@@ -153,11 +153,11 @@ pub fn show(
                     .max_height(rect.height() - 16.0)
                     .show(ui, |ui| {
                         ui.set_min_width(rect.width() - 24.0);
-                        view_toolbar(ui, link);
+                        view_toolbar(ui, link, phosphor);
                         for m in SECTIONS {
                             section(ui, menus, m, |ui, menus| match m {
                                 Menu::Channel(ch) => dialog_channel::show(ui, link, ch),
-                                Menu::Horizontal => dialog_horizontal::show(ui, link),
+                                Menu::Horizontal => dialog_horizontal::show(ui, link, phosphor),
                                 Menu::Trigger => dialog_trigger::show(ui, link),
                                 Menu::Acquire => dialog_acquire::show(ui, link),
                                 Menu::Display => dialog_display::show(
@@ -185,69 +185,88 @@ pub fn show(
 /// Always-visible zoom/pan/home strip at the top of the dock — the same
 /// operations the plot gestures (`ui/touch.rs`) and the `zoom`/`pan`/`home`
 /// script actions drive.
-fn view_toolbar(ui: &mut egui::Ui, link: &mut crate::Link) {
-    fn key(ui: &mut egui::Ui, label: &str, tip: &str, wide: bool) -> bool {
-        let size = egui::vec2(if wide { 46.0 } else { 34.0 }, 24.0);
-        let r = ui.add_sized(
-            size,
-            egui::Button::new(egui::RichText::new(label).size(12.0))
-                .fill(egui::Color32::from_rgb(28, 30, 36))
-                .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(70))),
-        );
-        r.on_hover_text(tip).clicked()
-    }
+fn view_toolbar(ui: &mut egui::Ui, link: &mut crate::Link, phosphor: &mut crate::gpu::Phosphor) {
+    use crate::ui::icons::{Icon, button};
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         let sel = link.selected.min(1);
-        if key(
+        if button(
             ui,
-            "V−",
+            Icon::ZoomOut,
             "Vertical zoom out — coarser V/div (selected channel)",
-            false,
-        ) {
+            26.0,
+        )
+        .clicked()
+        {
             crate::view::zoom_channel(link, sel, false);
         }
-        if key(
+        if button(
             ui,
-            "V+",
+            Icon::ZoomIn,
             "Vertical zoom in — finer V/div (selected channel)",
-            false,
-        ) {
+            26.0,
+        )
+        .clicked()
+        {
             crate::view::zoom_channel(link, sel, true);
         }
-        if key(ui, "H−", "Horizontal zoom out — slower sample rate", false) {
-            crate::view::zoom_rate(link, false);
-        }
-        if key(ui, "H+", "Horizontal zoom in — faster sample rate", false) {
-            crate::view::zoom_rate(link, true);
-        }
-        if key(
+        if button(
             ui,
-            "⌂",
+            Icon::ZoomOut,
+            "Horizontal zoom out — wider record window",
+            26.0,
+        )
+        .clicked()
+        {
+            crate::view::hview_zoom(phosphor, 0.5, false);
+        }
+        if button(
+            ui,
+            Icon::ZoomIn,
+            "Horizontal zoom in — narrower record window",
+            26.0,
+        )
+        .clicked()
+        {
+            crate::view::hview_zoom(phosphor, 0.5, true);
+        }
+        if button(
+            ui,
+            Icon::Home,
             "Home — default zoom and centre position (key: H)",
-            true,
-        ) {
-            crate::view::home(link);
+            26.0,
+        )
+        .clicked()
+        {
+            crate::view::home(link, phosphor);
         }
     });
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
-        for (label, dir, tip) in [
-            ("←", crate::view::Pan::Left, "Pan left (trigger position)"),
-            ("→", crate::view::Pan::Right, "Pan right (trigger position)"),
+        for (icon, dir, tip) in [
             (
-                "↑",
+                Icon::ArrowLeft,
+                crate::view::Pan::Left,
+                "Pan left (record window)",
+            ),
+            (
+                Icon::ArrowRight,
+                crate::view::Pan::Right,
+                "Pan right (record window)",
+            ),
+            (
+                Icon::ArrowUp,
                 crate::view::Pan::Up,
                 "Pan up (selected channel offset)",
             ),
             (
-                "↓",
+                Icon::ArrowDown,
                 crate::view::Pan::Down,
                 "Pan down (selected channel offset)",
             ),
         ] {
-            if key(ui, label, tip, false) {
-                crate::view::pan(link, dir);
+            if button(ui, icon, tip, 26.0).clicked() {
+                crate::view::pan(link, phosphor, dir);
             }
         }
         ui.add_space(4.0);

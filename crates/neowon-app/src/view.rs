@@ -9,7 +9,45 @@
 use neowon_backend::ScopeConfig;
 
 use crate::Link;
-use crate::ui::widgets::{FALLBACK_RATES, FALLBACK_VDIV};
+use crate::gpu::Phosphor;
+use crate::ui::widgets::FALLBACK_VDIV;
+
+/// Narrowest horizontal zoom window (100x).
+pub const HVIEW_MIN_SPAN: f64 = 0.01;
+
+/// Clamp a (center, span) window inside the record.
+pub fn hview_clamp(center: f64, span: f64) -> (f64, f64) {
+    let span = span.clamp(HVIEW_MIN_SPAN, 1.0);
+    let center = center.clamp(span / 2.0, 1.0 - span / 2.0);
+    (center, span)
+}
+
+/// Zoom the horizontal view around `anchor` (record fraction, e.g. under
+/// the pointer); `inward` = a narrower window. The anchor stays put on
+/// screen, like the spectrum window's zoom.
+pub fn hview_zoom(p: &mut Phosphor, anchor: f64, inward: bool) {
+    let (c, s) = p.hview;
+    let k = if inward { 0.5 } else { 2.0 };
+    let new_span = (s * k).clamp(HVIEW_MIN_SPAN, 1.0);
+    let anchor = anchor.clamp(0.0, 1.0);
+    let frac = if s > 1e-9 {
+        ((anchor - (c - s / 2.0)) / s).clamp(0.0, 1.0)
+    } else {
+        0.5
+    };
+    p.hview = hview_clamp(anchor - frac * new_span + new_span / 2.0, new_span);
+}
+
+/// Pan the horizontal view by `dcenter` record fractions (clamped).
+pub fn hview_pan(p: &mut Phosphor, dcenter: f64) {
+    let (c, s) = p.hview;
+    p.hview = hview_clamp(c + dcenter, s);
+}
+
+/// Reset the horizontal view to the whole record.
+pub fn hview_home(p: &mut Phosphor) {
+    p.hview = (0.5, 1.0);
+}
 
 /// The configuration the app boots with — also what `home` restores the
 /// view geometry to. Defaults matched to the 1 kHz probe-comp signal
@@ -40,25 +78,11 @@ pub fn step_ladder(ladder: &[f64], current: f64, up: bool) -> f64 {
     ladder[idx]
 }
 
-fn rate_ladder(link: &Link) -> Vec<f64> {
-    link.caps
-        .as_ref()
-        .map(|c| c.sample_rates.clone())
-        .unwrap_or_else(|| FALLBACK_RATES.to_vec())
-}
-
 fn vdiv_ladder(link: &Link) -> Vec<f64> {
     link.caps
         .as_ref()
         .map(|c| c.volts_div.clone())
         .unwrap_or_else(|| FALLBACK_VDIV.to_vec())
-}
-
-/// Horizontal zoom one ladder rung; `inward` = faster rate (finer time).
-pub fn zoom_rate(link: &mut Link, inward: bool) {
-    let ladder = rate_ladder(link);
-    link.config.sample_rate = step_ladder(&ladder, link.config.sample_rate, inward);
-    link.dirty = true;
 }
 
 /// Vertical zoom one ladder rung on `ch`; `inward` = finer volts/div.
@@ -78,27 +102,30 @@ pub enum Pan {
     Down,
 }
 
-/// Pan one division: ±0.1 of the record (trigger position) or ±0.1 of full
-/// scale (the selected channel's offset).
-pub fn pan(link: &mut Link, dir: Pan) {
+/// Pan one step: left/right slide the horizontal zoom window (content
+/// follows the arrow), up/down move the selected channel's offset by a
+/// tenth of full scale.
+pub fn pan(link: &mut Link, phosphor: &mut Phosphor, dir: Pan) {
     const STEP: f64 = 0.1;
     match dir {
-        Pan::Left => link.config.position = (link.config.position + STEP).min(1.0),
-        Pan::Right => link.config.position = (link.config.position - STEP).max(0.0),
+        // Content follows the arrow, like dragging the waveform that way:
+        // pan left slides it left, revealing later samples.
+        Pan::Left => hview_pan(phosphor, STEP * phosphor.hview.1),
+        Pan::Right => hview_pan(phosphor, -STEP * phosphor.hview.1),
         Pan::Up | Pan::Down => {
             let sel = link.selected.min(1);
             let d = if dir == Pan::Up { STEP } else { -STEP };
             let off = (link.config.channels[sel].offset + d).clamp(-0.5, 0.5);
             link.config.channels[sel].offset = off;
+            link.dirty = true;
         }
     }
-    link.dirty = true;
 }
 
 /// Reset zoom and centring to the startup defaults (volts/div, sample rate,
-/// offsets, trigger position). The trigger level is not view state and is
-/// left alone.
-pub fn home(link: &mut Link) {
+/// offsets, trigger position) plus the horizontal zoom window. The trigger
+/// level is not view state and is left alone.
+pub fn home(link: &mut Link, phosphor: &mut Phosphor) {
     let d = startup_config();
     for ch in 0..2 {
         link.config.channels[ch].volts_div = d.channels[ch].volts_div;
@@ -107,6 +134,7 @@ pub fn home(link: &mut Link) {
     link.config.sample_rate = d.sample_rate;
     link.config.position = d.position;
     link.dirty = true;
+    hview_home(phosphor);
 }
 
 #[cfg(test)]
@@ -152,41 +180,47 @@ mod tests {
         zoom_channel(&mut link, 0, false);
         zoom_channel(&mut link, 0, false); // back to coarser
         assert_eq!(link.config.channels[0].volts_div, 0.5);
-        zoom_rate(&mut link, true); // 250 kS/s -> faster
-        assert_eq!(link.config.sample_rate, 2.5e6);
         assert!(link.dirty);
     }
 
     #[test]
-    fn pan_moves_position_and_offset() {
+    fn pan_moves_window_and_offset() {
         let mut link = link();
-        assert_eq!(link.config.position, 0.5);
-        pan(&mut link, Pan::Left);
-        assert!((link.config.position - 0.6).abs() < 1e-9);
-        pan(&mut link, Pan::Right);
-        assert!((link.config.position - 0.5).abs() < 1e-9);
-        // Waveform-follows-drag: right arrow slides it off the right edge.
-        for _ in 0..20 {
-            pan(&mut link, Pan::Right);
+        // Zoomed to the middle half: pans slide the window, clamped inside.
+        let mut p = Phosphor {
+            hview: (0.5, 0.5),
+            ..Default::default()
+        };
+        pan(&mut link, &mut p, Pan::Left);
+        assert!((p.hview.0 - 0.55).abs() < 1e-9);
+        pan(&mut link, &mut p, Pan::Right);
+        assert!((p.hview.0 - 0.5).abs() < 1e-9);
+        // Content follows the arrow: repeated left pans slide the window
+        // toward the record's end and clamp there.
+        for _ in 0..40 {
+            pan(&mut link, &mut p, Pan::Left);
         }
-        assert_eq!(link.config.position, 0.0);
-        pan(&mut link, Pan::Up);
+        assert!((p.hview.0 + p.hview.1 / 2.0 - 1.0).abs() < 1e-9);
+        // Vertical pans move the selected channel offset.
+        pan(&mut link, &mut p, Pan::Up);
         assert!((link.config.channels[0].offset - 0.1).abs() < 1e-9);
-        pan(&mut link, Pan::Down);
-        pan(&mut link, Pan::Down);
+        pan(&mut link, &mut p, Pan::Down);
+        pan(&mut link, &mut p, Pan::Down);
         assert!((link.config.channels[0].offset + 0.1).abs() < 1e-9);
     }
 
     #[test]
     fn home_restores_startup_view() {
         let mut link = link();
+        let mut p = Phosphor::default();
         link.config.channels[0].volts_div = 5.0;
         link.config.channels[0].offset = 0.4;
         link.config.channels[1].offset = -0.3;
         link.config.sample_rate = 100e6;
         link.config.position = 0.9;
         link.config.trigger.level = 3.3;
-        home(&mut link);
+        p.hview = (0.2, 0.1);
+        home(&mut link, &mut p);
         let d = startup_config();
         assert_eq!(link.config.channels[0].volts_div, d.channels[0].volts_div);
         assert_eq!(link.config.channels[1].volts_div, d.channels[1].volts_div);
@@ -196,6 +230,44 @@ mod tests {
         assert_eq!(link.config.position, d.position);
         // Trigger level is not view state.
         assert_eq!(link.config.trigger.level, 3.3);
+        assert_eq!(p.hview, (0.5, 1.0));
         assert!(link.dirty);
+    }
+
+    #[test]
+    fn hview_zoom_keeps_the_anchor_and_clamps() {
+        let mut p = Phosphor::default();
+        // Zoom in around the record center: window halves, stays centred.
+        hview_zoom(&mut p, 0.5, true);
+        assert!((p.hview.1 - 0.5).abs() < 1e-9);
+        assert!((p.hview.0 - 0.5).abs() < 1e-9);
+        // Anchor at the visible left edge: it stays at the left edge.
+        let left = p.hview.0 - p.hview.1 / 2.0;
+        hview_zoom(&mut p, left, true);
+        assert!((p.hview.0 - p.hview.1 / 2.0 - left).abs() < 1e-9);
+        // Zoom out from full view clamps at the whole record.
+        hview_home(&mut p);
+        hview_zoom(&mut p, 0.5, false);
+        assert_eq!(p.hview, (0.5, 1.0));
+        // Repeated zoom-in bottoms out at the minimum span, still centred.
+        for _ in 0..40 {
+            hview_zoom(&mut p, 0.5, true);
+        }
+        assert_eq!(p.hview.1, HVIEW_MIN_SPAN);
+    }
+
+    #[test]
+    fn hview_pan_stays_inside_the_record() {
+        let mut p = Phosphor::default();
+        hview_zoom(&mut p, 0.5, true); // span 0.5
+        hview_pan(&mut p, -10.0);
+        let (c, s) = p.hview;
+        assert!((c - s / 2.0).abs() < 1e-9, "clamped at the left edge");
+        hview_pan(&mut p, 10.0);
+        let (c, s) = p.hview;
+        assert!(
+            (c + s / 2.0 - 1.0).abs() < 1e-9,
+            "clamped at the right edge"
+        );
     }
 }

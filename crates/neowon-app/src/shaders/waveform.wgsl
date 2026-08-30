@@ -21,7 +21,8 @@ struct Params {
     en2: u32,
     crt: u32,
     palette: u32,
-    _pad2: u32,
+    view_start: f32,
+    view_span: f32,
     col0: vec4f,
     col1: vec4f,
     col2: vec4f,
@@ -66,6 +67,17 @@ fn enabled_for(ch: u32) -> u32 {
 // The visible window is +-100 counts; beyond it the beam is off the plot.
 fn off_screen(raw: i32) -> bool {
     return raw > 100 || raw < -100;
+}
+
+// Horizontal zoom window: sample index -> fraction of the visible plot
+// (0..1). Samples outside the window map outside [0, 1] and are skipped.
+fn view_x(i: u32) -> f32 {
+    let fx = f32(i) / f32(params.samples - 1u);
+    return (fx - params.view_start) / params.view_span;
+}
+
+fn plot_col(xf: f32) -> u32 {
+    return u32(clamp(xf, 0.0, 1.0) * f32(params.width - 1u));
 }
 
 @compute @workgroup_size(256, 1, 1)
@@ -118,10 +130,15 @@ fn raster(@builtin(global_invocation_id) id: vec3<u32>) {
     let r1 = wave[ch * params.samples + i];
     if ((r0 > 100 && r1 > 100) || (r0 < -100 && r1 < -100)) { return; }
 
-    let x = i * (params.width - 1u) / (params.samples - 1u);
+    // Zoom window: cull samples outside; segments crossing the edge clamp
+    // to the boundary column.
+    let xf0 = view_x(i - 1u);
+    let xf1 = view_x(i);
+    if ((xf0 < 0.0 && xf1 < 0.0) || (xf0 > 1.0 && xf1 > 1.0)) { return; }
+    let x = plot_col(xf1);
     let y1 = sample_row(ch, i);
     if (params.mode == 1u) {
-        if (off_screen(r1)) { return; }
+        if (off_screen(r1) || xf1 < 0.0 || xf1 > 1.0) { return; }
         atomicAdd(&accum[accum_idx(ch, x, u32(y1))], u32(FIXED));
         return;
     }

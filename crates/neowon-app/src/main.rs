@@ -125,6 +125,13 @@ fn main() {
             }),
             ..default()
         }))
+        // A scope keeps sweeping while you look away: render continuously
+        // even unfocused (the default reactive-low-power mode stalls the
+        // frame loop on throttled compositors — and every automated test).
+        .insert_resource(bevy::winit::WinitSettings {
+            focused_mode: bevy::winit::UpdateMode::Continuous,
+            unfocused_mode: bevy::winit::UpdateMode::Continuous,
+        })
         .add_plugins(EguiPlugin::default())
         .add_plugins(PhosphorPlugin)
         .add_plugins(effects::EffectsPlugin)
@@ -369,7 +376,12 @@ fn ingest(time: Res<Time>, mut link: ResMut<Link>) {
     }
 }
 
-fn input(keys: Res<ButtonInput<KeyCode>>, egui_wants: Res<EguiWantsInput>, mut link: ResMut<Link>) {
+fn input(
+    keys: Res<ButtonInput<KeyCode>>,
+    egui_wants: Res<EguiWantsInput>,
+    mut link: ResMut<Link>,
+    mut phosphor: ResMut<Phosphor>,
+) {
     if egui_wants.wants_any_keyboard_input() {
         return;
     }
@@ -473,7 +485,7 @@ fn input(keys: Res<ButtonInput<KeyCode>>, egui_wants: Res<EguiWantsInput>, mut l
         let _ = link.sup.commands.send(Command::AutoSet);
     }
     if keys.just_pressed(KeyCode::KeyH) {
-        crate::view::home(&mut link);
+        crate::view::home(&mut link, &mut phosphor);
     }
 }
 

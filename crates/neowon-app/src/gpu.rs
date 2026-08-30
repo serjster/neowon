@@ -91,6 +91,9 @@ pub struct Phosphor {
     pub palette: Palette,
     /// One-shot: a new record arrived since the last render frame.
     pub new_frame: bool,
+    /// Horizontal zoom window into the record: (center, span) as fractions
+    /// of the record. (0.5, 1.0) shows the whole record — the home view.
+    pub hview: (f64, f64),
 }
 
 impl Default for Phosphor {
@@ -105,6 +108,7 @@ impl Default for Phosphor {
             crt: true,
             palette: Palette::Phosphor,
             new_frame: false,
+            hview: (0.5, 1.0),
         }
     }
 }
@@ -145,7 +149,10 @@ struct Params {
     en2: u32,
     crt: u32,
     palette: u32,
-    _pad2: u32,
+    /// Horizontal zoom window: first visible sample fraction, window width
+    /// as a fraction of the record (1.0 = whole record).
+    view_start: f32,
+    view_span: f32,
     col0: Vec4,
     col1: Vec4,
     col2: Vec4,
@@ -170,6 +177,8 @@ pub(crate) struct Buffers {
     pub(crate) n_samples: u32,
     /// Raster requested for this render frame.
     do_raster: bool,
+    /// Last applied zoom window — a change clears the phosphor.
+    hview: (f64, f64),
 }
 
 #[derive(Resource)]
@@ -241,6 +250,7 @@ fn prepare_buffers(
                 uploaded_seq: 0,
                 n_samples: 0,
                 do_raster: false,
+                hview: phosphor.hview,
             });
             return; // bind next frame
         }
@@ -281,12 +291,21 @@ fn prepare_buffers(
         }
     }
 
-    // "Off" persistence: a fresh record replaces the screen outright.
-    let decay = if b.do_raster && phosphor.persistence == Persistence::Off {
+    // "Off" persistence: a fresh record replaces the screen outright. A
+    // zoom-window change does the same — old phosphor at the wrong zoom
+    // would ghost into the new view.
+    let mut decay = if b.do_raster && phosphor.persistence == Persistence::Off {
         0.0
     } else {
         phosphor.decay
     };
+    if (phosphor.hview.0 - b.hview.0).abs() > 1e-9 || (phosphor.hview.1 - b.hview.1).abs() > 1e-9 {
+        decay = 0.0;
+        b.hview = phosphor.hview;
+    }
+    let (center, span) = phosphor.hview;
+    let span = span.clamp(0.01, 1.0);
+    let center = center.clamp(span / 2.0, 1.0 - span / 2.0);
     let n_samples = b.n_samples.max(2);
     b.params.set(Params {
         width: PLOT_W,
@@ -308,7 +327,8 @@ fn prepare_buffers(
             Palette::Thermal => 1,
             Palette::Green => 2,
         },
-        _pad2: 0,
+        view_start: (center - span / 2.0) as f32,
+        view_span: span as f32,
         col0: Vec4::new(1.0, 0.85, 0.1, 1.0),
         col1: Vec4::new(0.2, 0.75, 1.0, 1.0),
         col2: Vec4::new(1.0, 0.35, 0.85, 1.0),

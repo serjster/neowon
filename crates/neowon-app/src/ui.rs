@@ -14,6 +14,8 @@ pub mod dialog_record;
 pub mod dialog_trigger;
 pub mod dialog_utility;
 pub mod frontpanel;
+pub mod icons;
+pub mod knob;
 pub mod layout;
 pub mod menu;
 pub mod menubar;

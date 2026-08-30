@@ -157,6 +157,7 @@ pub fn emit(
         Palette::Green => "green",
     };
     let _ = writeln!(w, "palette {palette}");
+    let _ = writeln!(w, "hview {} {}", phosphor.hview.0, phosphor.hview.1);
 
     let math_op = if !math.enabled {
         "off"
