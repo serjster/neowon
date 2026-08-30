@@ -109,6 +109,7 @@ impl Backend for SimBackend {
         for (i, c) in cfg.channels.iter().enumerate().take(2) {
             self.src.set_enabled(i, c.enabled);
             self.src.set_range(i, c.volts_div * 10.0 * c.probe);
+            self.src.set_offset(i, c.offset);
         }
         self.cfg = cfg.clone();
         Ok(())
@@ -220,6 +221,36 @@ mod tests {
     fn auto_sweep_ignores_level() {
         let mut b = armed(10.0, Sweep::Auto);
         assert!(b.poll_frame(Duration::from_millis(200)).unwrap().is_some());
+    }
+
+    #[test]
+    fn offset_shifts_raw_codes_like_hardware() {
+        let mut b = SimBackend::new();
+        assert!(b.set_stimulus("dc-1v").unwrap());
+        let mut cfg = ScopeConfig {
+            channels: vec![
+                ChannelConfig {
+                    enabled: true,
+                    volts_div: 0.5, // 5 V full scale, 0.02 V/LSB
+                    ..Default::default()
+                },
+                ChannelConfig::default(),
+            ],
+            ..Default::default()
+        };
+        b.apply(&cfg).unwrap();
+        let base = b.poll_frame(Duration::from_millis(200)).unwrap().unwrap();
+        let raw0 = base.channels[0].raw[0];
+        assert_eq!(raw0, 50, "1 V at 0.02 V/LSB"); // 50 counts above center
+
+        cfg.channels[0].offset = 0.1; // +25 counts, like the zero DAC
+        b.apply(&cfg).unwrap();
+        let shifted = b.poll_frame(Duration::from_millis(200)).unwrap().unwrap();
+        let cap = &shifted.channels[0];
+        assert_eq!(cap.raw[0], 75);
+        // zero_volts compensates: recovered volts stay 1 V.
+        let volts = cap.raw[0] as f64 * cap.volts_per_lsb + cap.zero_volts;
+        assert!((volts - 1.0).abs() < 1e-9, "recovered {volts} V");
     }
 
     #[test]

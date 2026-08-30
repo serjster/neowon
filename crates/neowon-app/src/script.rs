@@ -21,6 +21,9 @@
 //! holdoff <seconds>
 //! autoset
 //! force
+//! zoom <h|v> <in|out>                 # one ladder rung (h=rate, v=selected ch)
+//! pan <left|right|up|down>            # one division of position/offset
+//! home                                # default zoom + centre position
 //! acq <sample|peak|avg4|avg16|avg64>
 //! mode <vectors|dots|xy>
 //! persist <off|inf|SECONDS>
@@ -125,6 +128,12 @@ pub enum Action {
     Holdoff(f64),
     AutoSet,
     Force,
+    Zoom {
+        horiz: bool,
+        inward: bool,
+    },
+    Pan(crate::view::Pan),
+    Home,
     Acq(AcqMode),
     Mode(TraceMode),
     Persist(Persistence),
@@ -330,6 +339,26 @@ pub(crate) fn parse(text: &str) -> Result<VecDeque<(f64, Action)>, String> {
             "holdoff" => Action::Holdoff(rest()?.parse().map_err(|_| err("bad holdoff"))?),
             "autoset" => Action::AutoSet,
             "force" => Action::Force,
+            "zoom" => Action::Zoom {
+                horiz: match rest()? {
+                    "h" => true,
+                    "v" => false,
+                    _ => return Err(err("bad zoom axis")),
+                },
+                inward: match rest()? {
+                    "in" => true,
+                    "out" => false,
+                    _ => return Err(err("bad zoom direction")),
+                },
+            },
+            "pan" => Action::Pan(match rest()? {
+                "left" => crate::view::Pan::Left,
+                "right" => crate::view::Pan::Right,
+                "up" => crate::view::Pan::Up,
+                "down" => crate::view::Pan::Down,
+                _ => return Err(err("bad pan direction")),
+            }),
+            "home" => Action::Home,
             "acq" => Action::Acq(match rest()? {
                 "sample" => AcqMode::Sample,
                 "peak" => AcqMode::Peak,
@@ -594,6 +623,16 @@ pub fn run_script(
             Action::Force => {
                 let _ = link.sup.commands.send(Command::ForceTrigger);
             }
+            Action::Zoom { horiz, inward } => {
+                if horiz {
+                    crate::view::zoom_rate(&mut link, inward);
+                } else {
+                    let sel = link.selected.min(1);
+                    crate::view::zoom_channel(&mut link, sel, inward);
+                }
+            }
+            Action::Pan(dir) => crate::view::pan(&mut link, dir),
+            Action::Home => crate::view::home(&mut link),
             Action::Acq(a) => {
                 link.config.acq = a;
                 link.dirty = true;
@@ -813,7 +852,13 @@ pub fn run_script(
                     return;
                 }
                 info!("script: done");
-                std::process::exit(0);
+                // Graceful shutdown: `process::exit` races the render thread
+                // through the driver's atexit teardown (SIGSEGV in
+                // libnvidia-glcore during swapchain present). A world
+                // command keeps `run_script` under the 16-param system cap.
+                commands.queue(|world: &mut World| {
+                    world.write_message(AppExit::Success);
+                });
             }
         }
     }

@@ -153,6 +153,7 @@ pub fn show(
                     .max_height(rect.height() - 16.0)
                     .show(ui, |ui| {
                         ui.set_min_width(rect.width() - 24.0);
+                        view_toolbar(ui, link);
                         for m in SECTIONS {
                             section(ui, menus, m, |ui, menus| match m {
                                 Menu::Channel(ch) => dialog_channel::show(ui, link, ch),
@@ -179,6 +180,84 @@ pub fn show(
                     });
             });
         });
+}
+
+/// Always-visible zoom/pan/home strip at the top of the dock — the same
+/// operations the plot gestures (`ui/touch.rs`) and the `zoom`/`pan`/`home`
+/// script actions drive.
+fn view_toolbar(ui: &mut egui::Ui, link: &mut crate::Link) {
+    fn key(ui: &mut egui::Ui, label: &str, tip: &str, wide: bool) -> bool {
+        let size = egui::vec2(if wide { 46.0 } else { 34.0 }, 24.0);
+        let r = ui.add_sized(
+            size,
+            egui::Button::new(egui::RichText::new(label).size(12.0))
+                .fill(egui::Color32::from_rgb(28, 30, 36))
+                .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(70))),
+        );
+        r.on_hover_text(tip).clicked()
+    }
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        let sel = link.selected.min(1);
+        if key(
+            ui,
+            "V−",
+            "Vertical zoom out — coarser V/div (selected channel)",
+            false,
+        ) {
+            crate::view::zoom_channel(link, sel, false);
+        }
+        if key(
+            ui,
+            "V+",
+            "Vertical zoom in — finer V/div (selected channel)",
+            false,
+        ) {
+            crate::view::zoom_channel(link, sel, true);
+        }
+        if key(ui, "H−", "Horizontal zoom out — slower sample rate", false) {
+            crate::view::zoom_rate(link, false);
+        }
+        if key(ui, "H+", "Horizontal zoom in — faster sample rate", false) {
+            crate::view::zoom_rate(link, true);
+        }
+        if key(
+            ui,
+            "⌂",
+            "Home — default zoom and centre position (key: H)",
+            true,
+        ) {
+            crate::view::home(link);
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        for (label, dir, tip) in [
+            ("←", crate::view::Pan::Left, "Pan left (trigger position)"),
+            ("→", crate::view::Pan::Right, "Pan right (trigger position)"),
+            (
+                "↑",
+                crate::view::Pan::Up,
+                "Pan up (selected channel offset)",
+            ),
+            (
+                "↓",
+                crate::view::Pan::Down,
+                "Pan down (selected channel offset)",
+            ),
+        ] {
+            if key(ui, label, tip, false) {
+                crate::view::pan(link, dir);
+            }
+        }
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new("VIEW — drag plot to pan, scroll to zoom")
+                .size(9.0)
+                .color(egui::Color32::GRAY),
+        );
+    });
+    ui.add_space(4.0);
 }
 
 /// Accordion section: a full-width header that expands its body (collapsing

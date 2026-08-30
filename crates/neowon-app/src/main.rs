@@ -17,6 +17,11 @@
 //!   A           auto-set
 //!   E           cycle persistence (off -> 0.2s -> 1s -> 5s -> infinite)
 //!   X           cycle trace mode (vectors -> dots -> XY)
+//!   H           home — default zoom + centre position
+//!
+//! Pointer on the plot: scroll = volts/div, shift+scroll = sample rate,
+//! 2-D wheel x = horizontal pan, drag = pan (offset + trigger position),
+//! marker drags = level/offset/position (ui/touch.rs).
 
 mod control;
 mod cursors;
@@ -28,6 +33,7 @@ mod refs;
 mod script;
 mod session;
 mod ui;
+mod view;
 mod viz;
 
 use bevy::asset::RenderAssetUsages;
@@ -77,18 +83,7 @@ fn main() {
     };
 
     // Defaults matched to the 1 kHz probe-comp signal through a x10 probe.
-    let config = ScopeConfig {
-        channels: {
-            let mut chs = ScopeConfig::default().channels;
-            chs[0].volts_div = 0.2;
-            chs
-        },
-        trigger: neowon_backend::TriggerConfig {
-            level: 0.25,
-            ..Default::default()
-        },
-        ..Default::default()
-    };
+    let config = crate::view::startup_config();
     let config = if demo {
         let mut c = config;
         for ch in c.channels.iter_mut().take(2) {
@@ -374,25 +369,6 @@ fn ingest(time: Res<Time>, mut link: ResMut<Link>) {
     }
 }
 
-fn step(ladder: &[f64], current: f64, up: bool) -> f64 {
-    // Find nearest, then move one rung.
-    let mut idx = 0;
-    let mut best = f64::MAX;
-    for (i, &v) in ladder.iter().enumerate() {
-        let d = (v.ln() - current.max(1e-9).ln()).abs();
-        if d < best {
-            best = d;
-            idx = i;
-        }
-    }
-    let idx = if up {
-        (idx + 1).min(ladder.len() - 1)
-    } else {
-        idx.saturating_sub(1)
-    };
-    ladder[idx]
-}
-
 fn input(keys: Res<ButtonInput<KeyCode>>, egui_wants: Res<EguiWantsInput>, mut link: ResMut<Link>) {
     if egui_wants.wants_any_keyboard_input() {
         return;
@@ -413,21 +389,23 @@ fn input(keys: Res<ButtonInput<KeyCode>>, egui_wants: Res<EguiWantsInput>, mut l
         link.dirty = true;
     }
     if keys.just_pressed(KeyCode::ArrowUp) {
-        let v = step(&volts_ladder, link.config.channels[0].volts_div, true);
+        let v = crate::view::step_ladder(&volts_ladder, link.config.channels[0].volts_div, true);
         link.config.channels[0].volts_div = v;
         link.dirty = true;
     }
     if keys.just_pressed(KeyCode::ArrowDown) {
-        let v = step(&volts_ladder, link.config.channels[0].volts_div, false);
+        let v = crate::view::step_ladder(&volts_ladder, link.config.channels[0].volts_div, false);
         link.config.channels[0].volts_div = v;
         link.dirty = true;
     }
     if keys.just_pressed(KeyCode::ArrowRight) {
-        link.config.sample_rate = step(&rate_ladder, link.config.sample_rate, true);
+        link.config.sample_rate =
+            crate::view::step_ladder(&rate_ladder, link.config.sample_rate, true);
         link.dirty = true;
     }
     if keys.just_pressed(KeyCode::ArrowLeft) {
-        link.config.sample_rate = step(&rate_ladder, link.config.sample_rate, false);
+        link.config.sample_rate =
+            crate::view::step_ladder(&rate_ladder, link.config.sample_rate, false);
         link.dirty = true;
     }
     let trig_step = link.config.channels[0].volts_div; // one div per press
@@ -493,6 +471,9 @@ fn input(keys: Res<ButtonInput<KeyCode>>, egui_wants: Res<EguiWantsInput>, mut l
     }
     if keys.just_pressed(KeyCode::KeyA) {
         let _ = link.sup.commands.send(Command::AutoSet);
+    }
+    if keys.just_pressed(KeyCode::KeyH) {
+        crate::view::home(&mut link);
     }
 }
 
@@ -665,7 +646,7 @@ fn draw_markers(
     let (left, right, top) = (o.x - w / 2.0, o.x + w / 2.0, o.y + h / 2.0);
 
     // Left-pointing arrowhead at the right edge: trigger level.
-    let ty = ui::touch::trigger_line_y(&layout, &link);
+    let ty = ui::touch::trigger_line_y(&layout, &link.config);
     let tcol = Color::srgb(1.0, 0.55, 0.25);
     for d in 0..6 {
         let f = d as f32;

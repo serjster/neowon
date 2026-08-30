@@ -147,6 +147,54 @@ fn square_renders_two_bands() {
 
 #[test]
 #[ignore = "needs a window; run with -- --ignored"]
+fn vertical_pan_and_home_shift_the_trace() {
+    // 1 V DC at 0.5 V/div (5 V full scale): raw = 50 counts above center.
+    // Display window is +-100 counts -> row (0.5 - 50/200)*(H-1) ~= 125.
+    // `pan up` moves the selected channel's offset +0.1 of full scale (+25
+    // counts) -> row ~62; `home` restores the startup defaults (the scale
+    // is then re-applied so the centred trace is visible again).
+    let shots = run_script(
+        "panhome",
+        r#"
+        stimulus dc-1v
+        vdiv 0 0.5
+        enable 1 0
+        persist off
+        mode vectors
+        wait 1.5
+        shot base.ppm
+        pan up
+        wait 0.6
+        shot panned.ppm
+        home
+        vdiv 0 0.5
+        wait 0.6
+        shot homed.ppm
+        quit
+        "#,
+    );
+    let row = |p: &PathBuf| {
+        let (w, _h, px) = load_ppm(p);
+        let lit = lit(&px, w);
+        assert!(lit.len() > 500, "only {} lit pixels", lit.len());
+        lit.iter().map(|&(_, y)| y as f64).sum::<f64>() / lit.len() as f64
+    };
+    let base = row(&shots[0]);
+    let panned = row(&shots[1]);
+    let homed = row(&shots[2]);
+    assert!((base - 125.0).abs() < 6.0, "base row {base:.1}");
+    assert!(
+        panned < base - 40.0,
+        "pan up did not move trace: {panned:.1} vs {base:.1}"
+    );
+    assert!(
+        (homed - base).abs() < 6.0,
+        "home did not restore: {homed:.1} vs {base:.1}"
+    );
+}
+
+#[test]
+#[ignore = "needs a window; run with -- --ignored"]
 fn xy_circle_renders_as_ellipse_ring() {
     // xy-circle at 1.5 V amplitude on 0.5 V/div (5 V FS): radius 75 raw.
     // Display window +-100 counts -> x semi-axis 75/200*(W-1) ~= 375 px,

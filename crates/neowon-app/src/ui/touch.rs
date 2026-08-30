@@ -2,7 +2,9 @@
 //! way modern scopes map gestures: drag the trigger-level line to move the
 //! level, drag the waveform to move the selected channel's offset
 //! (vertical) and the trigger position (horizontal), scroll to step
-//! volts/div, shift+scroll to step the sample rate.
+//! volts/div, shift+scroll to step the sample rate, and a 2-D wheel's x
+//! axis to pan horizontally. Zoom/pan share the `view` ops with the dock
+//! toolbar, keys, and scripts.
 //!
 //! Priority: measurement-cursor drags (cursors.rs, runs earlier) win; this
 //! system stands down while one is active.
@@ -10,14 +12,15 @@
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 use bevy_egui::input::EguiWantsInput;
+use neowon_backend::ScopeConfig;
 
 use crate::Link;
 use crate::cursors::CursorState;
 use crate::ui::layout::Layout;
-use crate::ui::widgets::{FALLBACK_RATES, FALLBACK_VDIV};
+use crate::view;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Drag {
+pub enum Drag {
     TriggerLevel,
     TriggerPosition,
     OffsetMarker(usize),
@@ -49,34 +52,42 @@ fn on_plot(l: &Layout, world: Vec2) -> bool {
 }
 
 /// World y of the trigger-level line (same mapping as `draw_trigger`).
-pub fn trigger_line_y(l: &Layout, link: &Link) -> f32 {
-    let src = link
-        .config
-        .trigger
-        .source
-        .min(link.config.channels.len() - 1);
-    let ch = &link.config.channels[src];
+pub fn trigger_line_y(l: &Layout, config: &ScopeConfig) -> f32 {
+    let src = config.trigger.source.min(config.channels.len() - 1);
+    let ch = &config.channels[src];
     let range = ch.volts_div * 10.0 * ch.probe;
-    let frac = (link.config.trigger.level / range + ch.offset).clamp(-0.44, 0.44);
+    let frac = (config.trigger.level / range + ch.offset).clamp(-0.44, 0.44);
     l.frac_to_world_y(frac as f32)
 }
 
-fn step_ladder(ladder: &[f64], current: f64, up: bool) -> f64 {
-    let mut idx = 0;
-    let mut best = f64::MAX;
-    for (i, &v) in ladder.iter().enumerate() {
-        let d = (v.ln() - current.max(1e-12).ln()).abs();
-        if d < best {
-            best = d;
-            idx = i;
+/// Marker/waveform hit test for a press inside the plot. Priority: channel
+/// offset markers (left edge) > trigger position marker (top edge) >
+/// trigger level line > waveform (pan).
+pub fn hit_drag(layout: &Layout, config: &ScopeConfig, world: Vec2) -> Drag {
+    let left = layout.plot_center.x - layout.plot.width() / 2.0;
+    let top = layout.plot_center.y + layout.plot.height() / 2.0;
+    if world.x - left < 20.0 {
+        for ch in 0..2 {
+            let c = &config.channels[ch];
+            if c.enabled {
+                let y = layout.frac_to_world_y(c.offset as f32);
+                if (world.y - y).abs() < 12.0 {
+                    return Drag::OffsetMarker(ch);
+                }
+            }
         }
     }
-    let idx = if up {
-        (idx + 1).min(ladder.len() - 1)
+    if top - world.y < 20.0 {
+        let x = left + config.position as f32 * layout.plot.width();
+        if (world.x - x).abs() < 14.0 {
+            return Drag::TriggerPosition;
+        }
+    }
+    if (world.y - trigger_line_y(layout, config)).abs() < 12.0 {
+        Drag::TriggerLevel
     } else {
-        idx.saturating_sub(1)
-    };
-    ladder[idx]
+        Drag::Waveform
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -107,74 +118,48 @@ pub fn plot_pointer(
         return;
     };
 
-    // Scroll: volts/div ladder on the selected channel; shift = sample rate.
+    // Scroll: volts/div ladder on the selected channel; shift = sample rate;
+    // a 2-D wheel's x axis pans horizontally.
     if on_plot(&layout, world) {
-        let mut steps = 0.0f32;
+        let mut steps = [0.0f32; 2];
         for ev in wheel.read() {
-            steps += match ev.unit {
-                MouseScrollUnit::Line => ev.y,
-                MouseScrollUnit::Pixel => ev.y / 40.0,
+            let d = match ev.unit {
+                MouseScrollUnit::Line => [ev.y, ev.x],
+                MouseScrollUnit::Pixel => [ev.y / 40.0, ev.x / 40.0],
             };
+            steps[0] += d[0];
+            steps[1] += d[1];
         }
-        if steps.abs() >= 0.5 {
-            let up = steps > 0.0;
+        if steps[0].abs() >= 0.5 {
+            // Scroll up = zoom in (finer scale).
+            let inward = steps[0] > 0.0;
             if keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) {
-                let ladder = link
-                    .caps
-                    .as_ref()
-                    .map(|c| c.sample_rates.clone())
-                    .unwrap_or_else(|| FALLBACK_RATES.to_vec());
-                link.config.sample_rate = step_ladder(&ladder, link.config.sample_rate, up);
+                view::zoom_rate(&mut link, inward);
             } else {
-                let ladder = link
-                    .caps
-                    .as_ref()
-                    .map(|c| c.volts_div.clone())
-                    .unwrap_or_else(|| FALLBACK_VDIV.to_vec());
                 let sel = link.selected.min(1);
-                // Scroll up = zoom in = fewer volts per division.
-                let v = step_ladder(&ladder, link.config.channels[sel].volts_div, !up);
-                link.config.channels[sel].volts_div = v;
+                view::zoom_channel(&mut link, sel, inward);
             }
-            link.dirty = true;
+        }
+        if steps[1].abs() >= 0.5 {
+            // Content follows the finger: swipe right slides the waveform
+            // right (earlier trigger position).
+            let dir = if steps[1] > 0.0 {
+                view::Pan::Right
+            } else {
+                view::Pan::Left
+            };
+            view::pan(&mut link, dir);
         }
     } else {
         wheel.clear();
     }
 
     if mouse.just_pressed(MouseButton::Left) && on_plot(&layout, world) {
-        let left = layout.plot_center.x - layout.plot.width() / 2.0;
-        let top = layout.plot_center.y + layout.plot.height() / 2.0;
-        // Hit priority: channel offset markers (left edge) > trigger
-        // position marker (top edge) > trigger level line > waveform.
-        let mut drag = None;
-        if world.x - left < 20.0 {
-            for ch in 0..2 {
-                let c = link.config.channels[ch];
-                if c.enabled {
-                    let y = layout.frac_to_world_y(c.offset as f32);
-                    if (world.y - y).abs() < 12.0 {
-                        drag = Some(Drag::OffsetMarker(ch));
-                        link.selected = ch;
-                        break;
-                    }
-                }
-            }
+        let drag = hit_drag(&layout, &link.config, world);
+        if let Drag::OffsetMarker(ch) = drag {
+            link.selected = ch;
         }
-        if drag.is_none() && top - world.y < 20.0 {
-            let x = left + link.config.position as f32 * layout.plot.width();
-            if (world.x - x).abs() < 14.0 {
-                drag = Some(Drag::TriggerPosition);
-            }
-        }
-        if drag.is_none() {
-            drag = if (world.y - trigger_line_y(&layout, &link)).abs() < 12.0 {
-                Some(Drag::TriggerLevel)
-            } else {
-                Some(Drag::Waveform)
-            };
-        }
-        touch.drag = drag;
+        touch.drag = Some(drag);
         touch.last_world = world;
     }
     if !mouse.pressed(MouseButton::Left) {
@@ -227,14 +212,50 @@ pub fn plot_pointer(
 mod tests {
     use super::*;
 
+    fn layout() -> Layout {
+        Layout::compute(1520.0, 820.0)
+    }
+
     #[test]
-    fn ladder_steps_and_clamps() {
-        let l = [0.1, 0.2, 0.5, 1.0];
-        assert_eq!(step_ladder(&l, 0.2, true), 0.5);
-        assert_eq!(step_ladder(&l, 0.2, false), 0.1);
-        assert_eq!(step_ladder(&l, 1.0, true), 1.0); // clamps at the top
-        assert_eq!(step_ladder(&l, 0.1, false), 0.1); // and the bottom
-        // Snaps to nearest rung first (log distance).
-        assert_eq!(step_ladder(&l, 0.24, true), 0.5);
+    fn empty_plot_area_starts_waveform_pan() {
+        let l = layout();
+        let cfg = crate::view::startup_config();
+        assert_eq!(hit_drag(&l, &cfg, l.plot_center), Drag::Waveform);
+    }
+
+    #[test]
+    fn near_trigger_line_drags_the_level() {
+        let l = layout();
+        let cfg = crate::view::startup_config();
+        let y = trigger_line_y(&l, &cfg);
+        let world = Vec2::new(l.plot_center.x, y + 5.0);
+        assert_eq!(hit_drag(&l, &cfg, world), Drag::TriggerLevel);
+    }
+
+    #[test]
+    fn left_edge_at_channel_zero_is_its_offset_marker() {
+        let l = layout();
+        let mut cfg = crate::view::startup_config();
+        cfg.channels[0].enabled = true;
+        cfg.channels[1].enabled = true;
+        cfg.channels[1].offset = 0.25;
+        let left = l.plot_center.x - l.plot.width() / 2.0;
+        // CH1 marker sits at offset 0 (plot center in y).
+        let world = Vec2::new(left + 5.0, l.frac_to_world_y(0.0));
+        assert_eq!(hit_drag(&l, &cfg, world), Drag::OffsetMarker(0));
+        // CH2 marker a quarter full-scale up.
+        let world = Vec2::new(left + 5.0, l.frac_to_world_y(0.25));
+        assert_eq!(hit_drag(&l, &cfg, world), Drag::OffsetMarker(1));
+    }
+
+    #[test]
+    fn top_edge_at_position_is_the_trigger_marker() {
+        let l = layout();
+        let cfg = crate::view::startup_config();
+        let left = l.plot_center.x - l.plot.width() / 2.0;
+        let top = l.plot_center.y + l.plot.height() / 2.0;
+        let x = left + cfg.position as f32 * l.plot.width();
+        let world = Vec2::new(x, top - 5.0);
+        assert_eq!(hit_drag(&l, &cfg, world), Drag::TriggerPosition);
     }
 }

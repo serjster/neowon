@@ -26,6 +26,9 @@ pub struct SimSource {
     enabled: [bool; 2],
     /// Full-scale vertical range per channel in volts (10 divisions).
     ranges: [f64; 2],
+    /// Vertical offset per channel as a fraction of full scale — shifts
+    /// the raw codes exactly like the hardware zero DAC does.
+    offsets: [f64; 2],
     seq: u64,
     /// Continuous time origin in seconds, so consecutive frames join
     /// seamlessly.
@@ -53,6 +56,7 @@ impl SimSource {
             // CH1 on by default, like a freshly powered scope.
             enabled: [true, false],
             ranges: [10.0, 10.0],
+            offsets: [0.0, 0.0],
             seq: 0,
             t0: 0.0,
             frame_advance: None,
@@ -92,6 +96,15 @@ impl SimSource {
         }
     }
 
+    /// Vertical offset of `ch` as a fraction of full scale (-0.5..=0.5).
+    /// Shifts the raw codes like the hardware zero DAC; consumers recover
+    /// true volts via `zero_volts`.
+    pub fn set_offset(&mut self, ch: usize, offset: f64) {
+        if ch < 2 {
+            self.offsets[ch] = offset.clamp(-0.5, 0.5);
+        }
+    }
+
     pub fn time(&self) -> f64 {
         self.t0
     }
@@ -116,7 +129,10 @@ impl SimSource {
             let v = self.scenario.sample(t, &mut self.rng);
             for ch in 0..2 {
                 let lsb = self.ranges[ch] / 250.0;
-                let q = (v[ch] / lsb).round();
+                // The zero DAC shifts the raw codes by round(250*offset),
+                // exactly like hardware (device.rs `configure_channel`).
+                let pos0 = (250.0 * self.offsets[ch]).round();
+                let q = (v[ch] / lsb).round() + pos0;
                 let r = q.clamp(-125.0, 125.0);
                 if r != q {
                     clipped[ch] = true;
@@ -132,7 +148,7 @@ impl SimSource {
                 ch,
                 raw: std::mem::take(&mut raws[ch]),
                 volts_per_lsb: self.ranges[ch] / 250.0,
-                zero_volts: 0.0,
+                zero_volts: -self.offsets[ch] * self.ranges[ch],
                 clipped: clipped[ch],
                 freq_meter: self.scenario.fundamental(ch),
             })
