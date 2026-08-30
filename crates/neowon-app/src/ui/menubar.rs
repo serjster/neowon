@@ -54,7 +54,7 @@ pub fn show(
                     egui::FontId::proportional(13.0),
                     egui::Color32::BLACK,
                 );
-                let record_len = link.caps.as_ref().map(|c| c.record_len).unwrap_or(5000);
+                let record_len = link.caps.as_ref().map(|c| c.record_len()).unwrap_or(5000);
                 let per_div = record_len as f64 / link.config.sample_rate / 10.0;
                 // While the timeline is on, the on-screen time/div is the
                 // window's, not the record's — show both rather than let the

@@ -48,7 +48,10 @@ impl Vds1022Backend {
                 .map(|&mv| mv as f64 / 1000.0)
                 .collect(),
             probes: vec![1.0, 10.0, 20.0, 50.0, 100.0, 500.0, 1000.0],
-            record_len: consts::SAMPLES,
+            acquisition: neowon_backend::Acquisition::Record {
+                samples: consts::SAMPLES,
+            },
+            hardware_trigger: true,
         };
         Ok(Self {
             dev,

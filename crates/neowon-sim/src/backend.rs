@@ -35,7 +35,10 @@ impl SimBackend {
                 ],
                 volts_div: vec![0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0],
                 probes: vec![1.0, 10.0, 100.0],
-                record_len: crate::SAMPLES,
+                acquisition: neowon_backend::Acquisition::Record {
+                    samples: crate::SAMPLES,
+                },
+                hardware_trigger: true,
             },
             cfg: ScopeConfig::default(),
             next_at: Instant::now(),

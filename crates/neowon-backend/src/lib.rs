@@ -11,6 +11,36 @@ pub mod supervisor;
 
 pub use supervisor::{Command, Event, Supervisor, spawn};
 
+/// How samples reach the host. This is the difference that most divides
+/// instruments, and it decides what the horizontal controls can mean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Acquisition {
+    /// Discrete records of a fixed length, separated by dead time the
+    /// instrument spends transferring and re-arming. The time one record
+    /// covers is `samples / sample_rate`, so spanning more time costs
+    /// sample rate — a USB scope with a small buffer.
+    Record { samples: usize },
+    /// A continuous sample stream, handed over in chunks that are
+    /// contiguous in time. There is no record and no dead time; how much
+    /// time you can see is bounded only by host memory — a sound card, an
+    /// SDR, a logic analyser in streaming mode.
+    Stream { chunk: usize },
+}
+
+impl Acquisition {
+    /// Samples per delivered frame, whichever kind this is.
+    pub fn frame_len(self) -> usize {
+        match self {
+            Acquisition::Record { samples } => samples,
+            Acquisition::Stream { chunk } => chunk,
+        }
+    }
+
+    pub fn is_stream(self) -> bool {
+        matches!(self, Acquisition::Stream { .. })
+    }
+}
+
 /// What an instrument can do; the UI builds itself from this.
 #[derive(Debug, Clone)]
 pub struct Capabilities {
@@ -19,11 +49,24 @@ pub struct Capabilities {
     pub channels: usize,
     /// Supported sample rates, ascending, S/s.
     pub sample_rates: Vec<f64>,
-    /// Supported volts/div settings, ascending.
+    /// Supported volts/div settings, ascending. Empty when the input range
+    /// is not adjustable (a sound card has one full scale).
     pub volts_div: Vec<f64>,
     pub probes: Vec<f64>,
-    /// Samples per record.
-    pub record_len: usize,
+    /// How samples arrive.
+    pub acquisition: Acquisition,
+    /// Does the instrument find trigger events itself? When false the host
+    /// has to, or the display free-runs.
+    pub hardware_trigger: bool,
+}
+
+impl Capabilities {
+    /// Samples in one delivered frame. Named for the record it usually is,
+    /// but a streaming source answers with its chunk size so the
+    /// single-frame display keeps working.
+    pub fn record_len(&self) -> usize {
+        self.acquisition.frame_len()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -12,6 +12,7 @@ path = "src/main.rs"
 neowon-core.workspace = true
 neowon-dsp.workspace = true
 neowon-sim.workspace = true
+neowon-audio.workspace = true
 neowon-backend.workspace = true
 neowon-vds1022.workspace = true
 bevy.workspace = true

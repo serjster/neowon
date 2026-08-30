@@ -69,7 +69,7 @@ pub fn show(
                 ui.add_space(8.0);
 
                 // Timebase descriptor box (manual 7.5).
-                let record_len = link.caps.as_ref().map(|c| c.record_len).unwrap_or(5000);
+                let record_len = link.caps.as_ref().map(|c| c.record_len()).unwrap_or(5000);
                 let record_s = record_len as f64 / link.config.sample_rate;
                 let tb = format!(
                     "Main {}/div  {}  {} pts",

@@ -35,7 +35,7 @@ pub const FALLBACK_RECORD_LEN: usize = 5000;
 pub fn record_len(link: &Link) -> usize {
     link.caps
         .as_ref()
-        .map(|c| c.record_len)
+        .map(|c| c.record_len())
         .unwrap_or(FALLBACK_RECORD_LEN)
 }
 

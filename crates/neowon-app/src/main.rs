@@ -84,7 +84,13 @@ fn main() {
     let demo = std::env::args().any(|a| a == "--demo");
     let demo_slow = std::env::args().any(|a| a == "slow");
     let use_sim = demo || std::env::args().any(|a| a == "--sim");
-    let sup = if use_sim {
+    // --audio: the machine's sound card as a streaming two-channel scope.
+    let use_audio = std::env::args().any(|a| a == "--audio");
+    let sup = if use_audio {
+        neowon_backend::spawn(|| {
+            neowon_audio::AudioBackend::open().map(|b| Box::new(b) as Box<dyn Backend>)
+        })
+    } else if use_sim {
         neowon_backend::spawn(|| Ok(Box::new(neowon_sim::SimBackend::new()) as Box<dyn Backend>))
     } else {
         neowon_backend::spawn(neowon_vds1022::backend::factory(None))
