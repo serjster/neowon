@@ -25,7 +25,7 @@ use bevy_egui::{EguiContexts, egui};
 
 use crate::Link;
 use crate::cursors::CursorState;
-use crate::derived::{FftState, MathState, MeasureState, PfState, fmt_si};
+use crate::derived::{FftState, MathState, MeasureState, PfState, Unit, fmt_opt_sticky, fmt_si};
 use crate::gpu::Phosphor;
 use crate::ui::layout::Layout;
 
@@ -51,7 +51,7 @@ pub fn panel(
     let now = time.elapsed_secs_f64();
 
     menubar::show(&ctx, &layout, &mut link, &mut menus, now);
-    descriptors::show(&ctx, &layout, &mut link, &phosphor, &meas, &mut menus);
+    descriptors::show(&ctx, &layout, &mut link, &phosphor, &mut meas, &mut menus);
     frontpanel::show(
         &ctx,
         &layout,
@@ -183,20 +183,30 @@ fn spectrum_window(ctx: &egui::Context, fft: &mut FftState) {
                     egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 216, 40)),
                 ));
                 let nyquist = s.bin_hz * n as f64;
+                let bands = &mut fft.peak_bands;
                 ui.horizontal(|ui| {
-                    ui.label(format!(
-                        "{} — {}",
-                        fmt_si(f0 * nyquist, "Hz"),
-                        fmt_si(f1 * nyquist, "Hz"),
-                    ));
-                    if let Some((f, a)) = s.peak() {
-                        ui.label(format!(
-                            "   peak: {} at {} ({:>6.1} dBV)",
-                            fmt_si(a, "V"),
-                            fmt_si(f, "Hz"),
-                            20.0 * a.max(1e-12).log10()
-                        ));
-                    }
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} — {}",
+                            fmt_si(f0 * nyquist, "Hz"),
+                            fmt_si(f1 * nyquist, "Hz"),
+                        ))
+                        .monospace(),
+                    );
+                    // The peak slot is always drawn, dash-padded when no
+                    // peak is found, with sticky SI bands so the readout
+                    // never reflows or flaps at a band boundary.
+                    let peak = s.peak();
+                    let db = peak.map_or_else(
+                        || "     —".into(),
+                        |(_, a)| format!("{:>6.1}", 20.0 * a.max(1e-12).log10()),
+                    );
+                    let amp = fmt_opt_sticky(peak.map(|(_, a)| a), Unit::Volt, &mut bands.0);
+                    let hz = fmt_opt_sticky(peak.map(|(f, _)| f), Unit::Hertz, &mut bands.1);
+                    ui.label(
+                        egui::RichText::new(format!("   peak: {amp} at {hz} ({db} dBV)"))
+                            .monospace(),
+                    );
                     ui.label(
                         egui::RichText::new(
                             "scroll: zoom · shift+scroll: dB · drag: pan · 2x-click: reset",

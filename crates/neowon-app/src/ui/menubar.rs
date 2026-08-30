@@ -58,7 +58,10 @@ pub fn show(ctx: &egui::Context, l: &Layout, link: &mut Link, _menus: &mut MenuS
                     .monospace(),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(egui::RichText::new(format!("#{}", link.frames_seen)).monospace());
+                    // Fixed 8-char field: the counter widening a digit must
+                    // not nudge the device label beside it.
+                    let n = format!("#{}", link.frames_seen);
+                    ui.label(egui::RichText::new(format!("{n:>8}")).monospace());
                     if let Some(caps) = &link.caps {
                         ui.label(
                             egui::RichText::new(format!("{} · {}", caps.name, caps.serial)).small(),

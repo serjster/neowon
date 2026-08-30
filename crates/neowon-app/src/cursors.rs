@@ -16,6 +16,8 @@ pub struct CursorState {
     /// On-graph handles (trigger level/position, channel offsets).
     pub markers: bool,
     pub pos: [f32; 4],
+    /// Sticky SI bands for the dialog readouts (Δt, 1/Δt, ΔV).
+    pub bands: [crate::derived::Band; 3],
     drag: Option<usize>,
 }
 
@@ -26,6 +28,7 @@ impl Default for CursorState {
             amp_on: false,
             markers: true,
             pos: [0.4, 0.6, -0.1, 0.1],
+            bands: Default::default(),
             drag: None,
         }
     }

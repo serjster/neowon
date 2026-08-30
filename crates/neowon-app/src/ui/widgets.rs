@@ -41,11 +41,14 @@ pub fn ladder_combo(
     ui.horizontal(|ui| {
         ui.label(label);
         egui::ComboBox::from_id_salt(id)
-            .selected_text(fmt_val(*current))
+            .selected_text(egui::RichText::new(fmt_val(*current)).monospace())
             .show_ui(ui, |ui| {
                 for &v in ladder {
                     if ui
-                        .selectable_label((*current - v).abs() < v * 1e-6, fmt_val(v))
+                        .selectable_label(
+                            (*current - v).abs() < v * 1e-6,
+                            egui::RichText::new(fmt_val(v)).monospace(),
+                        )
                         .clicked()
                     {
                         *current = v;

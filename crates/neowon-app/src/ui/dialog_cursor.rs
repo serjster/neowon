@@ -4,7 +4,7 @@ use bevy_egui::egui;
 
 use crate::Link;
 use crate::cursors::CursorState;
-use crate::derived::{MeasureState, fmt_si};
+use crate::derived::{MeasureState, fmt_si_sticky};
 
 pub fn show(ui: &mut egui::Ui, link: &Link, cur: &mut CursorState, meas: &MeasureState) {
     ui.group(|ui| {
@@ -14,17 +14,16 @@ pub fn show(ui: &mut egui::Ui, link: &Link, cur: &mut CursorState, meas: &Measur
         let record_s = 5000.0 / meas.sample_rate.max(1.0);
         if cur.time_on {
             let dt = ((cur.pos[1] - cur.pos[0]).abs() as f64) * record_s;
-            ui.label(format!(
-                "Δt = {}   1/Δt = {}",
-                fmt_si(dt, "s"),
-                fmt_si(1.0 / dt.max(1e-12), "Hz")
-            ));
+            let dt_s = fmt_si_sticky(dt, "s", &mut cur.bands[0]);
+            let dt_hz = fmt_si_sticky(1.0 / dt.max(1e-12), "Hz", &mut cur.bands[1]);
+            ui.label(egui::RichText::new(format!("Δt = {dt_s}   1/Δt = {dt_hz}")).monospace());
         }
         if cur.amp_on {
             let c = link.config.channels[0];
             let fs = c.volts_div * 10.0 * c.probe;
             let dv = ((cur.pos[3] - cur.pos[2]).abs() as f64) * fs;
-            ui.label(format!("ΔV = {} (CH1 scale)", fmt_si(dv, "V")));
+            let dv = fmt_si_sticky(dv, "V", &mut cur.bands[2]);
+            ui.label(egui::RichText::new(format!("ΔV = {dv} (CH1 scale)")).monospace());
         }
         ui.label(
             egui::RichText::new("drag cursors on the plot")

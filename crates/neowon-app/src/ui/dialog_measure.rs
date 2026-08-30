@@ -2,7 +2,7 @@
 
 use bevy_egui::egui;
 
-use crate::derived::{METRICS, MeasureState, SLOT_NAMES, SLOTS, fmt};
+use crate::derived::{Band, METRICS, MeasureState, SLOT_NAMES, SLOTS, fmt, fmt_opt_sticky};
 
 pub fn show(ui: &mut egui::Ui, meas: &mut MeasureState) {
     ui.horizontal(|ui| {
@@ -43,18 +43,28 @@ pub fn show(ui: &mut egui::Ui, meas: &mut MeasureState) {
                             continue;
                         }
                         let m = meas.latest[slot].unwrap();
-                        let cell = ui.label(get(&m).map_or("—".into(), |v| fmt(v, *unit)));
+                        // Monospace + sticky SI band + dash padded to the
+                        // unit's width: neither the grid's columns nor a
+                        // cell's internal layout can move frame to frame.
+                        let text = match meas.bands.get_mut(slot) {
+                            Some(bands) => fmt_opt_sticky(get(&m), *unit, &mut bands[i]),
+                            None => fmt_opt_sticky(get(&m), *unit, &mut Band::default()),
+                        };
+                        let cell = ui.label(egui::RichText::new(text).monospace());
                         if !meas.stats.is_empty() {
                             let t = &meas.stats[slot][i];
                             if t.count > 0 {
-                                cell.on_hover_text(format!(
-                                    "mean {}\nmin  {}\nmax  {}\nσ    {}\nn    {}",
-                                    fmt(t.mean, *unit),
-                                    fmt(t.min, *unit),
-                                    fmt(t.max, *unit),
-                                    fmt(t.std_dev(), *unit),
-                                    t.count,
-                                ));
+                                cell.on_hover_text(
+                                    egui::RichText::new(format!(
+                                        "mean {}\nmin  {}\nmax  {}\nσ    {}\nn    {}",
+                                        fmt(t.mean, *unit),
+                                        fmt(t.min, *unit),
+                                        fmt(t.max, *unit),
+                                        fmt(t.std_dev(), *unit),
+                                        t.count,
+                                    ))
+                                    .monospace(),
+                                );
                             }
                         }
                     }

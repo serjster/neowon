@@ -27,8 +27,10 @@ pub fn show(ui: &mut egui::Ui, _link: &mut Link, rec: &mut Recorder) {
         }
     });
     ui.label(
+        // Counts right-aligned in fixed fields — they tick up while
+        // recording and must not push the line wider digit by digit.
         egui::RichText::new(format!(
-            "{} records · {} samples/ch · {}",
+            "{:>6} records · {:>9} samples/ch · {}",
             rec.frames.len(),
             rec.samples_per_channel(),
             fmt_si(rec.seconds(), "s"),

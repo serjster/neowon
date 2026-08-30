@@ -5,7 +5,7 @@ use bevy_egui::egui;
 use neowon_core::{Coupling, Slope, Sweep, TriggerKind};
 
 use crate::Link;
-use crate::derived::{MeasureState, SLOT_NAMES, fmt, fmt_si};
+use crate::derived::{Band, MeasureState, SLOT_NAMES, Unit, fmt, fmt_opt_sticky, fmt_si};
 use crate::gpu::{Phosphor, TraceMode};
 
 use super::layout::{Layout, Roi};
@@ -17,7 +17,7 @@ pub fn show(
     l: &Layout,
     link: &mut Link,
     phosphor: &Phosphor,
-    meas: &MeasureState,
+    meas: &mut MeasureState,
     menus: &mut MenuState,
 ) {
     let rect = Roi::Descriptors.rect(l);
@@ -113,7 +113,7 @@ pub fn show(
 }
 
 /// Latest measurements per slot, source-colored, along the plot bottom.
-fn measurement_overlay(ctx: &egui::Context, l: &Layout, meas: &MeasureState) {
+fn measurement_overlay(ctx: &egui::Context, l: &Layout, meas: &mut MeasureState) {
     let rect = Roi::MeasOverlay.rect(l);
     egui::Area::new("meas-overlay".into())
         .fixed_pos(rect.min)
@@ -130,13 +130,21 @@ fn measurement_overlay(ctx: &egui::Context, l: &Layout, meas: &MeasureState) {
                         1 => CH2_COLOR,
                         _ => MATH_COLOR,
                     };
-                    let freq = m.freq.map(|v| fmt(v, crate::derived::Unit::Hertz));
-                    let text = format!(
-                        "{} {} {}",
-                        name,
-                        freq.unwrap_or_else(|| "—".into()),
-                        fmt(m.vpp, crate::derived::Unit::Volt),
-                    );
+                    // Sticky SI bands (shared with the measure table: Freq
+                    // is metric 0, Vpp metric 2) plus a dash padded to the
+                    // frequency's width — the badge's glyph columns cannot
+                    // move, whatever the signal does at a band boundary.
+                    let (freq, vpp) = match meas.bands.get_mut(slot) {
+                        Some(b) => (
+                            fmt_opt_sticky(m.freq, Unit::Hertz, &mut b[0]),
+                            fmt_opt_sticky(Some(m.vpp), Unit::Volt, &mut b[2]),
+                        ),
+                        None => (
+                            fmt_opt_sticky(m.freq, Unit::Hertz, &mut Band::default()),
+                            fmt(m.vpp, Unit::Volt),
+                        ),
+                    };
+                    let text = format!("{name} {freq} {vpp}");
                     let (r, _) = ui.allocate_exact_size(
                         egui::vec2(text.chars().count() as f32 * 7.0 + 12.0, 22.0),
                         egui::Sense::hover(),

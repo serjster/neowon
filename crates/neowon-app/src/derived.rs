@@ -114,6 +114,9 @@ pub struct MeasureState {
     pub last_seq: u64,
     pub latest: [Option<Measurements>; SLOTS],
     pub stats: Vec<[StatTrack; N_METRICS]>,
+    /// Sticky SI band per slot × metric, shared by the measure table and
+    /// the on-plot readout badges so both render identically.
+    pub bands: Vec<[Band; N_METRICS]>,
     /// Which slot the statistics columns show.
     pub stats_slot: usize,
     /// Draw measurement guide lines on the plot while the Measure dialog is
@@ -143,6 +146,8 @@ pub struct FftState {
     pub view: (f64, f64),
     /// dB axis range.
     pub db: (f32, f32),
+    /// Sticky SI bands for the peak readout (amplitude, frequency).
+    pub peak_bands: (Band, Band),
 }
 
 impl Default for FftState {
@@ -154,6 +159,7 @@ impl Default for FftState {
             spectrum: None,
             view: (0.0, 1.0),
             db: (-100.0, 20.0),
+            peak_bands: (Band::default(), Band::default()),
         }
     }
 }
@@ -206,6 +212,9 @@ pub fn compute_derived(
     meas.sample_rate = frame.sample_rate;
     if meas.stats.len() != SLOTS {
         meas.stats = vec![[StatTrack::default(); N_METRICS]; SLOTS];
+    }
+    if meas.bands.len() != SLOTS {
+        meas.bands = vec![[Band::default(); N_METRICS]; SLOTS];
     }
 
     // Math trace.
@@ -279,53 +288,181 @@ pub fn compute_derived(
     }
 }
 
-/// Engineering formatting: value with SI prefix per unit.
-pub fn fmt(v: f64, unit: Unit) -> String {
-    match unit {
-        Unit::Percent => format!("{:>6.1} %", v * 100.0),
-        Unit::Volt => fmt_si(v, "V"),
-        Unit::Second => fmt_si(v, "s"),
-        Unit::Hertz => fmt_si(v, "Hz"),
+/// Sticky SI band for one live readout: the power-of-1000 exponent last
+/// used to display it (1 = kilo, -1 = milli, …). With hysteresis a value
+/// hovering at a band boundary (999.9 Hz ↔ 1000.4 Hz) keeps its band, so
+/// the string layout — digit columns, decimal point, prefix, unit — stays
+/// put frame after frame instead of flapping between ` 999.9  Hz` and
+/// ` 1.000 kHz`.
+#[derive(Clone, Copy, Default, Debug)]
+pub struct Band(Option<i8>);
+
+fn nominal_band(a: f64) -> i8 {
+    if a >= 1e9 {
+        3
+    } else if a >= 1e6 {
+        2
+    } else if a >= 1e3 {
+        1
+    } else if a >= 1.0 || a == 0.0 {
+        0
+    } else if a >= 1e-3 {
+        -1
+    } else if a >= 1e-6 {
+        -2
+    } else {
+        -3
     }
 }
 
-/// Engineering notation the way a scope front panel writes it: an SI
-/// prefix putting the mantissa in [1, 1000), a FIXED four significant
-/// digits, the mantissa right-aligned in a six-character field, and the
-/// prefix padded to one column — ` 200.0 mV`, ` 1.000 kHz`, ` 999.9  Hz`.
-/// In a monospace font every value of a given unit renders at a constant
-/// width, whatever its magnitude or sign, so live readouts never flicker.
-pub fn fmt_si(v: f64, unit: &str) -> String {
-    let a = v.abs();
-    let (scale, prefix) = if a >= 1e9 {
-        (1e-9, "G")
-    } else if a >= 1e6 {
-        (1e-6, "M")
-    } else if a >= 1e3 {
-        (1e-3, "k")
-    } else if a >= 1.0 || a == 0.0 {
-        (1.0, " ")
-    } else if a >= 1e-3 {
-        (1e3, "m")
-    } else if a >= 1e-6 {
-        (1e6, "µ")
-    } else {
-        (1e9, "n")
-    };
-    let m = v * scale;
-    let decimals = if m.abs() >= 100.0 {
+fn band_scale(b: i8) -> f64 {
+    1000f64.powi(-b as i32)
+}
+
+fn band_prefix(b: i8) -> &'static str {
+    match b {
+        3 => "G",
+        2 => "M",
+        1 => "k",
+        -1 => "m",
+        -2 => "µ",
+        -3 => "n",
+        _ => " ",
+    }
+}
+
+/// Mantissa right-aligned in a fixed six-character field, four significant
+/// digits when they fit, dropping decimals as needed so the field NEVER
+/// widens (`" 999.9"`, `" 1.000"`, `"1000.4"`, `" -1000"`).
+fn mantissa6(m: f64) -> String {
+    let mut decimals = if m.abs() >= 1000.0 {
+        usize::from(m >= 0.0)
+    } else if m.abs() >= 100.0 {
         1
     } else if m.abs() >= 10.0 {
         2
     } else {
         3
     };
-    format!("{m:>6.decimals$} {prefix}{unit}")
+    loop {
+        let s = format!("{m:>6.decimals$}");
+        if s.chars().count() <= 6 || decimals == 0 {
+            return s;
+        }
+        decimals -= 1;
+    }
+}
+
+/// `fmt_si` with band hysteresis: keeps the previous band while the
+/// mantissa stays within [0.5, 1050), so boundary-hovering values cannot
+/// alternate layouts. Pass the same `Band` cell every frame.
+pub fn fmt_si_sticky(v: f64, unit: &str, band: &mut Band) -> String {
+    let a = v.abs();
+    let b = match band.0 {
+        // Zero carries no magnitude information — keep the current band.
+        Some(b) if a == 0.0 => b,
+        Some(b) if (0.5..1050.0).contains(&(a * band_scale(b))) => b,
+        _ => nominal_band(a),
+    };
+    band.0 = Some(b);
+    format!("{} {}{unit}", mantissa6(v * band_scale(b)), band_prefix(b))
+}
+
+/// Engineering formatting: value with SI prefix per unit.
+pub fn fmt(v: f64, unit: Unit) -> String {
+    fmt_sticky(v, unit, &mut Band::default())
+}
+
+/// `fmt` with band hysteresis (see [`fmt_si_sticky`]).
+pub fn fmt_sticky(v: f64, unit: Unit, band: &mut Band) -> String {
+    match unit {
+        Unit::Percent => format!("{:>6.1} %", v * 100.0),
+        Unit::Volt => fmt_si_sticky(v, "V", band),
+        Unit::Second => fmt_si_sticky(v, "s", band),
+        Unit::Hertz => fmt_si_sticky(v, "Hz", band),
+    }
+}
+
+/// Character width of every `fmt` output for `unit` (`fmt_si` is
+/// constant-width per unit, so this is exact, not a maximum).
+pub fn fmt_width(unit: Unit) -> usize {
+    match unit {
+        Unit::Percent => 8,             // "  50.0 %"
+        Unit::Volt | Unit::Second => 9, // " 200.0 mV"
+        Unit::Hertz => 10,              // " 1.000 kHz"
+    }
+}
+
+/// `fmt` with band hysteresis; `None` renders as a dash padded to the
+/// exact same width and keeps the band untouched, so the layout is
+/// unchanged when the value comes back.
+pub fn fmt_opt_sticky(v: Option<f64>, unit: Unit, band: &mut Band) -> String {
+    match v {
+        Some(v) => fmt_sticky(v, unit, band),
+        None => format!("{:^width$}", "—", width = fmt_width(unit)),
+    }
+}
+
+/// Engineering notation the way a scope front panel writes it: an SI
+/// prefix, four significant digits, the mantissa right-aligned in a
+/// six-character field, and the prefix padded to one column —
+/// ` 200.0 mV`, ` 1.000 kHz`, ` 999.9  Hz`. In a monospace font every
+/// value of a given unit renders at a constant width, whatever its
+/// magnitude or sign. For per-frame readouts use [`fmt_si_sticky`] so the
+/// band cannot flap at a boundary either.
+pub fn fmt_si(v: f64, unit: &str) -> String {
+    fmt_si_sticky(v, unit, &mut Band::default())
 }
 
 #[cfg(test)]
 mod fmt_tests {
-    use super::fmt_si;
+    use super::{Band, Unit, fmt, fmt_opt_sticky, fmt_si, fmt_si_sticky, fmt_width};
+
+    #[test]
+    fn band_hysteresis_pins_layout_at_boundaries() {
+        // Entered from below: a value hovering at 1 kHz stays in the Hz
+        // band, and the decimal point stays in the same column.
+        let mut b = Band::default();
+        assert_eq!(fmt_si_sticky(999.9, "Hz", &mut b), " 999.9  Hz");
+        assert_eq!(fmt_si_sticky(1000.4, "Hz", &mut b), "1000.4  Hz");
+        assert_eq!(fmt_si_sticky(999.8, "Hz", &mut b), " 999.8  Hz");
+        // Entered from above: stays in kHz just below the boundary, with
+        // an identical string layout.
+        let mut b = Band::default();
+        assert_eq!(fmt_si_sticky(1000.4, "Hz", &mut b), " 1.000 kHz");
+        assert_eq!(fmt_si_sticky(999.9, "Hz", &mut b), " 1.000 kHz");
+        // A genuine decade move re-bands.
+        let mut b = Band::default();
+        fmt_si_sticky(999.9, "Hz", &mut b);
+        assert_eq!(fmt_si_sticky(5.0e6, "Hz", &mut b), " 5.000 MHz");
+        // Zero carries no magnitude — the band holds.
+        let mut b = Band::default();
+        fmt_si_sticky(0.002, "V", &mut b);
+        assert_eq!(fmt_si_sticky(0.0, "V", &mut b), " 0.000 mV");
+        // The mantissa field never widens, even where rounding overflows
+        // a decimal ("-999.96" would round to "-1000.0").
+        assert_eq!(fmt_si(-999.96, "V").chars().count(), 9);
+    }
+
+    #[test]
+    fn fmt_width_is_exact_and_covers_none() {
+        for unit in [Unit::Volt, Unit::Second, Unit::Hertz, Unit::Percent] {
+            let w = fmt_width(unit);
+            // Percent values are fractions and stay below 1000 % in
+            // practice (duty, overshoot); SI units cover any magnitude.
+            let values: &[f64] = if matches!(unit, Unit::Percent) {
+                &[0.0, 0.123, 0.5, -0.5, 4.56, 9.99]
+            } else {
+                &[0.0, 0.123, 4.56, 999.9, 1234.5, -0.5]
+            };
+            for &v in values {
+                assert_eq!(fmt(v, unit).chars().count(), w, "{v} {w}");
+                let mut b = Band::default();
+                assert_eq!(fmt_opt_sticky(Some(v), unit, &mut b).chars().count(), w);
+                assert_eq!(fmt_opt_sticky(None, unit, &mut b).chars().count(), w);
+            }
+        }
+    }
 
     #[test]
     fn constant_width_engineering_numbers() {
