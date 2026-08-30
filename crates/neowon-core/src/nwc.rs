@@ -5,11 +5,11 @@
 //! Layout (all integers little-endian):
 //!
 //! ```text
-//! magic  b"NWCAP1\0\0"           8 bytes
+//! magic  b"NWCAP2\0\0"           8 bytes (v1 files still read)
 //! flags  u32                      bit0 = payload is a zstd stream
 //! payload (zstd):
 //!   per frame:  seq u64 · sample_rate f64 · acq u8 (0/1/2) · avg u8
-//!               n_channels u8
+//!               n_channels u8 · [v2] t_flag u8 · t_capture f64
 //!     per channel: ch u8 · volts_per_lsb f64 · zero_volts f64
 //!                  clipped u8 · freq_flag u8 · freq f64 · n u32 · raw [i8; n]
 //! frames until decompressed EOF
@@ -21,7 +21,10 @@ use std::sync::Arc;
 
 use crate::{AcqMode, CaptureFrame, ChannelCapture, SharedFrame};
 
-const MAGIC: &[u8; 8] = b"NWCAP1\0\0";
+const MAGIC: &[u8; 8] = b"NWCAP2\0\0";
+/// Version 1 had no capture timestamps. Still readable; frames come back
+/// with `t_capture: None` and fall back to a contiguous axis.
+const MAGIC_V1: &[u8; 8] = b"NWCAP1\0\0";
 const FLAG_ZSTD: u32 = 1;
 /// Sanity bounds so a corrupt file errors instead of allocating wildly.
 const MAX_CHANNELS: u8 = 8;
@@ -45,6 +48,8 @@ pub fn write(path: &Path, frames: &[SharedFrame]) -> io::Result<()> {
             AcqMode::Average(n) => (2, n),
         };
         z.write_all(&[acq, avg, frame.channels.len() as u8])?;
+        z.write_all(&[frame.t_capture.is_some() as u8])?;
+        z.write_all(&frame.t_capture.unwrap_or(0.0).to_le_bytes())?;
         for c in &frame.channels {
             z.write_all(&[c.ch as u8])?;
             z.write_all(&c.volts_per_lsb.to_le_bytes())?;
@@ -63,9 +68,13 @@ pub fn read(path: &Path) -> io::Result<Vec<SharedFrame>> {
     let mut file = io::BufReader::new(std::fs::File::open(path)?);
     let mut magic = [0u8; 8];
     file.read_exact(&mut magic)?;
-    if &magic != MAGIC {
+    let version = if &magic == MAGIC {
+        2
+    } else if &magic == MAGIC_V1 {
+        1
+    } else {
         return Err(bad("not an .nwc file (bad magic)"));
-    }
+    };
     let mut flags = [0u8; 4];
     file.read_exact(&mut flags)?;
     if u32::from_le_bytes(flags) & FLAG_ZSTD == 0 {
@@ -83,6 +92,13 @@ pub fn read(path: &Path) -> io::Result<Vec<SharedFrame>> {
         }
         let sample_rate = f64::from_le_bytes(read_a(&mut z)?);
         let [acq, avg, n_channels] = read_a::<3>(&mut z)?;
+        let t_capture = if version >= 2 {
+            let [t_flag] = read_a::<1>(&mut z)?;
+            let t = f64::from_le_bytes(read_a(&mut z)?);
+            (t_flag != 0).then_some(t)
+        } else {
+            None
+        };
         if n_channels > MAX_CHANNELS {
             return Err(bad("channel count out of range"));
         }
@@ -116,6 +132,7 @@ pub fn read(path: &Path) -> io::Result<Vec<SharedFrame>> {
         }
         frames.push(Arc::new(CaptureFrame {
             seq: u64::from_le_bytes(seq),
+            t_capture,
             sample_rate,
             acq,
             channels,
@@ -138,6 +155,7 @@ mod tests {
         vec![
             Arc::new(CaptureFrame {
                 seq: 7,
+                t_capture: Some(1.5),
                 sample_rate: 250e3,
                 acq: AcqMode::Average(16),
                 channels: vec![
@@ -161,6 +179,7 @@ mod tests {
             }),
             Arc::new(CaptureFrame {
                 seq: 8,
+                t_capture: None,
                 sample_rate: 2.5e3,
                 acq: AcqMode::Sample,
                 channels: vec![],

@@ -325,6 +325,7 @@ mod tests {
 
     fn frame(vals: &[i8]) -> CaptureFrame {
         CaptureFrame {
+            t_capture: None,
             seq: 0,
             sample_rate: 1.0,
             acq: AcqMode::Sample,

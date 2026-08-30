@@ -251,6 +251,7 @@ mod tests {
 
     fn frame(seq: u64, vals: &[i8]) -> SharedFrame {
         Arc::new(CaptureFrame {
+            t_capture: None,
             seq,
             sample_rate: 1000.0,
             acq: AcqMode::Sample,

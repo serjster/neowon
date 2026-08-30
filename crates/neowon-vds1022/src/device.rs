@@ -69,6 +69,8 @@ pub struct Vds1022 {
     peak: bool,
     seq: u64,
     last_io: Instant,
+    /// Origin of the capture-timestamp clock for this connection.
+    session_start: Instant,
 }
 
 impl Vds1022 {
@@ -133,6 +135,7 @@ impl Vds1022 {
             peak: false,
             seq: 0,
             last_io: Instant::now(),
+            session_start: Instant::now(),
         };
 
         // Machine-type probe. The vendor app sleeps 50 ms between write and
@@ -604,6 +607,14 @@ impl Vds1022 {
 
     fn assemble_capture(&mut self, frames: Vec<RawFrame>) -> CaptureFrame {
         self.seq += 1;
+        // The instrument does not timestamp anything, so the best available
+        // estimate of when the first sample was taken is "now, minus the
+        // time the record covers". That is biased late by the USB round
+        // trip and by however long the buffer sat ready before we asked —
+        // documented in docs/protocol-vds1022.md, and the reason coverage
+        // is reported as approximate.
+        let n = frames.first().map_or(0, |f| f.samples().len());
+        let t_capture = self.session_start.elapsed().as_secs_f64() - n as f64 / self.sample_rate;
         let channels = frames
             .into_iter()
             .map(|f| {
@@ -623,6 +634,7 @@ impl Vds1022 {
         CaptureFrame {
             seq: self.seq,
             sample_rate: self.sample_rate,
+            t_capture: Some(t_capture),
             acq: if self.peak {
                 AcqMode::Peak
             } else {

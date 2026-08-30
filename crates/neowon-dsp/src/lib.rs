@@ -7,6 +7,7 @@ pub mod fft;
 pub mod math;
 pub mod measure;
 pub mod stats;
+pub mod timeline;
 
 pub use acq::peak_advised;
 pub use fft::{Spectrum, Window, spectrum};
@@ -15,3 +16,4 @@ pub use measure::{
     BasicStats, Measurements, basic_stats, estimate_frequency, measure, measure_envelope,
 };
 pub use stats::StatTrack;
+pub use timeline::{NO_DATA, Reduced, Segment, Tiles, reduce, summarize};

@@ -8,6 +8,16 @@ use std::sync::Arc;
 pub struct CaptureFrame {
     /// Monotonic sequence number assigned by the producing backend.
     pub seq: u64,
+    /// When this record's **first sample** was taken, in seconds on a
+    /// monotonic per-session clock. `None` when the producer cannot say.
+    ///
+    /// This is what lets consumers place records on a real time axis
+    /// instead of assuming they are contiguous — they generally are not.
+    /// Accuracy is producer-defined: a streaming source knows it exactly,
+    /// while a triggered instrument that is polled over USB can only report
+    /// arrival minus record duration, which is biased late by up to one poll
+    /// interval.
+    pub t_capture: Option<f64>,
     /// Actual sample rate of this record, in samples/second.
     pub sample_rate: f64,
     /// How the samples were produced (affects interpretation: peak-detect
@@ -17,6 +27,23 @@ pub struct CaptureFrame {
 }
 
 pub type SharedFrame = Arc<CaptureFrame>;
+
+impl CaptureFrame {
+    /// Seconds of signal in this record.
+    pub fn duration(&self) -> f64 {
+        let n = self.channels.first().map_or(0, |c| c.raw.len());
+        n as f64 / self.sample_rate.max(1e-12)
+    }
+
+    /// Start time on the session clock, falling back to a contiguous
+    /// estimate from `seq` when the producer could not stamp one. Loaders of
+    /// stored captures use the fallback, so a file with no timestamps still
+    /// lands on a sensible axis — it just cannot show real gaps.
+    pub fn t_start(&self) -> f64 {
+        self.t_capture
+            .unwrap_or_else(|| self.seq as f64 * self.duration())
+    }
+}
 
 /// A single channel's samples within a frame.
 ///

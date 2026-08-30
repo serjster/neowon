@@ -39,6 +39,17 @@ pub struct SimSource {
     /// Emulate hardware peak detect: each output pair is the (min, max) of
     /// the signal over the interval those two samples span.
     peak: bool,
+    /// Capture-clock time of the next record's first sample. Kept separate
+    /// from `t0` on purpose: trigger alignment rewinds `t0` to put a
+    /// crossing on the trigger index, so `t0` is not monotonic and cannot
+    /// serve as a timestamp.
+    t_capture: f64,
+    /// Fraction of wall time the instrument is actually acquiring. 1.0 =
+    /// gapless (the default, so phase-continuity tests are unaffected);
+    /// below that the signal advances further than the record covers,
+    /// leaving reproducible dead time between records — what a triggered
+    /// instrument does while it transfers and re-arms.
+    duty: f64,
     /// Samples per record; WAV playback shortens records to exactly the
     /// audio advanced per tick so every sample is drawn once.
     frame_len: usize,
@@ -64,6 +75,8 @@ impl SimSource {
             t0: 0.0,
             frame_advance: None,
             peak: false,
+            t_capture: 0.0,
+            duty: 1.0,
             frame_len: SAMPLES,
             rng: Xorshift::default(),
         }
@@ -115,6 +128,12 @@ impl SimSource {
 
     /// Reposition the sample-time origin; used to align a trigger crossing
     /// with the requested horizontal trigger position.
+    /// Acquisition duty cycle, 0 < duty <= 1. Below 1 the source leaves
+    /// dead time between records.
+    pub fn set_duty(&mut self, duty: f64) {
+        self.duty = duty.clamp(0.01, 1.0);
+    }
+
     /// Hardware peak detect emulation (`AcqMode::Peak`).
     pub fn set_peak(&mut self, on: bool) {
         self.peak = on;
@@ -186,7 +205,13 @@ impl SimSource {
                 }
             }
         }
-        self.t0 += self.frame_advance.unwrap_or(n as f64 / self.sample_rate);
+        let advance = self.frame_advance.unwrap_or(n as f64 / self.sample_rate);
+        // Both clocks move by the same real interval: during the dead time
+        // the instrument was not looking, but the signal carried on.
+        let elapsed = advance / self.duty;
+        self.t0 += elapsed;
+        let t_capture = self.t_capture;
+        self.t_capture += elapsed;
         self.seq += 1;
         let channels = (0..2)
             .filter(|&ch| self.enabled[ch])
@@ -201,6 +226,7 @@ impl SimSource {
             .collect();
         CaptureFrame {
             seq: self.seq,
+            t_capture: Some(t_capture),
             sample_rate: self.sample_rate,
             acq: if self.peak {
                 AcqMode::Peak

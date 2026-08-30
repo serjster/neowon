@@ -98,7 +98,10 @@ pub fn read(path: &Path) -> io::Result<Vec<SharedFrame>> {
         }
     }
     let _filesize = c.i32()?;
-    let _timegap_ms = c.i32()?;
+    // The vendor's own record of the dead time between frames — the one
+    // piece of gap information in the format. Third-party readers discard
+    // it and butt the frames together; we place them on a real axis.
+    let timegap_ms = c.i32()?;
     let counter = c.i32()?;
 
     let mut frames = Vec::new();
@@ -164,8 +167,16 @@ pub fn read(path: &Path) -> io::Result<Vec<SharedFrame>> {
             c.at = block_end;
         }
         c.at = frame_end;
+        let rate = sample_rate(timebase_idx);
+        let n = channels.first().map_or(0, |c: &ChannelCapture| c.raw.len());
+        let idx = frames.len() as f64;
+        // Frame start = index x (record duration + inter-frame gap). With no
+        // gap recorded (a crashed recording leaves it 0) the frames are laid
+        // end to end, which is the honest best guess.
+        let gap = (timegap_ms.max(0) as f64) / 1000.0;
         frames.push(Arc::new(CaptureFrame {
             seq: frames.len() as u64 + 1,
+            t_capture: Some(idx * (n as f64 / rate.max(1e-12) + gap)),
             sample_rate: sample_rate(timebase_idx),
             acq: if peak { AcqMode::Peak } else { AcqMode::Sample },
             channels,
