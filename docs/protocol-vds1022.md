@@ -213,3 +213,82 @@ needs extrema should take them over the whole record, where the phase cannot
 matter. `neowon_dsp::measure_envelope` does both; the naive assumption
 produces a *negative* peak-to-peak on the shifted records, which is how this
 was noticed.
+
+## From external sources (2026-08-30, not our own measurements)
+
+Read at the user's request: Elmue's Oszi-Waveform-Analyzer (repo + the manual
+at netcult.ch/elmue/Oszi-Waveform-Analyzer), the EEVblog VDS1022I teardown
+thread, and github.com/Atmel2005/ATMELOWON. Second-hand unless noted; flagged
+where it contradicts or confirms something we measured.
+
+**Silicon and front end** (EEVblog teardown): SiLabs SiM3U156 Cortex-M3 plus a
+Xilinx Spartan-3 on the early boards; ADC is an **AD9288** (100 MS/s dual, or
+the MXT2088 clone), driven through LMH6551 differential amps with AD603 VGAs
+for gain switching; video trigger uses a dedicated **BA7046** sync separator.
+A single 100 MHz clock feeds ADC and FPGA. **There is no external RAM on the
+board** — the 5000-sample record lives in FPGA block RAM, which is the
+physical reason the record cannot be deepened.
+
+**Measured analogue performance** (thread, two independent measurements):
+CH1 is −3 dB at **34.7 MHz** and CH2 at **31.2 MHz** against a 25 MHz spec,
+and the response is still only ~10 dB down **at 100 MHz** with **no
+anti-alias filter**. Input rise time ~14 ns; trigger-out lags the edge by
+~290 ns. Noise floor ~2–3 mVpp at 5 mV/div. The missing anti-alias filter is
+a direct argument for auto peak-detect: at reduced sample rates the front end
+passes energy far above Nyquist, so peak detect is the only thing standing
+between a narrow event and an invisible one.
+
+**Calibration is stored on the host, not the instrument** — `flash_text/
+flashmemory.txt` plus `configuration/com.owon.uppersoft.dso/pref.properties`
+in the vendor install; copying both to a new machine restores zero offsets.
+The sigrok driver author says the same: these scopes "don't even handle the
+calibration internally".
+
+**The device resets itself if the host goes quiet** for more than a few
+seconds — independent corroboration of our keep-alive rule. OWON added a 2 s
+heartbeat in vendor v1.0.29 specifically to stop USB drops in stop mode.
+
+**FPGA**: vendor software shipped V3.5, then V3.7 from v1.0.28; our vendored
+V3.9/V4.1 and the `gaoyun` set are newer. **"gaoyun" is GOWIN (高云)** — so
+the V3/V4/V5 boards (including our V5.0.1 unit) carry a Gowin FPGA rather
+than the Spartan-3 of the 2016 teardown, which matches the V3/V4/V5
+bitstreams all being 221368 bytes against V1/V2's 149554/169216. **There is
+no model interlock on upload**: a VDS2052 bitstream loads onto a VDS1022
+without complaint and simply plots wrong data, so our version-matched
+selection is load-bearing.
+
+**Roll mode, independently confirmed** (thread, 2017): the firmware "just
+continuously write[s] on the 5K data buffer in loop **without any indication
+of the current cursor position**. This make[s] impossible to do continuous
+data recording." That matches what we measured above rate 2.5 kS/s exactly.
+The vendor jar contains a dormant `InfiniteGetData` class that looks like a
+streaming path, but someone tried its commands and the device did not respond.
+
+**Throughput**: the vendor application manages ~71 waveforms/s; our tight
+read loop sustains ~131.
+
+**Equivalent-time sampling is not real.** The vendor app shows 1 ns dot
+spacing at 5 ns/div from a 100 MS/s ADC even in single-shot; the thread's
+conclusion is that it interpolates to a fixed 5000 points. There is no
+hardware path for ETS (triggering is post-ADC in the FPGA off one clock), so
+vendor dot spacing is not evidence of a sample rate.
+
+**`.cap` files**: the header's `timeGap` — which our importer also currently
+discards — is the vendor's own record of inter-frame dead time. Oszi reads it
+and throws it away, then butts frames together and draws a red separator, so
+any measurement spanning a boundary is wrong by the unknown gap. Worth
+knowing that OWON's format models the gaps and the best third-party tool does
+not. Unverified suspicion worth testing on hardware before we write a `.cap`
+importer: Oszi derives `.cap` sample spacing from `dataLen` (4000) rather
+than the ladder's 250 samples/div, which would stretch its time axis by 25 %;
+the `lengthDM = 5000` field alongside suggests 4000 is a screen subset
+(1000 px x 4 samples/px, which is also how the vendor renders).
+
+**ATMELOWON** is not firmware and has nothing to do with Atmel/AVR — it is a
+prebuilt unsigned Windows binary that bundles a copy of Oszi, with a 166-byte
+`main()` as its only Rust source. Its `release/firmware/` bitstreams are
+byte-identical to the ones we vendor (sha256 of `VDS1022_FPGAV5_gaoyun.bin`
+matches). It carries no protocol, register or calibration information. Of
+note only as a parallel effort: it also concluded that a long scrollable
+history (it offers a 1–600 s memory window) is what this instrument is
+missing.
