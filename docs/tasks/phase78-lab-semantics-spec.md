@@ -137,6 +137,21 @@ the VDS1022 has one depth and no setting for it. So the zoom window really is
 of limited use today: it magnifies within one 5000-point record, which is
 what the user noticed.
 
+*Can we not just stream and keep the memory on the PC?* Asked by the user,
+and tested on hardware — `cargo run -p neowon-vds1022 --example rolltest`,
+findings in docs/protocol-vds1022.md. Host memory was never the constraint;
+the device's ability to hand over a continuous stream is. Roll mode
+(`SET_ROLLMODE`) is the streaming primitive and it is accepted at *every*
+rate, but the frame `cursor` — the write position a host stream must follow —
+only advances at or below 2.5 kS/s (752…5100, 232 distinct values in 3 s). At
+25 kS/s and above it pins at 5100: complete buffers, no progressive fill. So
+gapless capture exists, but only at a rate too slow to render a 1 kHz signal.
+One useful surprise: a tight `GET_DATA` loop sustains **131 reads/s (7.6 ms
+round trip)** against the app's ~36 fps, and at 250 kS/s a fresh buffer
+appears every 20 ms — so coverage could be pushed from ~71 % toward ~100 %
+just by reading faster. Bandwidth is not the limit here (683 kB/s of frames);
+the acquisition model is.
+
 *What we could actually build:* a **segmented / deep view** assembled
 host-side from the scrollback ring, which already stores consecutive records.
 That keeps the true sample rate and extends the time axis — the same trade

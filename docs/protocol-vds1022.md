@@ -149,3 +149,48 @@ Importer: `neowon-core/src/owon_cap.rs`.
   INFERRED, not hardware-verified.
 - Full field-level spec with javap evidence: session scratch notes → this
   section; the importer's unit tests carry byte-exact fixtures.
+
+## Verified 2026-08-30 (roll mode: can the device stream?)
+
+Harness: `cargo run -p neowon-vds1022 --example rolltest` (CH1 on the 1 kHz
+probe-comp signal). Question: is there a gapless sample stream the host can
+accumulate into a long record at full rate (phase78 spec, gap G2)?
+
+- **`SET_ROLLMODE (0x0A)` is accepted at every sample rate**, not just below
+  the 2500 S/s threshold `set_sample_rate` uses — matching the vendor Python,
+  which exposes `roll` as an explicit override (`set_sampling(rate, roll=…)`).
+  Frames keep flowing at all rates with roll forced on.
+- **But the write cursor only advances at or below the threshold.** Frame
+  header `cursor` (u16 at offset 9, already parsed into `RawFrame::cursor`)
+  behaves as:
+  - roll off, any rate → constant **5108** (> SAMPLES; the Python asserts
+    exactly this: `assert self.rollmode or cursor >= SAMPLES`);
+  - roll on at 2.5 kS/s → **moves, 752…5100, 232 distinct values over 3 s**,
+    i.e. a genuine progressive fill the host can follow;
+  - roll on at 25 kS/s, 250 kS/s, 2.5 MS/s → constant **5100**. The buffer is
+    always reported complete, so there is no write position to track even
+    though the buffer wraps 26x slower than we poll at 25 kS/s.
+
+  So progressive streaming is real, and it stops where the vendor threshold
+  is. The threshold is not arbitrary policy — it is where the device actually
+  fills progressively.
+- **Read throughput is far higher than the app uses.** Polling `GET_DATA` in
+  a tight loop serviced **~131 reads/s (7.6 ms round trip)** at every rate,
+  versus the ~36 frames/s the app's loop achieves. At 250 kS/s a fresh
+  5000-sample buffer exists every 20 ms (50/s), so a faster reader could take
+  every buffer instead of ~71 % of them — but the frames carry no timestamp
+  and, outside roll, no cursor, so contiguity between consecutive buffers is
+  unproven and would have to be established by the host (timestamping, or
+  correlating one record's tail against the next one's head).
+- Bandwidth is not the constraint in this range: 5211-byte frames at 131/s is
+  ~683 kB/s, and the samples themselves at 250 kS/s x 2 channels are 500 kB/s
+  — both far inside USB 2.0. The limit is the acquisition model and the
+  per-read round trip, not the link. (At the top of the ladder it would be:
+  100 MS/s x 2 ch = 200 MB/s, well beyond USB 2.0.)
+
+**Consequence for a host-side deep record:** truly gapless capture is
+available only at <= 2.5 kS/s, which is too slow to render a 1 kHz signal
+properly. Above that the honest option is a segmented record — many complete
+buffers placed on a time axis with explicit gaps — whose coverage can be
+pushed from today's ~71 % toward ~100 % by reading faster, but which needs a
+capture timestamp on `CaptureFrame` to be placed truthfully.

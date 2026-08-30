@@ -339,6 +339,28 @@ impl Vds1022 {
         Ok(self.sample_rate)
     }
 
+    /// Force roll mode on or off, independent of the sample rate.
+    ///
+    /// `set_sample_rate` engages roll below `ROLLMODE_THRESHOLD` because that
+    /// is where the vendor software switches, but the register is just a
+    /// flag and the vendor's own Python API exposes it as an override at any
+    /// rate (`set_sampling(rate, roll=...)`). Roll is the device's streaming
+    /// mode: it fills the buffer progressively and reports how far it has
+    /// got in each frame's `cursor`, which is what a gapless host-side
+    /// stream needs. Findings live in docs/protocol-vds1022.md.
+    pub fn set_roll(&mut self, on: bool) -> Result<()> {
+        if on != self.roll {
+            self.roll = on;
+            self.send(reg::SET_ROLLMODE, 1, on as u32)?;
+        }
+        Ok(())
+    }
+
+    /// Is roll mode currently engaged?
+    pub fn roll(&self) -> bool {
+        self.roll
+    }
+
     /// Hardware peak-detect: each sample pair becomes (max, min) over the
     /// decimation interval.
     pub fn set_peak_mode(&mut self, on: bool) -> Result<()> {
