@@ -34,6 +34,9 @@ cargo clippy --workspace --all-targets   # zero warnings
 cargo test                               # unit + virtual testbench
 cargo test -p neowon-app --test ui_pixels -- --ignored   # needs a display
 cargo test -p neowon-app --test ui_layout -- --ignored   # needs a display
+cargo test -p neowon-app --test capture_flows -- --ignored   # capture/session flows
+cargo test -p neowon-app --test control_socket -- --ignored  # remote-control API
+cargo test -p neowon-mcp --test mcp_e2e -- --ignored         # MCP server (build the app first)
 ```
 
 If your change touches the driver and you have the hardware:

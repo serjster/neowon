@@ -25,7 +25,7 @@ fn sweep_name(s: Sweep) -> &'static str {
     }
 }
 
-fn condition_words(c: PulseCondition) -> (&'static str, &'static str) {
+pub(crate) fn condition_words(c: PulseCondition) -> (&'static str, &'static str) {
     use PulseCondition::*;
     match c {
         PositiveGreater => ("pos", "gt"),

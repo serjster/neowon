@@ -171,6 +171,12 @@ impl Script {
     pub fn inject(&mut self, action: Action) {
         self.queue.push_back((0.0, action));
     }
+
+    /// Control-socket injection with an explicit due time (supports
+    /// `wait` inside a remotely submitted script fragment).
+    pub fn inject_at(&mut self, due: f64, action: Action) {
+        self.queue.push_back((due, action));
+    }
 }
 
 pub fn load_from_env() -> Script {
@@ -223,7 +229,7 @@ fn parse_window(s: &str) -> Result<Window, ()> {
     }
 }
 
-fn parse(text: &str) -> Result<VecDeque<(f64, Action)>, String> {
+pub(crate) fn parse(text: &str) -> Result<VecDeque<(f64, Action)>, String> {
     let mut t = 0.0f64;
     let mut out = VecDeque::new();
     for (ln, line) in text.lines().enumerate() {

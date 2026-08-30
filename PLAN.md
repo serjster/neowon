@@ -159,8 +159,17 @@ Each phase ends with something runnable and testable — most against the real s
 > refsave/ref/refclear/sessionsave/sessionload/trigpos. Integration tests:
 > `cargo test -p neowon-app --test capture_flows -- --ignored`. Deferred
 > from the phase text: gapless roll-mode recording (needs backend
-> streaming), references-in-session persistence. Next: Phase 8 (protocol
-> decoders).
+> streaming), references-in-session persistence. **Phase 7.5 DONE**
+> (control plane + MCP, spec: docs/tasks/phase75-mcp-spec.md;
+> user-approved design + deps): `NEOWON_CONTROL=<port>` localhost socket
+> (script lines in, JSON acks/replies out; `get status|config|measure`
+> queries; `neowon-app/src/control.rs`), and the `neowon-mcp` crate — an
+> rmcp 3.x stdio MCP server with curated tools (status/config/
+> measurements/configure_channel/configure_trigger/configure_horizontal/
+> run/autoset/set_stimulus/record/exec_script escape hatch) and PNG
+> `screenshot` returned as MCP image content. `--spawn-sim` self-hosts
+> the simulator. Tests: `--test control_socket`, `--test mcp_e2e` (both
+> `--ignored`). Next: Phase 8 (protocol decoders).
 
 ### Phase 0 — Scaffold + simulated trace (½ day)
 
@@ -278,6 +287,15 @@ render path lacks a test.
 - Recording/playback to our own format (frame ring → file, zstd); **import** of vendor `.cap` (big-endian format documented in research).
 - Export: CSV, binary, PNG of the view, reference waveforms (load/save, rendered as ghost traces).
 - Full session save/restore.
+
+### Phase 7.5 — Control plane + MCP (inserted)
+
+One general-purpose remote API, layered: the script grammar is the shared
+semantic layer; every transport translates into it. `NEOWON_CONTROL`
+localhost socket in the app (commands + JSON `get` queries); `neowon-mcp`
+(rmcp) exposes a curated task-shaped tool surface to LLM clients —
+including `screenshot` as MCP image content and an `exec_script` escape
+hatch. Spec: `docs/tasks/phase75-mcp-spec.md`.
 
 ### Phase 8 — Protocol decoders
 

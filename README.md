@@ -45,6 +45,10 @@ the roadmap.
 - **Fully scriptable**: every control is reachable from a plain-text
   automation script (`NEOWON_SCRIPT`), including plot-texture screenshots
   with regions of interest — the same mechanism the test suite uses.
+- **Remote control & MCP**: a localhost control socket exposes the whole
+  script grammar plus JSON state/measurement queries, and the bundled
+  `neowon-mcp` server lets LLM clients (Claude, etc.) drive the scope and
+  *see* its display via PNG screenshots.
 - **Virtual testbench**: a deterministic signal engine (sine/square/
   trapezoid/chirp/AM/FM sums, XY figures, WAV playback, simulated
   triggering) verifies every DSP and render path in CI-friendly tests.
@@ -135,12 +139,36 @@ Set `NEOWON_SCRIPT=path.txt` to drive the app from a plain-text action list
 (stimulus selection, every control, screenshots, exports…). The full
 grammar is documented at the top of `crates/neowon-app/src/script.rs`.
 
+### Remote control & MCP
+
+Set `NEOWON_CONTROL=<port>` and the app serves a line-oriented control
+API on `127.0.0.1:<port>`: any script action per line (acked with JSON),
+plus `get status` / `get config` / `get measure` queries returning
+structured JSON. Every external transport builds on this.
+
+`neowon-mcp` is an [MCP](https://modelcontextprotocol.io) stdio server
+over that socket, so an LLM client (Claude Code, Claude Desktop, …) can
+drive the scope: configure channels/triggers, read the 18 automatic
+measurements with statistics, run any script action, and take PNG
+screenshots of the display **returned as images the model can see**.
+
+```sh
+# zero-setup demo: the server spawns the simulator itself
+claude mcp add neowon -- ./target/release/neowon-mcp --spawn-sim
+
+# or attach to a running app (real hardware or sim)
+NEOWON_CONTROL=7777 cargo run --release -p neowon-app &
+claude mcp add neowon -- ./target/release/neowon-mcp --connect 127.0.0.1:7777
+```
+
 ## Testing
 
 ```sh
 cargo test                                        # unit + virtual testbench
 cargo test -p neowon-app --test ui_pixels  -- --ignored  # render geometry (opens a window)
 cargo test -p neowon-app --test ui_layout  -- --ignored  # layout invariants
+cargo test -p neowon-app --test capture_flows  -- --ignored  # capture/session flows
+cargo test -p neowon-mcp --test mcp_e2e       -- --ignored  # MCP end-to-end
 cargo run -p neowon-vds1022 --example trigtest    # trigger matrix (needs hardware)
 cargo test -p neowon-app --test shaders           # naga-validate all WGSL
 ```
@@ -155,7 +183,8 @@ cargo test -p neowon-app --test shaders           # naga-validate all WGSL
 | `neowon-vds1022` | VDS1022 USB driver (nusb), protocol constants |
 | `neowon-dsp` | Measurements, statistics, FFT, math — the CPU oracle |
 | `neowon-cli` | Headless bring-up and debugging tool |
-| `neowon-app` | Bevy application: GPU pipeline, UI, scripting |
+| `neowon-app` | Bevy application: GPU pipeline, UI, scripting, control socket |
+| `neowon-mcp` | MCP server exposing the running scope to LLM clients |
 
 `PLAN.md` holds the roadmap and phase status;
 `docs/protocol-vds1022.md` records every hardware-verified protocol fact.

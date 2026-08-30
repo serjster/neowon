@@ -18,6 +18,7 @@
 //!   E           cycle persistence (off -> 0.2s -> 1s -> 5s -> infinite)
 //!   X           cycle trace mode (vectors -> dots -> XY)
 
+mod control;
 mod cursors;
 mod derived;
 mod gpu;
@@ -167,6 +168,7 @@ fn main() {
         .init_resource::<record::History>()
         .init_resource::<refs::RefState>()
         .insert_resource(script::load_from_env())
+        .insert_resource(control::start_from_env())
         .add_systems(Startup, setup)
         .add_systems(EguiPrimaryContextPass, ui::panel)
         .add_systems(
@@ -181,6 +183,7 @@ fn main() {
                     phosphor_input,
                     cursors::cursor_input,
                     ui::touch::plot_pointer,
+                    control::poll,
                     script::run_script,
                     flush,
                     derived::compute_derived,
