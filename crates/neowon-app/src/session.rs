@@ -43,6 +43,7 @@ pub(crate) fn condition_words(c: PulseCondition) -> (&'static str, &'static str)
 #[allow(clippy::too_many_arguments)]
 pub fn emit(
     ap: &crate::autopeak::AutoPeak,
+    deep: &crate::deep::DeepView,
     link: &Link,
     phosphor: &Phosphor,
     math: &MathState,
@@ -162,6 +163,10 @@ pub fn emit(
     };
     let _ = writeln!(w, "palette {palette}");
     let _ = writeln!(w, "hview {} {}", phosphor.hview.0, phosphor.hview.1);
+    // After hview on purpose: `deep on` clears the zoom window, so emitting
+    // it first would make the session fail to round-trip.
+    let _ = writeln!(w, "deepspan {}", deep.span);
+    let _ = writeln!(w, "deep {}", if deep.on { "on" } else { "off" });
 
     let math_op = if !math.enabled {
         "off"

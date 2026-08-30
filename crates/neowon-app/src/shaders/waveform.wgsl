@@ -23,6 +23,8 @@ struct Params {
     palette: u32,
     view_start: f32,
     view_span: f32,
+    deep: u32,
+    _pad: u32,
     col0: vec4f,
     col1: vec4f,
     col2: vec4f,
@@ -69,10 +71,24 @@ fn off_screen(raw: i32) -> bool {
     return raw > 100 || raw < -100;
 }
 
+// No acquired data in this column (see neowon_dsp::timeline::NO_DATA).
+// Real samples are within +-127, so the code is unambiguous.
+const NO_DATA: i32 = -128;
+
 // Horizontal zoom window: sample index -> fraction of the visible plot
 // (0..1). Samples outside the window map outside [0, 1] and are skipped.
+//
+// A deep trace stores two values (min, max) per column, so both must land
+// on the *same* column: indexing by i would put every pair from the second
+// onwards astride a boundary, smearing gap edges by a column.
 fn view_x(i: u32) -> f32 {
-    let fx = f32(i) / f32(params.samples - 1u);
+    var k = i;
+    var n = params.samples;
+    if (params.deep == 1u) {
+        k = i / 2u;
+        n = params.samples / 2u;
+    }
+    let fx = f32(k) / f32(max(n, 2u) - 1u);
     return (fx - params.view_start) / params.view_span;
 }
 
@@ -128,6 +144,10 @@ fn raster(@builtin(global_invocation_id) id: vec3<u32>) {
     // the plot edge — never a false line pinned along the border.
     let r0 = wave[ch * params.samples + i - 1u];
     let r1 = wave[ch * params.samples + i];
+    // A gap is a hole, not a value: either endpoint missing means no beam.
+    // (Testing both would draw a spike to the plot edge at every gap edge,
+    // because sample_row clamps rather than culling.)
+    if (r0 == NO_DATA || r1 == NO_DATA) { return; }
     if ((r0 > 100 && r1 > 100) || (r0 < -100 && r1 < -100)) { return; }
 
     // Zoom window: cull samples outside; segments crossing the edge clamp
@@ -207,6 +227,29 @@ fn compose(@builtin(global_invocation_id) id: vec3<u32>) {
         let v = (f32(id.y) / f32(params.height) - 0.5) * 2.0;
         let vig = 1.0 - 0.10 * (u * u + v * v);
         rgb *= scan * vig;
+    }
+    // Discontinuity markers: a red squiggle down every column the
+    // instrument was not acquiring in. Drawn here, in the compose pass,
+    // rather than as an overlay — the display texture is what `shot` and
+    // the MCP screenshot tool read back, so a marker drawn anywhere else
+    // would be invisible in every capture and unassertable in any test.
+    if (params.deep == 1u) {
+        let cols = params.samples / 2u;
+        // Wobble the column by a couple of pixels down the height so the
+        // mark reads as a tear rather than as signal.
+        let wob = i32(round(2.0 * sin(f32(id.y) * 0.35)));
+        let c = x - wob;
+        if (c >= 0 && c < i32(cols) && wave[3u * params.samples + u32(c)] != 0) {
+            // A wide gap gets a squiggly line down each edge and only a
+            // faint wash between them: the empty width already carries the
+            // duration, and flooding it red would shout over the signal
+            // either side.
+            let prev = select(0, wave[3u * params.samples + u32(c - 1)], c > 0);
+            let next = select(0, wave[3u * params.samples + u32(c + 1)], c < i32(cols) - 1);
+            let edge = c == 0 || c == i32(cols) - 1 || prev == 0 || next == 0;
+            let strength = select(0.10, 0.85, edge);
+            rgb = mix(rgb, vec3f(0.85, 0.10, 0.10), strength);
+        }
     }
     textureStore(display, vec2i(x, y), vec4f(rgb, 1.0));
 }

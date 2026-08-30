@@ -125,6 +125,7 @@ pub fn show(
     fx: &crate::effects::Effects,
     scale: &crate::ui::UiScale,
     ap: &mut crate::autopeak::AutoPeak,
+    deep: &mut crate::deep::DeepView,
 ) -> egui::Rect {
     let rect = l.points(Roi::Dialog.rect(l));
     let mut frame = egui::Frame::new();
@@ -172,7 +173,9 @@ pub fn show(
                         for m in SECTIONS {
                             section(ui, menus, m, |ui, menus| match m {
                                 Menu::Channel(ch) => dialog_channel::show(ui, link, ch),
-                                Menu::Horizontal => dialog_horizontal::show(ui, link, phosphor),
+                                Menu::Horizontal => {
+                                    dialog_horizontal::show(ui, link, phosphor, deep)
+                                }
                                 Menu::Trigger => dialog_trigger::show(ui, link),
                                 Menu::Acquire => dialog_acquire::show(ui, link, ap),
                                 Menu::Display => dialog_display::show(
@@ -180,7 +183,7 @@ pub fn show(
                                 ),
                                 Menu::Measure => dialog_measure::show(ui, meas),
                                 Menu::Math => dialog_math::show(ui, math),
-                                Menu::Cursor => dialog_cursor::show(ui, link, cur, meas),
+                                Menu::Cursor => dialog_cursor::show(ui, link, cur, meas, deep),
                                 Menu::Utility | Menu::Record => {
                                     let _ = menus;
                                 }

@@ -143,6 +143,68 @@ pub fn hzoom(link: &mut Link, p: &mut Phosphor, anchor: f64, inward: bool) {
     }
 }
 
+/// The horizontal zoom control including the timeline, in three bands from
+/// most zoomed-in to most zoomed-out:
+///
+/// | state | zoom in | zoom out |
+/// |---|---|---|
+/// | timeline on | narrower window; hand back to the record once it fits | wider window |
+/// | zoom window on | widen toward the whole record | widen; at the record, engage the timeline |
+/// | whole record | narrow the zoom window | engage the timeline |
+///
+/// The sample rate is deliberately absent: zooming is a display choice, and
+/// the time base stays the acquisition control it is on a bench scope. That
+/// is the whole point — you can span seconds without giving up resolution.
+pub fn hzoom_timeline(
+    link: &mut Link,
+    p: &mut Phosphor,
+    deep: &mut crate::deep::DeepView,
+    anchor: f64,
+    inward: bool,
+) {
+    let record_s = record_len(link) as f64 / link.config.sample_rate.max(1e-12);
+    if deep.on {
+        if inward {
+            // Narrower, until the window fits inside one record — then the
+            // record itself is the better view, at full resolution.
+            if !crate::deep::span_step(deep, false) || deep.span <= record_s {
+                crate::deep::set_on(deep, p, false);
+            }
+        } else {
+            crate::deep::span_step(deep, true);
+        }
+        return;
+    }
+    if inward || zoom_active(p) {
+        hview_zoom(p, anchor, inward);
+        return;
+    }
+    // Zooming out from the whole record: rather than slowing the sample rate
+    // and aliasing the signal away, span more time using history.
+    crate::deep::set_on(deep, p, true);
+    deep.span = crate::deep::SPAN_LADDER
+        .iter()
+        .copied()
+        .find(|&s| s > record_s * 1.5)
+        .unwrap_or(record_s * 2.0);
+}
+
+/// The horizontal position control including the timeline: scroll the window
+/// through history while it is on, otherwise the trigger delay / zoom window.
+pub fn hposition_timeline(
+    link: &mut Link,
+    p: &mut Phosphor,
+    deep: &mut crate::deep::DeepView,
+    newest: f64,
+    dfrac: f64,
+) {
+    if deep.on {
+        crate::deep::pan(deep, newest, dfrac);
+    } else {
+        hposition(link, p, dfrac);
+    }
+}
+
 /// The horizontal position control, with the same mode split: the trigger
 /// delay when the zoom window is off (the acquisition control), the zoom
 /// window's position when it is on. `dfrac` is a fraction of the visible

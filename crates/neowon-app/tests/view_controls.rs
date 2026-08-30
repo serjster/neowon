@@ -160,20 +160,38 @@ fn view_controls_move_the_window_and_the_pixels() {
         conn.wait_config(r#""volts_div":0.5"#);
         std::thread::sleep(Duration::from_millis(800));
 
-        // The horizontal control is the time base while the zoom window is
-        // off: zooming out walks the rate ladder down into seconds per
-        // division instead of stopping at the record (the Phase 7.8 fix).
+        // The time base control still walks the rate ladder all the way down
+        // into seconds per division — that is the acquisition control.
+        assert!(conn.request("timebase 4").contains(r#""ok":true"#));
+        conn.wait_config(r#""sample_rate":125,"#);
+
+        // Zooming out, though, must NOT cost sample rate: past the record it
+        // engages the timeline and spans history instead. This is the whole
+        // point of the feature, so it is asserted rather than described.
         assert!(conn.request("timebase 0.002").contains(r#""ok":true"#));
         conn.wait_config(r#""sample_rate":250000"#);
-        for _ in 0..10 {
-            assert!(conn.request("hzoom out").contains(r#""ok":true"#));
+        assert!(conn.request("hzoom out").contains(r#""ok":true"#));
+        let cfg = conn.wait_config(r#""deep":{"on":true"#);
+        assert!(
+            cfg.contains(r#""sample_rate":250000"#),
+            "zooming out must keep the sample rate: {cfg}"
+        );
+        // Zooming back in hands the display to the record again — stop as
+        // soon as it does, since further zoom-ins then narrow the record's
+        // own window, which is the correct next behaviour.
+        let mut cfg = String::new();
+        for _ in 0..14 {
+            assert!(conn.request("hzoom in").contains(r#""ok":true"#));
+            cfg = conn.request("get config");
+            if cfg.contains(r#""deep":{"on":false"#) {
+                break;
+            }
         }
-        // Ten rungs down from 2 ms/div is 125 S/s = 4 s/div on a 5000-point
-        // record: seconds per division, the case that used to be
-        // unreachable. The zoom window never moved — this is the
-        // acquisition control, not a display zoom.
-        let cfg = conn.wait_config(r#""sample_rate":125,"#);
-        assert!(cfg.contains(r#""hview":[0.5,1]"#), "{cfg}");
+        assert!(
+            cfg.contains(r#""deep":{"on":false"#),
+            "deep never released: {cfg}"
+        );
+        assert!(cfg.contains(r#""sample_rate":250000"#), "{cfg}");
         // Horizontal position is the trigger delay while unzoomed.
         assert!(conn.request("trigpos 0.5").contains(r#""ok":true"#));
         conn.wait_config(r#""trigger_position":0.5"#);

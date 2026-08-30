@@ -21,6 +21,15 @@ use crate::gpu::Phosphor;
 use crate::ui::layout::Layout;
 use crate::view;
 
+/// End of the newest recorded acquisition on the session clock — where
+/// "follow live" points.
+fn newest_time(rec: &crate::record::Recorder) -> f64 {
+    rec.frames
+        .last()
+        .map(|f| f.t_start() + f.duration())
+        .unwrap_or(0.0)
+}
+
 /// Second click within this window counts as a double-click.
 const DOUBLE_CLICK_S: f64 = 0.35;
 
@@ -111,6 +120,8 @@ pub fn plot_pointer(
     mut touch: ResMut<TouchState>,
     mut link: ResMut<Link>,
     mut phosphor: ResMut<Phosphor>,
+    mut deep: ResMut<crate::deep::DeepView>,
+    rec: Res<crate::record::Recorder>,
 ) {
     // Measurement cursors (earlier in the chain) own the pointer while
     // dragging; egui owns it over panels.
@@ -151,7 +162,7 @@ pub fn plot_pointer(
                 .clamp(0.0, 1.0);
                 let (c, s) = phosphor.hview;
                 let anchor = (c - s / 2.0) + anchor as f64 * s;
-                view::hzoom(&mut link, &mut phosphor, anchor, inward);
+                view::hzoom_timeline(&mut link, &mut phosphor, &mut deep, anchor, inward);
             } else {
                 let sel = link.selected.min(1);
                 view::zoom_channel(&mut link, sel, inward);
@@ -160,7 +171,14 @@ pub fn plot_pointer(
         if steps[1].abs() >= 0.5 {
             // Content follows the finger: swipe right slides the waveform
             // right (later data leaves the screen).
-            view::hposition(&mut link, &mut phosphor, steps[1] as f64 * 0.02);
+            let newest = newest_time(&rec);
+            view::hposition_timeline(
+                &mut link,
+                &mut phosphor,
+                &mut deep,
+                newest,
+                steps[1] as f64 * 0.02,
+            );
         }
     } else {
         wheel.clear();
@@ -225,7 +243,8 @@ pub fn plot_pointer(
             // Horizontal: the position control — trigger delay, or the zoom
             // window while zoomed. The waveform follows the pointer.
             let d = (delta.x / layout.plot.width()) as f64;
-            view::hposition(&mut link, &mut phosphor, d);
+            let newest = newest_time(&rec);
+            view::hposition_timeline(&mut link, &mut phosphor, &mut deep, newest, d);
         }
     }
 }

@@ -152,6 +152,8 @@ pub(crate) fn parse(text: &str) -> Result<VecDeque<(f64, Action)>, String> {
             ),
             "timebase" => Action::Timebase(rest()?.parse().map_err(|_| err("bad s/div"))?),
             "zoomwin" => Action::ZoomWin(rest()? == "on"),
+            "deep" => Action::Deep(rest()? == "on"),
+            "deepspan" => Action::DeepSpan(rest()?.parse().map_err(|_| err("bad seconds"))?),
             "pan" => Action::Pan(match rest()? {
                 "left" => crate::view::Pan::Left,
                 "right" => crate::view::Pan::Right,

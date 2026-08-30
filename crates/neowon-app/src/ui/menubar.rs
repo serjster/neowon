@@ -32,6 +32,7 @@ pub fn show(
     link: &mut Link,
     _menus: &mut MenuState,
     now: f64,
+    deep: &crate::deep::DeepView,
 ) -> egui::Rect {
     let rect = l.points(Roi::MenuBar.rect(l));
     let resp = egui::Area::new("menubar".into())
@@ -55,14 +56,47 @@ pub fn show(
                 );
                 let record_len = link.caps.as_ref().map(|c| c.record_len).unwrap_or(5000);
                 let per_div = record_len as f64 / link.config.sample_rate / 10.0;
-                ui.label(
-                    egui::RichText::new(format!(
+                // While the timeline is on, the on-screen time/div is the
+                // window's, not the record's — show both rather than let the
+                // chrome claim a time base the display is not using.
+                let text = if deep.on {
+                    format!(
+                        "{}/div view   {}/div acq   {}",
+                        fmt_si(deep.seconds_per_div(), "s"),
+                        fmt_si(per_div, "s"),
+                        fmt_si(link.config.sample_rate, "S/s"),
+                    )
+                } else {
+                    format!(
                         "{}/div   {}",
                         fmt_si(per_div, "s"),
                         fmt_si(link.config.sample_rate, "S/s"),
-                    ))
-                    .monospace(),
-                );
+                    )
+                };
+                ui.label(egui::RichText::new(text).monospace());
+                if deep.on {
+                    let (r, resp) =
+                        ui.allocate_exact_size(egui::vec2(112.0, 20.0), egui::Sense::hover());
+                    ui.painter().rect(
+                        r,
+                        4.0,
+                        egui::Color32::from_rgb(40, 44, 54),
+                        egui::Stroke::new(1.0, egui::Color32::from_rgb(80, 200, 140)),
+                        egui::StrokeKind::Middle,
+                    );
+                    ui.painter().text(
+                        r.center(),
+                        egui::Align2::CENTER_CENTER,
+                        format!("TIMELINE {:.0}%", deep.lost() * 100.0),
+                        egui::FontId::proportional(11.0),
+                        egui::Color32::from_rgb(80, 200, 140),
+                    );
+                    resp.on_hover_text(
+                        "Showing the acquisition timeline at full sample rate. \
+                         The percentage is how much of the window the instrument \
+                         was not acquiring in; those columns are marked in red.",
+                    );
+                }
                 // Slow time bases run the instrument in roll mode, where the
                 // record fills progressively and the trigger is not used —
                 // scopes always say so on screen.

@@ -29,7 +29,7 @@ pub const PLOT_W: u32 = 1000;
 pub const PLOT_H: u32 = 500;
 const MAX_SAMPLES: usize = 5000;
 /// Trace layers: CH1, CH2, math.
-const CHANNELS: usize = 3;
+pub const CHANNELS: usize = 3;
 
 /// Trace display style.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +94,25 @@ pub struct Phosphor {
     /// Horizontal zoom window into the record: (center, span) as fractions
     /// of the record. (0.5, 1.0) shows the whole record — the home view.
     pub hview: (f64, f64),
+    /// When present, the display shows this reduced timeline instead of a
+    /// single record. Arc'd because the whole resource is cloned into the
+    /// render world every frame.
+    pub deep: Option<std::sync::Arc<DeepFrame>>,
+}
+
+/// A timeline reduced for display: min/max pairs per column per channel,
+/// plus which columns nothing was acquired in.
+#[derive(Debug, Clone, Default)]
+pub struct DeepFrame {
+    /// Bumped whenever the content changes — the uploader dedupes on it,
+    /// since a rebuilt trace has no record sequence number of its own.
+    pub rev: u64,
+    pub columns: usize,
+    /// Per channel, `2 * columns` interleaved (min, max) values.
+    pub pairs: [Vec<i8>; CHANNELS],
+    pub enabled: [bool; CHANNELS],
+    /// 1 = this column had no acquisition, for the gap markers.
+    pub gaps: Vec<u32>,
 }
 
 impl Default for Phosphor {
@@ -109,6 +128,7 @@ impl Default for Phosphor {
             palette: Palette::Phosphor,
             new_frame: false,
             hview: (0.5, 1.0),
+            deep: None,
         }
     }
 }
@@ -153,6 +173,10 @@ struct Params {
     /// as a fraction of the record (1.0 = whole record).
     view_start: f32,
     view_span: f32,
+    /// 1 = `wave` holds a reduced timeline: min/max pairs indexed two per
+    /// column, with a gap mask packed after the channel blocks.
+    deep: u32,
+    _pad: u32,
     col0: Vec4,
     col1: Vec4,
     col2: Vec4,
@@ -173,6 +197,8 @@ pub(crate) struct Buffers {
     params: UniformBuffer<Params>,
     /// Sequence number of the record currently in `wave`.
     uploaded_seq: u64,
+    /// Revision of the deep trace currently in `wave` (0 = none).
+    uploaded_deep: u64,
     /// Sample count of that record.
     pub(crate) n_samples: u32,
     /// Raster requested for this render frame.
@@ -248,6 +274,7 @@ fn prepare_buffers(
                 accum,
                 params: UniformBuffer::default(),
                 uploaded_seq: 0,
+                uploaded_deep: 0,
                 n_samples: 0,
                 do_raster: false,
                 hview: phosphor.hview,
@@ -258,7 +285,31 @@ fn prepare_buffers(
 
     let mut en = [0u32; CHANNELS];
     b.do_raster = false;
-    if let Some(frame) = &phosphor.frame {
+    let deep = phosphor.deep.as_ref();
+    if let Some(d) = deep {
+        // A reduced timeline replaces the single record: channel blocks of
+        // min/max pairs, then a per-column gap mask packed after them (the
+        // wave buffer has room — deep uses 3 x 2000 of 15000 i32).
+        for (ch, on) in d.enabled.iter().enumerate() {
+            en[ch] = *on as u32;
+        }
+        if d.rev != b.uploaded_deep {
+            let n = (d.columns * 2).min(MAX_SAMPLES);
+            let mut data = vec![0i32; CHANNELS * n + d.columns];
+            for ch in 0..CHANNELS {
+                for (i, &v) in d.pairs[ch].iter().take(n).enumerate() {
+                    data[ch * n + i] = v as i32;
+                }
+            }
+            for (c, slot) in data[CHANNELS * n..].iter_mut().enumerate() {
+                *slot = d.gaps.contains(&(c as u32)) as i32;
+            }
+            queue.write_buffer(&b.wave, 0, bytemuck::cast_slice(&data));
+            b.uploaded_deep = d.rev;
+            b.n_samples = n as u32;
+            b.do_raster = true;
+        }
+    } else if let Some(frame) = &phosphor.frame {
         for cap in &frame.channels {
             if cap.ch < CHANNELS {
                 en[cap.ch] = 1;
@@ -299,6 +350,11 @@ fn prepare_buffers(
     } else {
         phosphor.decay
     };
+    // A rebuilt timeline replaces the whole screen; old phosphor from the
+    // previous window would smear across it.
+    if deep.is_some() {
+        decay = 0.0;
+    }
     if (phosphor.hview.0 - b.hview.0).abs() > 1e-9 || (phosphor.hview.1 - b.hview.1).abs() > 1e-9 {
         decay = 0.0;
         b.hview = phosphor.hview;
@@ -329,6 +385,8 @@ fn prepare_buffers(
         },
         view_start: (center - span / 2.0) as f32,
         view_span: span as f32,
+        deep: deep.is_some() as u32,
+        _pad: 0,
         col0: Vec4::new(1.0, 0.85, 0.1, 1.0),
         col1: Vec4::new(0.2, 0.75, 1.0, 1.0),
         col2: Vec4::new(1.0, 0.35, 0.85, 1.0),

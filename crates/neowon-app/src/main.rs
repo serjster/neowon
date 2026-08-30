@@ -27,6 +27,7 @@
 mod autopeak;
 mod control;
 mod cursors;
+mod deep;
 mod derived;
 mod effects;
 mod gpu;
@@ -170,6 +171,7 @@ fn main() {
         .init_resource::<ui::layout::UiRects>()
         .init_resource::<ui::UiScale>()
         .init_resource::<autopeak::AutoPeak>()
+        .init_resource::<deep::DeepView>()
         .init_resource::<ui::touch::TouchState>()
         .init_resource::<ui::MenuState>()
         .init_resource::<derived::MathState>()
@@ -224,6 +226,7 @@ fn main() {
                     autopeak::update,
                     flush,
                     derived::compute_derived,
+                    deep::build,
                     viz::waterfall::update,
                     viz::three_d::update,
                     update_phosphor,

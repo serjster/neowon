@@ -44,6 +44,7 @@ type VizState<'w> = (
     ResMut<'w, crate::ui::layout::UiRects>,
     Res<'w, crate::ui::UiScale>,
     ResMut<'w, crate::autopeak::AutoPeak>,
+    ResMut<'w, crate::deep::DeepView>,
 );
 
 #[allow(clippy::too_many_arguments)]
@@ -78,7 +79,7 @@ pub fn panel(
 
     let rects = &mut viz.3;
     rects.begin();
-    let r = menubar::show(&ctx, &layout, &mut link, &mut menus, now);
+    let r = menubar::show(&ctx, &layout, &mut link, &mut menus, now, &viz.6);
     rects.put("menu_bar", r);
     let (desc, overlay) =
         descriptors::show(&ctx, &layout, &mut link, &phosphor, &mut meas, &mut menus);
@@ -114,6 +115,7 @@ pub fn panel(
         &viz.2,
         &viz.4,
         &mut viz.5,
+        &mut viz.6,
     );
     rects.put("dialog", r);
     crate::refs::overlay(&ctx, &layout, &refs);

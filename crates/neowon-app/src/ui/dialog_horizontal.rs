@@ -14,7 +14,95 @@ use super::knob::knob;
 use super::widgets::ladder_combo;
 use crate::derived::fmt_si;
 
-pub fn show(ui: &mut egui::Ui, link: &mut Link, phosphor: &mut Phosphor) {
+pub fn show(
+    ui: &mut egui::Ui,
+    link: &mut Link,
+    phosphor: &mut Phosphor,
+    deep: &mut crate::deep::DeepView,
+) {
+    timeline_group(ui, link, phosphor, deep);
+    show_inner(ui, link, phosphor)
+}
+
+/// Timeline (deep) view: span more time than one record holds, at the
+/// acquisition's own sample rate, by drawing the recorded history on a real
+/// time axis.
+fn timeline_group(
+    ui: &mut egui::Ui,
+    link: &Link,
+    phosphor: &mut Phosphor,
+    deep: &mut crate::deep::DeepView,
+) {
+    ui.group(|ui| {
+        ui.strong("Timeline");
+        let record_s = view::record_len(link) as f64 / link.config.sample_rate.max(1e-12);
+        let mut on = deep.on;
+        if ui
+            .checkbox(&mut on, "Span history, not one record")
+            .changed()
+        {
+            crate::deep::set_on(deep, phosphor, on);
+        }
+        if !deep.on {
+            ui.label(
+                egui::RichText::new(format!(
+                    "off — the display shows one {} record",
+                    fmt_si(record_s, "s")
+                ))
+                .weak()
+                .small(),
+            );
+            return;
+        }
+        ui.label(
+            egui::RichText::new(format!(
+                "{} /div  ({} window)",
+                fmt_si(deep.seconds_per_div(), "s"),
+                fmt_si(deep.span, "s"),
+            ))
+            .monospace()
+            .size(10.0),
+        );
+        ui.horizontal(|ui| {
+            if button(ui, Icon::ZoomOut, "Longer window", 24.0).clicked() {
+                crate::deep::span_step(deep, true);
+            }
+            if button(ui, Icon::ZoomIn, "Shorter window", 24.0).clicked() {
+                crate::deep::span_step(deep, false);
+            }
+            if button(ui, Icon::Recenter, "Follow live acquisition", 24.0).clicked() {
+                deep.anchor = None;
+            }
+        });
+        // What the instrument actually saw, and what it missed.
+        ui.label(
+            egui::RichText::new(format!(
+                "≈{:.0}% of the window not acquired · {} gaps · {} records",
+                deep.lost() * 100.0,
+                deep.gap_count,
+                deep.records,
+            ))
+            .monospace()
+            .size(10.0)
+            .color(if deep.lost() > 0.5 {
+                egui::Color32::from_rgb(220, 120, 90)
+            } else {
+                egui::Color32::GRAY
+            }),
+        );
+        ui.label(
+            egui::RichText::new(if deep.anchor.is_some() {
+                "scrolled back — drag the plot, or press Follow"
+            } else {
+                "following live"
+            })
+            .weak()
+            .small(),
+        );
+    });
+}
+
+fn show_inner(ui: &mut egui::Ui, link: &mut Link, phosphor: &mut Phosphor) {
     let record_len = view::record_len(link);
     let tb_ladder = view::timebase_ladder(link);
     let record_s = record_len as f64 / link.config.sample_rate;

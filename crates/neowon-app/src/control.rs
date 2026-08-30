@@ -105,6 +105,7 @@ pub fn poll(
     viz: Res<Viz3dState>,
     fx: Res<crate::effects::Effects>,
     ap: Res<crate::autopeak::AutoPeak>,
+    deep: Res<crate::deep::DeepView>,
 ) {
     let Some(rx) = &server.rx else { return };
     let now = time.elapsed_secs_f64();
@@ -112,7 +113,9 @@ pub fn poll(
         let line = req.line.trim();
         let reply = match line.strip_prefix("get ") {
             Some("status") => status_json(&link, &rec, &hist),
-            Some("config") => config_json(&link, &phosphor, &math, &fft, &pf, &wf, &viz, &fx, &ap),
+            Some("config") => config_json(
+                &link, &phosphor, &math, &fft, &pf, &wf, &viz, &fx, &ap, &deep,
+            ),
             Some("measure") => measure_json(&meas),
             Some(other) => format!(
                 r#"{{"ok":false,"error":"unknown query {}"}}"#,
@@ -194,6 +197,7 @@ fn config_json(
     viz: &Viz3dState,
     fx: &crate::effects::Effects,
     ap: &crate::autopeak::AutoPeak,
+    deep: &crate::deep::DeepView,
 ) -> String {
     use neowon_core::{Coupling, Slope, TriggerKind};
     let c = &link.config;
@@ -290,7 +294,8 @@ fn config_json(
             r#""math":{{"enabled":{}}},"fft":{{"enabled":{},"source":{}}},"#,
             r#""pf":{{"enabled":{},"source":{},"pass":{},"fail":{}}},"#,
             r#""viz":{{"waterfall":{},"mode":"{}","effect":{}}},"#,
-            r#""autopeak":{{"on":{},"engaged":{}}}}}"#
+            r#""autopeak":{{"on":{},"engaged":{}}},"#,
+            r#""deep":{{"on":{},"span":{},"coverage":{},"gaps":{},"records":{},"anchored":{}}}}}"#
         ),
         num(c.sample_rate),
         num(c.position),
@@ -323,6 +328,12 @@ fn config_json(
             .map_or("null".to_string(), |n| format!("\"{}\"", escape(n))),
         ap.on,
         ap.engaged,
+        deep.on,
+        num(deep.span),
+        num(deep.coverage),
+        deep.gap_count,
+        deep.records,
+        deep.anchor.is_some(),
     )
 }
 

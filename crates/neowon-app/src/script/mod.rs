@@ -25,6 +25,8 @@
 //! zoom <h|v> <in|out>                 # h = horizontal (see hzoom), v = V/div
 //! hzoom <in|out>                      # time base, or zoom window when on
 //! zoomwin <on|off>                    # zoom (delayed sweep) window
+//! deep <on|off>                       # timeline view over the scrollback
+//! deepspan <seconds>                  # timeline window duration
 //! hview <centre> <span>               # zoom window, fractions of record
 //! pan <left|right|up|down>            # window (h) / offset (v), one step
 //! home                                # default zoom + centre position
@@ -98,6 +100,7 @@ type ExtraState<'w> = (
     Res<'w, crate::ui::layout::UiRects>,
     ResMut<'w, crate::ui::UiScale>,
     ResMut<'w, crate::autopeak::AutoPeak>,
+    ResMut<'w, crate::deep::DeepView>,
 );
 
 #[derive(Debug, Clone)]
@@ -149,6 +152,10 @@ pub enum Action {
     Timebase(f64),
     /// Zoom (delayed-sweep) window on/off.
     ZoomWin(bool),
+    /// Timeline (deep) view on/off.
+    Deep(bool),
+    /// Timeline window duration, seconds.
+    DeepSpan(f64),
     Pan(crate::view::Pan),
     Home,
     Acq(AcqMode),
@@ -271,6 +278,7 @@ pub fn run_script(
     let rects = &ext.5;
     let ui_scale = &mut ext.6;
     let autopeak = &mut ext.7;
+    let deep = &mut ext.8;
     let now = time.elapsed_secs_f64();
     while let Some((due, _)) = script.queue.front() {
         if *due > now {
@@ -377,7 +385,14 @@ pub fn run_script(
             }
             Action::HZoom { inward } => {
                 let anchor = phosphor.hview.0;
-                crate::view::hzoom(&mut link, &mut phosphor, anchor, inward)
+                crate::view::hzoom_timeline(&mut link, &mut phosphor, deep, anchor, inward)
+            }
+            Action::Deep(on) => crate::deep::set_on(deep, &mut phosphor, on),
+            Action::DeepSpan(s) => {
+                deep.span = s.max(1e-6);
+                if !deep.on {
+                    crate::deep::set_on(deep, &mut phosphor, true);
+                }
             }
             Action::Timebase(s_div) => crate::view::set_timebase(&mut link, s_div),
             Action::ZoomWin(on) => crate::view::set_zoom(&mut phosphor, on),
@@ -385,7 +400,11 @@ pub fn run_script(
                 phosphor.hview = crate::view::hview_clamp(center, span);
             }
             Action::Pan(dir) => crate::view::pan(&mut link, &mut phosphor, dir),
-            Action::Home => crate::view::home(&mut link, &mut phosphor),
+            Action::Home => {
+                // Home means the normal view: the timeline is a mode.
+                crate::deep::set_on(deep, &mut phosphor, false);
+                crate::view::home(&mut link, &mut phosphor)
+            }
             Action::Acq(a) => {
                 // The user's choice, not the auto-peak rule's: sessions
                 // persist this and the rule restores it on release.
@@ -593,7 +612,7 @@ pub fn run_script(
             }
             Action::SessionSave(path) => {
                 let text = crate::session::emit(
-                    autopeak, &link, &phosphor, &math, &meas, &fft, &cur, &pf, wf, viz3d, fx,
+                    autopeak, deep, &link, &phosphor, &math, &meas, &fft, &cur, &pf, wf, viz3d, fx,
                 );
                 match std::fs::write(&path, text) {
                     Ok(()) => info!("script: saved session to {path}"),
