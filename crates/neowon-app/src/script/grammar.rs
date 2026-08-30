@@ -154,6 +154,14 @@ pub(crate) fn parse(text: &str) -> Result<VecDeque<(f64, Action)>, String> {
             "zoomwin" => Action::ZoomWin(rest()? == "on"),
             "deep" => Action::Deep(rest()? == "on"),
             "deepspan" => Action::DeepSpan(rest()?.parse().map_err(|_| err("bad seconds"))?),
+            "decode" => Action::Decode(
+                crate::decode::Protocol::parse(rest()?).ok_or_else(|| err("bad protocol"))?,
+            ),
+            "decodeline" => Action::DecodeLine(
+                rest()?.parse().map_err(|_| err("bad line"))?,
+                rest()?.parse().map_err(|_| err("bad channel"))?,
+            ),
+            "decodebaud" => Action::DecodeBaud(rest()?.parse().map_err(|_| err("bad baud"))?),
             "pan" => Action::Pan(match rest()? {
                 "left" => crate::view::Pan::Left,
                 "right" => crate::view::Pan::Right,
@@ -258,6 +266,7 @@ pub(crate) fn parse(text: &str) -> Result<VecDeque<(f64, Action)>, String> {
                 "cursor" => Some(Menu::Cursor),
                 "utility" => Some(Menu::Utility),
                 "record" => Some(Menu::Record),
+                "decode" => Some(Menu::Decode),
                 _ => return Err(err("bad menu")),
             }),
             "uiscale" => Action::UiScaleSet(rest()?.parse().map_err(|_| err("bad scale"))?),

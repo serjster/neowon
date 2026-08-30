@@ -13,8 +13,8 @@ use crate::gpu::Phosphor;
 
 use super::layout::{Layout, Roi};
 use super::{
-    dialog_acquire, dialog_channel, dialog_cursor, dialog_display, dialog_horizontal, dialog_math,
-    dialog_measure, dialog_record, dialog_trigger, dialog_utility,
+    dialog_acquire, dialog_channel, dialog_cursor, dialog_decode, dialog_display,
+    dialog_horizontal, dialog_math, dialog_measure, dialog_record, dialog_trigger, dialog_utility,
 };
 
 use crate::record::Recorder;
@@ -32,6 +32,7 @@ pub enum Menu {
     Cursor,
     Utility,
     Record,
+    Decode,
 }
 
 impl Menu {
@@ -51,6 +52,7 @@ impl Menu {
             Menu::Cursor => "Cursors",
             Menu::Utility => "Utility",
             Menu::Record => "Record / Export",
+            Menu::Decode => "Decode",
         }
     }
 }
@@ -126,6 +128,7 @@ pub fn show(
     scale: &crate::ui::UiScale,
     ap: &mut crate::autopeak::AutoPeak,
     deep: &mut crate::deep::DeepView,
+    dec: &mut crate::decode::DecodeState,
 ) -> egui::Rect {
     let rect = l.points(Roi::Dialog.rect(l));
     let mut frame = egui::Frame::new();
@@ -133,7 +136,7 @@ pub fn show(
     frame.stroke = egui::Stroke::new(1.0, egui::Color32::from_gray(50));
     frame.inner_margin = 6.0.into();
 
-    const SECTIONS: [Menu; 9] = [
+    const SECTIONS: [Menu; 10] = [
         Menu::Trigger,
         Menu::Horizontal,
         Menu::Acquire,
@@ -142,6 +145,7 @@ pub fn show(
         Menu::Math,
         Menu::Measure,
         Menu::Cursor,
+        Menu::Decode,
         Menu::Display,
     ];
 
@@ -184,6 +188,7 @@ pub fn show(
                                 Menu::Measure => dialog_measure::show(ui, meas),
                                 Menu::Math => dialog_math::show(ui, math),
                                 Menu::Cursor => dialog_cursor::show(ui, link, cur, meas, deep),
+                                Menu::Decode => dialog_decode::show(ui, dec),
                                 Menu::Utility | Menu::Record => {
                                     let _ = menus;
                                 }

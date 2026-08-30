@@ -143,7 +143,14 @@ pub fn decode(d: &Digital, cfg: Config) -> Result<Vec<Event>, DecodeError> {
 
         events.push(Event { start, end, kind });
         last_end = Some(end);
-        i = end;
+        // Resume searching from half a bit *inside* the final stop bit, not
+        // from the computed frame end. Samples per bit is rarely an integer,
+        // so an end rounded down accumulates lateness across back-to-back
+        // frames until it steps over the next start edge — after which the
+        // decoder locks onto a data transition and every following byte is
+        // wrong. Starting inside the stop bit means the next high-to-low
+        // transition is always the real start bit.
+        i = start + ((frame_bits as f64 + cfg.stop_bits as f64 - 0.5) * per_bit) as usize;
     }
 
     if events.is_empty() {
@@ -250,5 +257,54 @@ mod tests {
         assert!(t1 > t0);
         // One frame is 10 bits at 25 kbaud = 400 us.
         assert!((t1 - t0 - 400e-6).abs() < 60e-6, "{t0}..{t1}");
+    }
+
+    #[test]
+    fn back_to_back_frames_do_not_drift_out_of_sync() {
+        // The bug this guards: samples per bit is rarely an integer, so a
+        // decoder that resumes from a rounded-down frame end accumulates
+        // lateness until it steps over the next start edge. "Hi!" then
+        // decoded as "HZ." with no error reported, which is the worst kind
+        // of wrong.
+        let rate = 250e3;
+        let baud = 9600.0; // 26.0417 samples per bit — deliberately ragged
+        let per_bit = rate / baud;
+
+        // The bit stream: idle, then frames butted together as a UART sends
+        // them, then idle.
+        let mut bits = vec![true; 2];
+        for &b in b"Hi!" {
+            bits.push(false); // start
+            for k in 0..8 {
+                bits.push(b & (1 << k) != 0);
+            }
+            bits.push(true); // stop
+        }
+        bits.extend(std::iter::repeat_n(true, 4));
+
+        // Sample it at a rate that does not divide the bit period.
+        let n = (bits.len() as f64 * per_bit) as usize;
+        let raw: Vec<i8> = (0..n)
+            .map(|i| {
+                let k = ((i as f64 / per_bit) as usize).min(bits.len() - 1);
+                if bits[k] { 100 } else { -100 }
+            })
+            .collect();
+
+        let d = digitize(&raw, rate, Threshold::default()).unwrap();
+        let ev = decode(
+            &d,
+            Config {
+                baud,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            words(&ev),
+            vec![b'H' as u64, b'i' as u64, b'!' as u64],
+            "back-to-back frames must stay in sync: {ev:?}"
+        );
+        assert!(!ev.iter().any(|e| e.kind.is_error()), "{ev:?}");
     }
 }

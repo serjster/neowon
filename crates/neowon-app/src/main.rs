@@ -27,6 +27,7 @@
 mod autopeak;
 mod control;
 mod cursors;
+mod decode;
 mod deep;
 mod derived;
 mod effects;
@@ -178,6 +179,7 @@ fn main() {
         .init_resource::<ui::UiScale>()
         .init_resource::<autopeak::AutoPeak>()
         .init_resource::<deep::DeepView>()
+        .init_resource::<decode::DecodeState>()
         .init_resource::<ui::touch::TouchState>()
         .init_resource::<ui::MenuState>()
         .init_resource::<derived::MathState>()
@@ -216,26 +218,35 @@ fn main() {
         .add_systems(
             Update,
             (
+                // Split only because Bevy caps how many systems one tuple
+                // can chain; the order across both halves is what matters.
                 (
-                    sync_layout,
-                    clear_one_shot,
-                    ingest,
-                    record::record_frames,
-                    input,
-                    phosphor_input,
-                    cursors::cursor_input,
-                    ui::touch::plot_pointer,
-                    control::poll,
-                    script::run_script,
-                    // Before `flush`: the rule writes `config.acq`, which
-                    // `flush` is what actually sends to the instrument.
-                    autopeak::update,
-                    flush,
-                    derived::compute_derived,
-                    deep::build,
-                    viz::waterfall::update,
-                    viz::three_d::update,
-                    update_phosphor,
+                    (
+                        sync_layout,
+                        clear_one_shot,
+                        ingest,
+                        record::record_frames,
+                        input,
+                        phosphor_input,
+                        cursors::cursor_input,
+                        ui::touch::plot_pointer,
+                        control::poll,
+                        script::run_script,
+                    )
+                        .chain(),
+                    (
+                        // Before `flush`: the rule writes `config.acq`, and
+                        // `flush` is what sends it to the instrument.
+                        autopeak::update,
+                        flush,
+                        derived::compute_derived,
+                        decode::run,
+                        deep::build,
+                        viz::waterfall::update,
+                        viz::three_d::update,
+                        update_phosphor,
+                    )
+                        .chain(),
                 )
                     .chain(),
                 (
@@ -246,6 +257,7 @@ fn main() {
                     draw_guides,
                     draw_markers,
                     draw_zoom_band,
+                    decode::draw,
                     draw_clip_warnings,
                     cursors::draw_cursors,
                     update_title,

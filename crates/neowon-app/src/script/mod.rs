@@ -27,6 +27,9 @@
 //! zoomwin <on|off>                    # zoom (delayed sweep) window
 //! deep <on|off>                       # timeline view over the scrollback
 //! deepspan <seconds>                  # timeline window duration
+//! decode <off|uart|i2c|spi|onewire>    # protocol decoder
+//! decodeline <line> <ch>               # assign a decoder input
+//! decodebaud <baud>                    # UART baud rate
 //! hview <centre> <span>               # zoom window, fractions of record
 //! pan <left|right|up|down>            # window (h) / offset (v), one step
 //! home                                # default zoom + centre position
@@ -101,6 +104,7 @@ type ExtraState<'w> = (
     ResMut<'w, crate::ui::UiScale>,
     ResMut<'w, crate::autopeak::AutoPeak>,
     ResMut<'w, crate::deep::DeepView>,
+    ResMut<'w, crate::decode::DecodeState>,
 );
 
 #[derive(Debug, Clone)]
@@ -156,6 +160,12 @@ pub enum Action {
     Deep(bool),
     /// Timeline window duration, seconds.
     DeepSpan(f64),
+    /// Protocol decoder selection.
+    Decode(crate::decode::Protocol),
+    /// Decoder line assignment: line index -> channel.
+    DecodeLine(usize, usize),
+    /// UART baud rate.
+    DecodeBaud(f64),
     Pan(crate::view::Pan),
     Home,
     Acq(AcqMode),
@@ -279,6 +289,7 @@ pub fn run_script(
     let ui_scale = &mut ext.6;
     let autopeak = &mut ext.7;
     let deep = &mut ext.8;
+    let dec = &mut ext.9;
     let now = time.elapsed_secs_f64();
     while let Some((due, _)) = script.queue.front() {
         if *due > now {
@@ -387,6 +398,13 @@ pub fn run_script(
                 let anchor = phosphor.hview.0;
                 crate::view::hzoom_timeline(&mut link, &mut phosphor, deep, anchor, inward)
             }
+            Action::Decode(p) => dec.protocol = p,
+            Action::DecodeLine(line, ch) => {
+                if line < dec.channels.len() {
+                    dec.channels[line] = ch;
+                }
+            }
+            Action::DecodeBaud(b) => dec.uart.baud = b,
             Action::Deep(on) => crate::deep::set_on(deep, &mut phosphor, on),
             Action::DeepSpan(s) => {
                 deep.span = s.max(1e-6);
@@ -668,6 +686,7 @@ fn menu_name(m: Menu) -> &'static str {
         Menu::Cursor => "cursor",
         Menu::Utility => "utility",
         Menu::Record => "record",
+        Menu::Decode => "decode",
     }
 }
 

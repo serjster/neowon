@@ -35,7 +35,7 @@ impl Default for Scenario {
 
 impl Scenario {
     /// Preset names, a stable API shared by UI, scripts, and tests.
-    pub const PRESETS: [&'static str; 14] = [
+    pub const PRESETS: [&'static str; 15] = [
         "probe-comp",
         "sine-1k",
         "dc-1v",
@@ -45,6 +45,7 @@ impl Scenario {
         "fm",
         "trapezoid",
         "noise",
+        "uart-hello",
         "xy-circle",
         "xy-lissajous-3-2",
         "xy-rose-5",
@@ -58,6 +59,16 @@ impl Scenario {
             Scenario::PerChannel([SignalSpec { components }, quiet.clone()])
         };
         match name {
+            // Real 8-N-1 UART traffic at 9600 baud so the protocol
+            // decoders can be exercised and demonstrated without a second
+            // instrument to generate the traffic.
+            "uart-hello" => Some(ch1(vec![Component::Uart {
+                baud: 9600.0,
+                bytes: *b"Hi!\0\0\0\0\0",
+                len: 3,
+                gap_bits: 20.0,
+                amp: 1.5,
+            }])),
             // Mirrors the hardware probe-comp output: 1 kHz 0..5 V square on
             // CH1, 2.5 kHz 1 Vpp sine on CH2, a little noise on both.
             "probe-comp" => Some(Scenario::PerChannel([

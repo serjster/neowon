@@ -70,6 +70,19 @@ pub enum Component {
     Dc {
         level: f64,
     },
+    /// A repeating 8-N-1 UART frame stream, idle high. Exists so the
+    /// protocol decoders can be exercised — and demonstrated — without
+    /// hardware or a second instrument to generate the traffic.
+    Uart {
+        baud: f64,
+        /// Bytes sent, then the line idles for `gap_bits` before
+        /// repeating. Fixed-size so `Component` stays `Copy`.
+        bytes: [u8; 8],
+        len: u8,
+        gap_bits: f64,
+        /// Volts for a mark (idle/1); a space is its negation.
+        amp: f64,
+    },
     Noise {
         rms: f64,
     },
@@ -108,6 +121,33 @@ impl Component {
     /// Value at time `t` without any noise contribution.
     pub fn sample_quiet(&self, t: f64) -> f64 {
         match self {
+            Component::Uart {
+                baud,
+                bytes,
+                len,
+                gap_bits,
+                amp,
+            } => {
+                let bytes = &bytes[..(*len as usize).min(8)];
+                // One frame is start + 8 data + stop; the stream repeats
+                // after gap_bits of idle, so a record always contains whole
+                // frames wherever it starts.
+                let bit = 1.0 / baud.max(1e-9);
+                let per_byte = 10.0;
+                let total = bytes.len() as f64 * per_byte + gap_bits;
+                let pos = ((t / bit) % total + total) % total;
+                let idx = (pos / per_byte).floor() as usize;
+                if idx >= bytes.len() {
+                    return *amp; // idle
+                }
+                let within = pos - idx as f64 * per_byte;
+                let mark = match within.floor() as usize {
+                    0 => false,                                      // start
+                    k if k <= 8 => bytes[idx] & (1 << (k - 1)) != 0, // LSB first
+                    _ => true,                                       // stop
+                };
+                if mark { *amp } else { -*amp }
+            }
             Component::Sine { freq, amp, phase } => amp * (TAU * freq * t + phase).sin(),
             Component::Square {
                 freq,
@@ -199,6 +239,7 @@ impl Component {
             | Component::Triangle { freq, .. }
             | Component::Ramp { freq, .. }
             | Component::Trapezoid { freq, .. } => Some(*freq),
+            Component::Uart { baud, .. } => Some(*baud),
             Component::Am { carrier, .. } | Component::Fm { carrier, .. } => Some(*carrier),
             Component::Dc { .. } | Component::Noise { .. } | Component::Chirp { .. } => None,
         }

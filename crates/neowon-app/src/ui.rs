@@ -6,6 +6,7 @@ pub mod descriptors;
 pub mod dialog_acquire;
 pub mod dialog_channel;
 pub mod dialog_cursor;
+pub mod dialog_decode;
 pub mod dialog_display;
 pub mod dialog_horizontal;
 pub mod dialog_math;
@@ -45,6 +46,7 @@ type VizState<'w> = (
     Res<'w, crate::ui::UiScale>,
     ResMut<'w, crate::autopeak::AutoPeak>,
     ResMut<'w, crate::deep::DeepView>,
+    ResMut<'w, crate::decode::DecodeState>,
 );
 
 #[allow(clippy::too_many_arguments)]
@@ -116,6 +118,7 @@ pub fn panel(
         &viz.4,
         &mut viz.5,
         &mut viz.6,
+        &mut viz.7,
     );
     rects.put("dialog", r);
     crate::refs::overlay(&ctx, &layout, &refs);

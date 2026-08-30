@@ -103,20 +103,26 @@ pub fn poll(
     hist: Res<History>,
     wf: Res<WaterfallState>,
     viz: Res<Viz3dState>,
-    fx: Res<crate::effects::Effects>,
-    ap: Res<crate::autopeak::AutoPeak>,
-    deep: Res<crate::deep::DeepView>,
+    // Bundled: Bevy caps systems at 16 parameters.
+    extra: (
+        Res<crate::effects::Effects>,
+        Res<crate::autopeak::AutoPeak>,
+        Res<crate::deep::DeepView>,
+        Res<crate::decode::DecodeState>,
+    ),
 ) {
+    let (fx, ap, deep, dec) = (&extra.0, &extra.1, &extra.2, &extra.3);
     let Some(rx) = &server.rx else { return };
     let now = time.elapsed_secs_f64();
     for req in rx.try_iter() {
         let line = req.line.trim();
         let reply = match line.strip_prefix("get ") {
             Some("status") => status_json(&link, &rec, &hist),
-            Some("config") => config_json(
-                &link, &phosphor, &math, &fft, &pf, &wf, &viz, &fx, &ap, &deep,
-            ),
+            Some("config") => {
+                config_json(&link, &phosphor, &math, &fft, &pf, &wf, &viz, fx, ap, deep)
+            }
             Some("measure") => measure_json(&meas),
+            Some("decode") => decode_json(dec),
             Some(other) => format!(
                 r#"{{"ok":false,"error":"unknown query {}"}}"#,
                 escape(other)
@@ -334,6 +340,41 @@ fn config_json(
         deep.gap_count,
         deep.records,
         deep.anchor.is_some(),
+    )
+}
+
+/// Decoder results: enough for a script or an LLM to read the bus without
+/// looking at the screen.
+fn decode_json(st: &crate::decode::DecodeState) -> String {
+    use neowon_dsp::decode::EventKind;
+    let rate = st.sample_rate.max(1.0);
+    let mut events = String::new();
+    for (i, e) in st.events.iter().enumerate() {
+        if i > 0 {
+            events.push(',');
+        }
+        let (t0, t1) = e.seconds(rate);
+        let kind = match &e.kind {
+            EventKind::Word { value, bits } => {
+                format!(r#""kind":"word","value":{value},"bits":{bits}"#)
+            }
+            EventKind::Marker(m) => format!(r#""kind":"marker","name":"{}""#, escape(m)),
+            EventKind::Ack(ok) => format!(r#""kind":"ack","ok":{ok}"#),
+            EventKind::Error(e) => format!(r#""kind":"error","reason":"{}""#, escape(e)),
+        };
+        events.push_str(&format!(
+            r#"{{"t":{},"t_end":{},{kind}}}"#,
+            num(t0),
+            num(t1)
+        ));
+    }
+    format!(
+        r#"{{"ok":true,"protocol":"{}","errors":{},"error":{},"events":[{events}]}}"#,
+        st.protocol.name(),
+        st.error_count(),
+        st.error
+            .as_ref()
+            .map_or("null".to_string(), |e| format!("\"{}\"", escape(e))),
     )
 }
 
