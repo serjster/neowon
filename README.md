@@ -49,6 +49,18 @@ the roadmap.
 - **Touch-scope interaction on a desktop**: drag the trigger level and
   position, drag traces to move offsets, scroll to change volts/div,
   shift+scroll for the horizontal zoom.
+- **Timeline view**: zoom out past what one acquisition holds and the display
+  spans recorded history at the *same* sample rate instead of slowing down and
+  aliasing the signal away. Time the instrument was not acquiring is drawn as
+  a marked gap rather than quietly closed up, with the percentage reported.
+- **Protocol decoders**: UART, I²C, SPI and 1-Wire over a separate digitizing
+  stage with hysteresis. Below 12 samples per bit they refuse and say why,
+  rather than emitting plausible bytes; a mismatched UART baud is reported as
+  an unstable bit instead of decoded.
+- **Backends beyond the scope**: `--audio` turns the machine's sound card into
+  a streaming two-channel input (no record, no hardware trigger, host-side
+  triggering), and `--sim` is a deterministic signal generator including real
+  UART traffic to decode.
 - **Scales to your display**: the window and UI size themselves to the
   monitor, with a manual override for hi-DPI panels the OS does not scale
   (`NEOWON_UI_SCALE`, or the Utility dialog's slider).

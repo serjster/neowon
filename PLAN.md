@@ -212,8 +212,24 @@ Each phase ends with something runnable and testable — most against the real s
 > "deep view" stitched from the scrollback ring: measured 71% wall-clock
 > coverage at 250 kS/s (35.7 fps x 20 ms), so it needs a capture timestamp
 > on `CaptureFrame` and honest gap drawing. Both gaps are written up in
-> docs/tasks/phase78-lab-semantics-spec.md (G1, G2). Next: Phase 8
-> (protocol decoders).
+> docs/tasks/phase78-lab-semantics-spec.md (G1, G2).
+> **Phase 7.9 DONE** (auto peak-detect, the acquisition timeline, a streaming
+> backend, and protocol decoders): auto peak-detect keyed on the *hardware*
+> frequency meter (measuring the record is circular once it aliases), with
+> envelope-aware measurements so peak records report amplitudes and leave the
+> timing metrics absent rather than wrong — a pre-existing bug, since nothing
+> de-interleaved min/max pairs. `neowon_dsp::timeline` places many records on
+> a real time axis and reduces them to per-column min/max, so zooming out
+> spans history at full sample rate instead of slowing the rate; gaps are
+> marked with squiggly edges drawn in the compose shader (an overlay would be
+> invisible to `shot` and untestable). `Capabilities::Acquisition`
+> distinguishes Record from Stream, and `neowon-audio` (cpal) is the first
+> streaming backend — no record, no hardware trigger, fixed input range —
+> which is what actually validates the abstraction. `neowon_dsp::decode`
+> adds UART/I2C/SPI/1-Wire over a separate digitizing layer, refusing below
+> 12 samples per bit rather than guessing; the sim's `uart-hello` stimulus
+> makes it demonstrable without hardware. Next: Phase 8 (a settings surface
+> and app menu bar; decoder polish).
 
 ### Phase 0 — Scaffold + simulated trace (½ day)
 
