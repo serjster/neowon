@@ -22,7 +22,9 @@ mod cursors;
 mod derived;
 mod gpu;
 mod record;
+mod refs;
 mod script;
+mod session;
 mod ui;
 
 use bevy::asset::RenderAssetUsages;
@@ -162,6 +164,8 @@ fn main() {
         .init_resource::<derived::PfState>()
         .init_resource::<cursors::CursorState>()
         .init_resource::<record::Recorder>()
+        .init_resource::<record::History>()
+        .init_resource::<refs::RefState>()
         .insert_resource(script::load_from_env())
         .add_systems(Startup, setup)
         .add_systems(EguiPrimaryContextPass, ui::panel)

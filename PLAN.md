@@ -149,7 +149,18 @@ Each phase ends with something runnable and testable — most against the real s
 > untested until a power-cycle; roll-mode incremental streaming, sin(x)/x,
 > GPU FFT deferred. **Phase 6.5 inserted** (virtual testbench + scope-grade
 > UI): pillars 1–3 done and green (see that phase's status block). Next:
-> Phase 6.5 DONE (all four pillars). Next: Phase 7 (capture workflows).
+> Phase 6.5 DONE (all four pillars). **Phase 7 DONE** (capture workflows,
+> spec: docs/tasks/phase7-spec.md): `.nwc` capture format (zstd,
+> `neowon-core::nwc`), history browser (scrub the recorder ring via
+> `link.latest`), vendor `.cap` import (format decoded from the jar —
+> docs/protocol-vds1022.md §capture-files), reference ghost traces, PNG
+> export, session save/restore as scripts (`session.rs`; sessions are
+> NEOWON_SCRIPT files). New script actions: history/capsave/capload/
+> refsave/ref/refclear/sessionsave/sessionload/trigpos. Integration tests:
+> `cargo test -p neowon-app --test capture_flows -- --ignored`. Deferred
+> from the phase text: gapless roll-mode recording (needs backend
+> streaming), references-in-session persistence. Next: Phase 8 (protocol
+> decoders).
 
 ### Phase 0 — Scaffold + simulated trace (½ day)
 

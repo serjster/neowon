@@ -21,12 +21,69 @@ pub struct Recorder {
     last_seq: u64,
     /// Last export destination, for the UI.
     pub last_export: Option<String>,
+    /// Path box contents for the Load button.
+    pub load_path: String,
+}
+
+/// History browser: while `active`, acquisition is stopped and the display
+/// shows `Recorder.frames[i]` — every consumer already follows
+/// `link.latest`, so scrubbing is just assigning it.
+#[derive(Resource, Default)]
+pub struct History {
+    pub active: Option<usize>,
+}
+
+impl History {
+    /// Show recorded frame `idx` (clamped). Stops acquisition.
+    pub fn show(&mut self, link: &mut Link, rec: &Recorder, idx: usize) {
+        if rec.frames.is_empty() {
+            return;
+        }
+        let idx = idx.min(rec.frames.len() - 1);
+        self.active = Some(idx);
+        link.latest = Some(rec.frames[idx].clone());
+        if link.config.running {
+            link.config.running = false;
+            link.dirty = true;
+        }
+    }
+
+    /// Back to live acquisition.
+    pub fn live(&mut self, link: &mut Link) {
+        self.active = None;
+        if !link.config.running {
+            link.config.running = true;
+            link.dirty = true;
+        }
+    }
 }
 
 impl Recorder {
     pub fn clear(&mut self) {
         self.frames.clear();
         self.last_seq = 0;
+    }
+
+    /// Save the ring as an `.nwc` capture file.
+    pub fn save_nwc(&self, path: &std::path::Path) -> std::io::Result<()> {
+        neowon_core::nwc::write(path, &self.frames)
+    }
+
+    /// Replace the ring with the frames of a capture file — our `.nwc`,
+    /// or the OWON vendor `.cap` format (picked by extension).
+    pub fn load_capture(&mut self, path: &std::path::Path) -> std::io::Result<usize> {
+        let is_cap = path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("cap"));
+        let frames = if is_cap {
+            neowon_core::owon_cap::read(path)?
+        } else {
+            neowon_core::nwc::read(path)?
+        };
+        self.on = false;
+        self.frames = frames;
+        self.last_seq = self.frames.last().map_or(0, |f| f.seq);
+        Ok(self.frames.len())
     }
 
     pub fn samples_per_channel(&self) -> usize {
@@ -147,9 +204,10 @@ pub fn default_stem() -> String {
     format!("capture-{secs}")
 }
 
-/// Append new records while recording is on.
-pub fn record_frames(link: Res<Link>, mut rec: ResMut<Recorder>) {
-    if !rec.on {
+/// Append new records while recording is on (paused while scrubbing
+/// history — the frames shown there are already in the ring).
+pub fn record_frames(link: Res<Link>, mut rec: ResMut<Recorder>, hist: Res<History>) {
+    if !rec.on || hist.active.is_some() {
         return;
     }
     let Some(frame) = &link.latest else { return };

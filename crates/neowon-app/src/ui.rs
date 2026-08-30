@@ -45,6 +45,9 @@ pub fn panel(
     mut pf: ResMut<PfState>,
     mut menus: ResMut<MenuState>,
     mut rec: ResMut<crate::record::Recorder>,
+    mut hist: ResMut<crate::record::History>,
+    mut refs: ResMut<crate::refs::RefState>,
+    mut script: ResMut<crate::script::Script>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else { return };
     let ctx = ctx.clone();
@@ -73,7 +76,11 @@ pub fn panel(
         &mut cur,
         &mut pf,
         &mut rec,
+        &mut hist,
+        &mut refs,
+        &mut script,
     );
+    crate::refs::overlay(&ctx, &layout, &refs);
 
     if fft.enabled {
         spectrum_window(&ctx, &mut fft);

@@ -102,3 +102,37 @@ macOS, nusb). The full register map lives in
 - MULTI port electrical behavior (trigger out/in, pass-fail out).
 - Roll-mode incremental cursor arithmetic (DM=5120, circular).
 - Keep-alive: how quickly the link actually drops when idle (>3 s claimed).
+
+## Capture files (vendor `.cap` format)
+
+Reverse-engineered from the vendor jar (`RecordFileIO`, `RecordControlTiny`,
+reader path `readHeader`/`readFrame`; all multi-byte values BIG-endian).
+Importer: `neowon-core/src/owon_cap.rs`.
+
+- **Header (34 bytes):** 10 ASCII `"SPB"+machine` (`SPBVDS1022`; readers
+  check the `SPBVDS` prefix), machine type i32 (VDS1022 = 100, VDS2052 =
+  102), record version i32 (current = 4), extend i32 (`extend >> 24` must
+  be 3 for a record file, version ≥ 2), file size i32, timegap-ms i32,
+  frame count i32. The last three are written 0 and patched when recording
+  stops — a crashed recording leaves zeros; walk the frame chain to EOF.
+- **Frame:** framelen i32 (bytes after the field), timebase index i32,
+  horizontal trigger position i32 (units unverified), peak-detect u8
+  (v ≥ 3), deep-memory length i32 (v ≥ 4), then channel blocks until
+  `framelen` is consumed.
+- **Channel block:** ch u8 (0-based), blocklen i32 = bytes after the field
+  (40 metadata + datalen; the vendor patches `endPtr - lenPos - 4`),
+  inverse i32 (v ≥ 1; 1 = inverted), initPos i32 (always 0),
+  screendatalen i32, datalen i32 (writers duplicate screendatalen —
+  readers must trust datalen), slowMove i32, pos0 i32 (vertical offset in
+  ADC counts), voltbase index i32, probe index i32, freq f32 (Hz, may be
+  0), cycle f32 (1/freq; +Inf when freq = 0), then `datalen` raw i8
+  samples in the standard ±125 = 10 div encoding (25 LSB/div).
+- **Index tables** (`params/VDS1022ONE.txt` in the jar): voltbase 0–9 =
+  5 mV…5 V/div; probe 0–6 = ×1…×1000; timebase 0–31 = 5 ns…100 s/div
+  (roll from 100 ms/div).
+- **Sample rate** is not stored; inferred as
+  `min(100 MS/s, 5000 / (20 div × timebase))` — reproduces both anchors
+  (100 MS/s at ≤ 2.5 µs/div; 2500 S/s roll threshold at 100 ms/div).
+  INFERRED, not hardware-verified.
+- Full field-level spec with javap evidence: session scratch notes → this
+  section; the importer's unit tests carry byte-exact fixtures.

@@ -30,9 +30,15 @@ the roadmap.
   zoom/pan.
 - **Pass/fail testing** against a captured reference envelope, with the
   MULTI port TTL output.
-- **Recording & export**: capture the record stream and export as WAV
-  (16-bit PCM at the acquisition rate — an XY capture is directly
-  replayable oscilloscope music), CSV, or raw i8.
+- **Recording, history & export**: capture the record stream, scrub back
+  through it frame by frame (history browser), save/reload lossless
+  `.nwc` capture files (zstd), import the vendor app's `.cap` recordings,
+  and export as WAV (16-bit PCM at the acquisition rate — an XY capture
+  is directly replayable oscilloscope music), CSV, raw i8, or a PNG of
+  the display.
+- **Reference traces & sessions**: freeze a channel as a ghost trace for
+  visual comparison; save/restore the full instrument setup — a session
+  file is itself a neowon automation script, readable and editable.
 - **Touch-scope interaction on a desktop**: drag the trigger level and
   position, drag traces to move offsets, scroll to change volts/div,
   shift+scroll for the timebase.

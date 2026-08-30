@@ -145,6 +145,17 @@ pub enum Action {
         path: String,
         roi: Option<(u32, u32, u32, u32)>,
     },
+    TrigPos(f64),
+    HistoryIdx(usize),
+    HistoryStep(i64),
+    HistoryLive,
+    CapSave(String),
+    CapLoad(String),
+    RefSave(usize),
+    RefShow(bool),
+    RefClear,
+    SessionSave(String),
+    SessionLoad(String),
     Quit,
 }
 
@@ -152,6 +163,14 @@ pub enum Action {
 pub struct Script {
     /// (due time in seconds since startup, action)
     queue: VecDeque<(f64, Action)>,
+}
+
+impl Script {
+    /// UI-injected action: due immediately, applied on the next
+    /// `run_script` pass — buttons and scripts share one code path.
+    pub fn inject(&mut self, action: Action) {
+        self.queue.push_back((0.0, action));
+    }
 }
 
 pub fn load_from_env() -> Script {
@@ -402,6 +421,20 @@ fn parse(text: &str) -> Result<VecDeque<(f64, Action)>, String> {
                 };
                 Action::Shot { path, roi }
             }
+            "trigpos" => Action::TrigPos(rest()?.parse().map_err(|_| err("bad fraction"))?),
+            "history" => match rest()? {
+                "live" => Action::HistoryLive,
+                "prev" => Action::HistoryStep(-1),
+                "next" => Action::HistoryStep(1),
+                n => Action::HistoryIdx(n.parse().map_err(|_| err("bad frame index"))?),
+            },
+            "capsave" => Action::CapSave(rest()?.to_string()),
+            "capload" => Action::CapLoad(rest()?.to_string()),
+            "refsave" => Action::RefSave(rest()?.parse().map_err(|_| err("bad ch"))?),
+            "ref" => Action::RefShow(rest()? == "on"),
+            "refclear" => Action::RefClear,
+            "sessionsave" => Action::SessionSave(rest()?.to_string()),
+            "sessionload" => Action::SessionLoad(rest()?.to_string()),
             "quit" => Action::Quit,
             _ => return Err(err("unknown action")),
         };
@@ -426,6 +459,8 @@ pub fn run_script(
     mut fft: ResMut<FftState>,
     mut pf: ResMut<PfState>,
     mut rec: ResMut<crate::record::Recorder>,
+    mut hist: ResMut<crate::record::History>,
+    mut refs: ResMut<crate::refs::RefState>,
 ) {
     let now = time.elapsed_secs_f64();
     while let Some((due, _)) = script.queue.front() {
@@ -642,6 +677,71 @@ pub fn run_script(
                         },
                     );
             }
+            Action::TrigPos(p) => {
+                link.config.position = p.clamp(0.0, 1.0);
+                link.dirty = true;
+            }
+            Action::HistoryIdx(i) => hist.show(&mut link, &rec, i),
+            Action::HistoryStep(d) => {
+                let n = rec.frames.len();
+                if n > 0 {
+                    let at = hist.active.unwrap_or(n - 1) as i64;
+                    hist.show(&mut link, &rec, (at + d).clamp(0, n as i64 - 1) as usize);
+                }
+            }
+            Action::HistoryLive => hist.live(&mut link),
+            Action::CapSave(path) => match rec.save_nwc(std::path::Path::new(&path)) {
+                Ok(()) => {
+                    info!("script: saved {} frames to {path}", rec.frames.len());
+                    rec.last_export = Some(path);
+                }
+                Err(e) => error!("script: capsave failed: {e}"),
+            },
+            Action::CapLoad(path) => {
+                // A bare filename resolves against the export directory.
+                let p = std::path::PathBuf::from(&path);
+                let p = if p.is_relative() && !p.exists() {
+                    crate::record::export_dir().join(p)
+                } else {
+                    p
+                };
+                match rec.load_capture(&p) {
+                    Ok(n) => {
+                        info!("script: loaded {n} frames from {path}");
+                        hist.show(&mut link, &rec, 0);
+                    }
+                    Err(e) => error!("script: capload failed: {e}"),
+                }
+            }
+            Action::RefSave(ch) => {
+                if let Some(frame) = link.latest.clone() {
+                    refs.capture(&frame, ch);
+                }
+            }
+            Action::RefShow(on) => refs.show = on,
+            Action::RefClear => refs.clear(),
+            Action::SessionSave(path) => {
+                let text = crate::session::emit(&link, &phosphor, &math, &meas, &fft, &cur, &pf);
+                match std::fs::write(&path, text) {
+                    Ok(()) => info!("script: saved session to {path}"),
+                    Err(e) => error!("script: sessionsave failed: {e}"),
+                }
+            }
+            Action::SessionLoad(path) => match std::fs::read_to_string(&path) {
+                Ok(text) => match parse(&text) {
+                    Ok(actions) => {
+                        info!("script: session {path}: {} actions", actions.len());
+                        // Splice at the FRONT so the session applies before
+                        // anything already queued (a later queue entry must
+                        // observe the loaded state, not race it).
+                        for (dt, a) in actions.into_iter().rev() {
+                            script.queue.push_front((now + dt, a));
+                        }
+                    }
+                    Err(e) => error!("script: session parse error: {e}"),
+                },
+                Err(e) => error!("script: sessionload failed: {e}"),
+            },
             Action::Quit => {
                 if PENDING_SHOTS.load(Ordering::SeqCst) > 0 {
                     // Re-arm shortly; shots still in flight.
@@ -673,23 +773,43 @@ fn menu_name(m: Menu) -> &'static str {
     }
 }
 
-/// Write a (possibly cropped) region of the plot texture as binary PPM.
-/// Readback rows are 256-byte aligned; the stride strips that.
+/// Write a (possibly cropped) region of the plot texture — PNG when the
+/// path ends `.png`, binary PPM otherwise. Readback rows are 256-byte
+/// aligned; the stride strips that.
 fn write_shot(rgba: &[u8], path: &str, roi: Option<(u32, u32, u32, u32)>) {
     let stride = rgba.len() / PLOT_H as usize;
     let (x0, y0, w, h) = roi.unwrap_or((0, 0, PLOT_W, PLOT_H));
     let (x0, y0) = (x0.min(PLOT_W - 1), y0.min(PLOT_H - 1));
     let w = w.min(PLOT_W - x0);
     let h = h.min(PLOT_H - y0);
-    let mut ppm = format!("P6\n{w} {h}\n255\n").into_bytes();
+    let mut rgb = Vec::with_capacity((w * h * 3) as usize);
     for row in y0..y0 + h {
         let base = row as usize * stride + x0 as usize * 4;
         for px in rgba[base..base + w as usize * 4].as_chunks::<4>().0 {
-            ppm.extend_from_slice(&px[..3]);
+            rgb.extend_from_slice(&px[..3]);
         }
     }
-    match std::fs::write(path, &ppm) {
+    let result = if path.ends_with(".png") {
+        write_png(path, w, h, &rgb)
+    } else {
+        let mut ppm = format!("P6\n{w} {h}\n255\n").into_bytes();
+        ppm.extend_from_slice(&rgb);
+        std::fs::write(path, &ppm)
+    };
+    match result {
         Ok(()) => info!("script: wrote {path} ({w}x{h})"),
         Err(e) => error!("script: cannot write {path}: {e}"),
     }
+}
+
+fn write_png(path: &str, w: u32, h: u32, rgb: &[u8]) -> std::io::Result<()> {
+    let file = std::io::BufWriter::new(std::fs::File::create(path)?);
+    let mut enc = png::Encoder::new(file, w, h);
+    enc.set_color(png::ColorType::Rgb);
+    enc.set_depth(png::BitDepth::Eight);
+    let mut writer = enc.write_header().map_err(std::io::Error::other)?;
+    writer
+        .write_image_data(rgb)
+        .map_err(std::io::Error::other)?;
+    writer.finish().map_err(std::io::Error::other)
 }

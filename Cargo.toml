@@ -29,6 +29,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 crossbeam-channel = "0.5"
 clap = { version = "4", features = ["derive", "env"] }
 nusb = "0.2"
+zstd = "0.13"
+# Pinned to the version already compiled in Bevy's tree (see Cargo.lock).
+png = "0.18"
 
 bevy = "=0.19.1"
 bevy_egui = "0.41"

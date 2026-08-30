@@ -6,6 +6,7 @@ use neowon_dsp::Window;
 
 use crate::Link;
 use crate::derived::{FftState, MathState, PfState, SLOT_NAMES, build_pf_mask};
+use crate::script::{Action, Script};
 
 pub fn show(
     ui: &mut egui::Ui,
@@ -13,7 +14,29 @@ pub fn show(
     math: &MathState,
     pf: &mut PfState,
     fft: &mut FftState,
+    script: &mut Script,
 ) {
+    ui.group(|ui| {
+        ui.strong("Session");
+        ui.horizontal(|ui| {
+            let path = crate::record::export_dir().join("setup.nws");
+            if ui.button("Save setup").clicked() {
+                script.inject(Action::SessionSave(path.display().to_string()));
+            }
+            let exists = path.exists();
+            if ui
+                .add_enabled(exists, egui::Button::new("Load setup"))
+                .clicked()
+            {
+                script.inject(Action::SessionLoad(path.display().to_string()));
+            }
+        });
+        ui.label(
+            egui::RichText::new("a session file is a neowon script (setup.nws)")
+                .weak()
+                .small(),
+        );
+    });
     ui.group(|ui| {
         ui.strong("MULTI port");
         ui.horizontal(|ui| {

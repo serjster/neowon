@@ -17,6 +17,7 @@ neowon-vds1022.workspace = true
 bevy.workspace = true
 bevy_egui.workspace = true
 bytemuck = "1"
+png.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

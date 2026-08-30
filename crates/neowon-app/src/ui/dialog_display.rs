@@ -6,8 +6,15 @@ use neowon_backend::Command;
 use crate::Link;
 use crate::cursors::CursorState;
 use crate::gpu::{Palette, Persistence, Phosphor, TraceMode};
+use crate::refs::RefState;
 
-pub fn show(ui: &mut egui::Ui, link: &mut Link, phosphor: &mut Phosphor, cur: &mut CursorState) {
+pub fn show(
+    ui: &mut egui::Ui,
+    link: &mut Link,
+    phosphor: &mut Phosphor,
+    cur: &mut CursorState,
+    refs: &mut RefState,
+) {
     ui.group(|ui| {
         ui.strong("Display");
         ui.horizontal(|ui| {
@@ -48,6 +55,32 @@ pub fn show(ui: &mut egui::Ui, link: &mut Link, phosphor: &mut Phosphor, cur: &m
                 }
             }
         });
+    });
+
+    ui.group(|ui| {
+        ui.strong("Reference traces");
+        ui.horizontal(|ui| {
+            for ch in 0..2 {
+                let has_ch = link
+                    .latest
+                    .as_ref()
+                    .is_some_and(|f| f.channels.iter().any(|c| c.ch == ch));
+                if ui
+                    .add_enabled(has_ch, egui::Button::new(format!("Save CH{}", ch + 1)))
+                    .clicked()
+                    && let Some(frame) = link.latest.clone()
+                {
+                    refs.capture(&frame, ch);
+                }
+            }
+            ui.checkbox(&mut refs.show, "Show");
+            if ui.button("Clear").clicked() {
+                refs.clear();
+            }
+        });
+        if refs.traces.iter().all(Option::is_none) {
+            ui.label(egui::RichText::new("no reference saved").weak().small());
+        }
     });
 
     // Stimulus selection exists only on generating backends (the sim); on

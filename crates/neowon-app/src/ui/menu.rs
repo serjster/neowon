@@ -115,6 +115,9 @@ pub fn show(
     cur: &mut CursorState,
     pf: &mut PfState,
     rec: &mut Recorder,
+    hist: &mut crate::record::History,
+    refs: &mut crate::refs::RefState,
+    script: &mut crate::script::Script,
 ) {
     let rect = Roi::Dialog.rect(l);
     let mut frame = egui::Frame::new();
@@ -153,7 +156,9 @@ pub fn show(
                                 Menu::Horizontal => dialog_horizontal::show(ui, link),
                                 Menu::Trigger => dialog_trigger::show(ui, link),
                                 Menu::Acquire => dialog_acquire::show(ui, link),
-                                Menu::Display => dialog_display::show(ui, link, phosphor, cur),
+                                Menu::Display => {
+                                    dialog_display::show(ui, link, phosphor, cur, refs)
+                                }
                                 Menu::Measure => dialog_measure::show(ui, meas),
                                 Menu::Math => dialog_math::show(ui, math),
                                 Menu::Cursor => dialog_cursor::show(ui, link, cur, meas),
@@ -163,10 +168,10 @@ pub fn show(
                             });
                         }
                         section(ui, menus, Menu::Record, |ui, _| {
-                            dialog_record::show(ui, link, rec)
+                            dialog_record::show(ui, link, rec, hist, script)
                         });
                         section(ui, menus, Menu::Utility, |ui, _| {
-                            dialog_utility::show(ui, link, math, pf, fft)
+                            dialog_utility::show(ui, link, math, pf, fft, script)
                         });
                     });
             });
