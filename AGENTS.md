@@ -11,8 +11,8 @@ shell/GPU rendering, `bevy_egui` for controls — built around a modular
 acquisition-backend abstraction. The first (and so far only verified)
 instrument is the **OWON VDS1022I** USB scope connected to this machine
 (serial VDS1022I2324259, hw V5.0.1); a deterministic simulated backend
-provides the virtual testbench. Phases 0–6 are done and hardware-verified;
-the current phase (6.5) is the virtual testbench + scope-grade UI.
+provides the virtual testbench. See PLAN.md §4 for the authoritative phase
+status — it moves faster than this paragraph.
 
 **The assistant implements; the user directs, reviews, and decides.**
 Decisions that change the plan or the backend abstraction go to the user
@@ -76,6 +76,26 @@ numbered work items with concrete signatures, and test requirements. When
 work is delegated to another agent/session, the spec is the contract; when
 implementing from a spec, do not exceed its scope and do not touch files it
 declares off limits.
+
+## Live development loop (control socket / MCP)
+
+The running app serves a general-purpose control API — use it instead of
+restart-with-script loops when iterating on behavior or diagnosing state:
+
+- Launch once: `NEOWON_CONTROL=7777 cargo run -p neowon-app -- --sim`
+  (sim only, as always). Then drive it: any script-grammar line over
+  `nc 127.0.0.1 7777` gets a JSON ack; `get status` / `get config` /
+  `get measure` return structured JSON; `shot /tmp/x.png` grabs the live
+  display. One connection, many commands — state persists between them.
+- The same API backs `neowon-mcp` (`--connect 127.0.0.1:7777` or
+  `--spawn-sim`): when this session has the neowon MCP server connected,
+  prefer its tools (`measurements`, `screenshot`, `exec_script`) over
+  shelling out — the screenshot tool returns an image you can actually
+  look at.
+- Anything you can't reach this way is a missing script action — fix
+  that first (script-parity rule), don't work around it.
+- Scripted end-to-end runs (`NEOWON_SCRIPT` + `quit`) remain the way to
+  write regression tests; the socket is for interactive iteration.
 
 ## Verification
 

@@ -10,12 +10,14 @@ use neowon_core::SharedFrame;
 
 use crate::Link;
 
-/// Bounded so a forgotten recording can't eat the machine: ~20 min at
-/// 36 records/s.
+/// Scrollback bound: ~20 min at 36 records/s. On overflow the oldest
+/// chunk is dropped, terminal-scrollback style.
 const MAX_FRAMES: usize = 40_000;
 
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct Recorder {
+    /// Capturing into the scrollback ring (on by default; the Pause
+    /// button and the `record` script action toggle it).
     pub on: bool,
     pub frames: Vec<SharedFrame>,
     last_seq: u64,
@@ -23,6 +25,20 @@ pub struct Recorder {
     pub last_export: Option<String>,
     /// Path box contents for the Load button.
     pub load_path: String,
+}
+
+impl Default for Recorder {
+    fn default() -> Self {
+        Self {
+            // The scrollback captures from the first frame — like a
+            // terminal, you can always scroll back until it overflows.
+            on: true,
+            frames: Vec::new(),
+            last_seq: 0,
+            last_export: None,
+            load_path: String::new(),
+        }
+    }
 }
 
 /// History browser: while `active`, acquisition is stopped and the display
@@ -211,8 +227,12 @@ pub fn record_frames(link: Res<Link>, mut rec: ResMut<Recorder>, hist: Res<Histo
         return;
     }
     let Some(frame) = &link.latest else { return };
-    if frame.seq == rec.last_seq || rec.frames.len() >= MAX_FRAMES {
+    if frame.seq == rec.last_seq {
         return;
+    }
+    if rec.frames.len() >= MAX_FRAMES {
+        // Scrollback overflow: drop the oldest chunk (amortized).
+        rec.frames.drain(..MAX_FRAMES / 8);
     }
     rec.last_seq = frame.seq;
     rec.frames.push(frame.clone());

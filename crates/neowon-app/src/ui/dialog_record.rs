@@ -17,13 +17,15 @@ pub fn show(
     script: &mut Script,
 ) {
     ui.horizontal(|ui| {
+        // The scrollback ring is always capturing unless paused; the
+        // History slider below scrubs it, like terminal scrollback.
         let label = if rec.on {
-            "⏺ Recording…"
+            "⏺ Capturing"
         } else {
-            "⏺ Record"
+            "⏸ Paused"
         };
         let color = if rec.on {
-            egui::Color32::from_rgb(220, 60, 50)
+            egui::Color32::from_rgb(150, 45, 40)
         } else {
             egui::Color32::from_rgb(28, 30, 36)
         };

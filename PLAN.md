@@ -169,7 +169,20 @@ Each phase ends with something runnable and testable — most against the real s
 > run/autoset/set_stimulus/record/exec_script escape hatch) and PNG
 > `screenshot` returned as MCP image content. `--spawn-sim` self-hosts
 > the simulator. Tests: `--test control_socket`, `--test mcp_e2e` (both
-> `--ignored`). Next: Phase 8 (protocol decoders).
+> `--ignored`). **Phase 7.6 DONE** (visualization playground, spec:
+> docs/tasks/phase76-viz-spec.md): realtime waterfall spectrogram
+> (`viz/waterfall.rs`, egui window, follows spectrum zoom), 3D viewport
+> (`viz/three_d.rs`, offscreen Camera3d + layer-1 gizmos, orbit/dolly;
+> modes terrain/tunnel/phase/xytime), user-loadable WGSL display effects
+> (`effects.rs`, `assets/shaders/user/*.wgsl`, contract documented in the
+> shipped invert/kaleido/ripple/crt-warp examples, `effect`/`effectreload`
+> actions, WYSIWYG shots), and always-on scrollback capture (the ring
+> records by default, `record` = pause/resume, overflow drops the oldest
+> chunk). Gotchas recorded in the spec: per-frame Mesh churn trips the
+> slab allocator (use gizmos); a second camera steals bevy_egui's auto
+> context (pin `PrimaryEguiContext`). Tests: `--test effects_pixels`
+> (`--ignored`), the shaders test covers the examples, viz builders
+> unit-tested. Next: Phase 8 (protocol decoders).
 
 ### Phase 0 — Scaffold + simulated trace (½ day)
 

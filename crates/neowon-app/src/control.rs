@@ -18,6 +18,8 @@ use crate::derived::{FftState, METRICS, MathState, MeasureState, PfState};
 use crate::gpu::{Palette, Persistence, Phosphor, TraceMode};
 use crate::record::{History, Recorder};
 use crate::script::Script;
+use crate::viz::three_d::Viz3dState;
+use crate::viz::waterfall::WaterfallState;
 
 pub struct Request {
     line: String,
@@ -99,6 +101,9 @@ pub fn poll(
     phosphor: Res<Phosphor>,
     rec: Res<Recorder>,
     hist: Res<History>,
+    wf: Res<WaterfallState>,
+    viz: Res<Viz3dState>,
+    fx: Res<crate::effects::Effects>,
 ) {
     let Some(rx) = &server.rx else { return };
     let now = time.elapsed_secs_f64();
@@ -106,7 +111,7 @@ pub fn poll(
         let line = req.line.trim();
         let reply = match line.strip_prefix("get ") {
             Some("status") => status_json(&link, &rec, &hist),
-            Some("config") => config_json(&link, &phosphor, &math, &fft, &pf),
+            Some("config") => config_json(&link, &phosphor, &math, &fft, &pf, &wf, &viz, &fx),
             Some("measure") => measure_json(&meas),
             Some(other) => format!(
                 r#"{{"ok":false,"error":"unknown query {}"}}"#,
@@ -176,12 +181,16 @@ fn status_json(link: &Link, rec: &Recorder, hist: &History) -> String {
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn config_json(
     link: &Link,
     phosphor: &Phosphor,
     math: &MathState,
     fft: &FftState,
     pf: &PfState,
+    wf: &WaterfallState,
+    viz: &Viz3dState,
+    fx: &crate::effects::Effects,
 ) -> String {
     use neowon_core::{Coupling, Slope, TriggerKind};
     let c = &link.config;
@@ -276,7 +285,8 @@ fn config_json(
             r#""trigger":{{"source":{},{},"level":{},"sweep":"{}","holdoff":{}}},"#,
             r#""display":{{"mode":"{}","persist":{},"gain":{},"crt":{},"palette":"{}"}},"#,
             r#""math":{{"enabled":{}}},"fft":{{"enabled":{},"source":{}}},"#,
-            r#""pf":{{"enabled":{},"source":{},"pass":{},"fail":{}}}}}"#
+            r#""pf":{{"enabled":{},"source":{},"pass":{},"fail":{}}},"#,
+            r#""viz":{{"waterfall":{},"mode":"{}","effect":{}}}}}"#
         ),
         num(c.sample_rate),
         num(c.position),
@@ -300,6 +310,11 @@ fn config_json(
         pf.source_slot,
         pf.pass,
         pf.fail,
+        wf.on,
+        viz.mode.name(),
+        fx.active
+            .as_ref()
+            .map_or("null".to_string(), |n| format!("\"{}\"", escape(n))),
     )
 }
 

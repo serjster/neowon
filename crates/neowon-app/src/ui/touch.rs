@@ -32,9 +32,11 @@ pub struct TouchState {
 
 fn world_pos(
     windows: &Query<&Window>,
-    camera: &Query<(&Camera, &GlobalTransform)>,
+    camera: &Query<(&Camera, &GlobalTransform), With<Camera2d>>,
 ) -> Option<Vec2> {
     let (Ok(window), Ok((camera, cam_tf))) = (windows.single(), camera.single()) else {
+        // A broken query here kills all plot pointer control — never silent.
+        bevy::log::warn_once!("plot pointer: window/camera query failed; gestures disabled");
         return None;
     };
     let screen = window.cursor_position()?;
@@ -83,7 +85,7 @@ pub fn plot_pointer(
     mut wheel: MessageReader<MouseWheel>,
     keys: Res<ButtonInput<KeyCode>>,
     windows: Query<&Window>,
-    camera: Query<(&Camera, &GlobalTransform)>,
+    camera: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
     egui_wants: Res<EguiWantsInput>,
     layout: Res<Layout>,
     cursors: Res<CursorState>,

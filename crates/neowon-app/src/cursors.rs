@@ -52,7 +52,7 @@ impl CursorState {
 pub fn cursor_input(
     mouse: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
-    camera: Query<(&Camera, &GlobalTransform)>,
+    camera: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
     egui_wants: Res<EguiWantsInput>,
     layout: Res<Layout>,
     mut cur: ResMut<CursorState>,
@@ -61,6 +61,8 @@ pub fn cursor_input(
         return;
     }
     let (Ok(window), Ok((camera, cam_tf))) = (windows.single(), camera.single()) else {
+        // A broken query here kills all on-graph dragging — never silent.
+        warn_once!("cursor_input: window/camera query failed; drags disabled");
         return;
     };
     let Some(screen) = window.cursor_position() else {

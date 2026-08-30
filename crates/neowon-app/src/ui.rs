@@ -18,6 +18,7 @@ pub mod layout;
 pub mod menu;
 pub mod menubar;
 pub mod touch;
+pub mod viz_windows;
 pub mod widgets;
 
 use bevy::prelude::*;
@@ -48,7 +49,14 @@ pub fn panel(
     mut hist: ResMut<crate::record::History>,
     mut refs: ResMut<crate::refs::RefState>,
     mut script: ResMut<crate::script::Script>,
+    mut viz: (
+        ResMut<crate::viz::waterfall::WaterfallState>,
+        ResMut<crate::viz::three_d::Viz3dState>,
+        Res<crate::effects::Effects>,
+    ),
 ) {
+    let wf_tex = contexts.add_image(bevy_egui::EguiTextureHandle::Strong(viz.0.image.clone()));
+    let viz_tex = contexts.add_image(bevy_egui::EguiTextureHandle::Strong(viz.1.image.clone()));
     let Ok(ctx) = contexts.ctx_mut() else { return };
     let ctx = ctx.clone();
     let now = time.elapsed_secs_f64();
@@ -79,11 +87,20 @@ pub fn panel(
         &mut hist,
         &mut refs,
         &mut script,
+        &mut viz.0,
+        &mut viz.1,
+        &viz.2,
     );
     crate::refs::overlay(&ctx, &layout, &refs);
 
     if fft.enabled {
         spectrum_window(&ctx, &mut fft);
+    }
+    if viz.0.on {
+        viz_windows::waterfall(&ctx, wf_tex, &mut viz.0, &fft);
+    }
+    if viz.1.mode != crate::viz::three_d::Viz3d::Off {
+        viz_windows::viz3d(&ctx, viz_tex, &mut viz.1);
     }
 }
 

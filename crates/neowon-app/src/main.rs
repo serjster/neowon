@@ -21,12 +21,14 @@
 mod control;
 mod cursors;
 mod derived;
+mod effects;
 mod gpu;
 mod record;
 mod refs;
 mod script;
 mod session;
 mod ui;
+mod viz;
 
 use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
@@ -130,6 +132,7 @@ fn main() {
         }))
         .add_plugins(EguiPlugin::default())
         .add_plugins(PhosphorPlugin)
+        .add_plugins(effects::EffectsPlugin)
         .insert_resource(Link {
             sup,
             caps: None,
@@ -167,9 +170,19 @@ fn main() {
         .init_resource::<record::Recorder>()
         .init_resource::<record::History>()
         .init_resource::<refs::RefState>()
+        .init_gizmo_group::<viz::three_d::VizGizmos>()
+        .init_resource::<effects::Effects>()
+        .init_resource::<viz::waterfall::WaterfallState>()
+        .init_resource::<viz::three_d::Viz3dState>()
         .insert_resource(script::load_from_env())
         .insert_resource(control::start_from_env())
-        .add_systems(Startup, setup)
+        .add_systems(
+            PreStartup,
+            |mut egui: ResMut<bevy_egui::EguiGlobalSettings>| {
+                egui.auto_create_primary_context = false;
+            },
+        )
+        .add_systems(Startup, (setup, viz::waterfall::setup, viz::three_d::setup))
         .add_systems(EguiPrimaryContextPass, ui::panel)
         .add_systems(
             Update,
@@ -187,6 +200,8 @@ fn main() {
                     script::run_script,
                     flush,
                     derived::compute_derived,
+                    viz::waterfall::update,
+                    viz::three_d::update,
                     update_phosphor,
                 )
                     .chain(),
@@ -213,7 +228,10 @@ fn setup(
     mut images: ResMut<Assets<Image>>,
     mut phosphor: ResMut<Phosphor>,
 ) {
-    commands.spawn(Camera2d);
+    // Two cameras exist (the viz viewport renders offscreen), so the egui
+    // context must be pinned to this one explicitly — bevy_egui's
+    // auto-creation grabs whichever camera it sees first.
+    commands.spawn((Camera2d, bevy_egui::PrimaryEguiContext));
 
     // Display texture: written by the compose pass, shown via this sprite.
     let mut image = Image::new(
@@ -238,7 +256,7 @@ fn setup(
 
 /// Marker for the plot sprite; `sync_layout` sizes and places it.
 #[derive(Component)]
-struct PlotSprite;
+pub struct PlotSprite;
 
 /// Recompute the layout when the window size changes and keep the plot
 /// sprite stretched over the plot region.

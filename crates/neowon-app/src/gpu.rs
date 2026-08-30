@@ -152,7 +152,7 @@ struct Params {
 }
 
 #[derive(Resource)]
-struct Pipelines {
+pub(crate) struct Pipelines {
     layout: BindGroupLayoutDescriptor,
     decay: CachedComputePipelineId,
     raster: CachedComputePipelineId,
@@ -160,20 +160,20 @@ struct Pipelines {
 }
 
 #[derive(Resource)]
-struct Buffers {
-    wave: Buffer,
+pub(crate) struct Buffers {
+    pub(crate) wave: Buffer,
     accum: Buffer,
     params: UniformBuffer<Params>,
     /// Sequence number of the record currently in `wave`.
     uploaded_seq: u64,
     /// Sample count of that record.
-    n_samples: u32,
+    pub(crate) n_samples: u32,
     /// Raster requested for this render frame.
     do_raster: bool,
 }
 
 #[derive(Resource)]
-struct PhosphorBindGroup(BindGroup);
+pub(crate) struct PhosphorBindGroup(BindGroup);
 
 fn init_pipelines(
     mut commands: Commands,
@@ -356,7 +356,7 @@ fn prepare_bind_groups(
     commands.insert_resource(PhosphorBindGroup(bind));
 }
 
-fn dispatch(
+pub(crate) fn dispatch(
     mut render_context: RenderContext,
     pipelines: Res<Pipelines>,
     pipeline_cache: Res<PipelineCache>,

@@ -5,15 +5,24 @@ use neowon_backend::Command;
 
 use crate::Link;
 use crate::cursors::CursorState;
+use crate::derived::FftState;
 use crate::gpu::{Palette, Persistence, Phosphor, TraceMode};
 use crate::refs::RefState;
+use crate::viz::three_d::{Viz3d, Viz3dState};
+use crate::viz::waterfall::WaterfallState;
 
+#[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut egui::Ui,
     link: &mut Link,
     phosphor: &mut Phosphor,
     cur: &mut CursorState,
     refs: &mut RefState,
+    fft: &mut FftState,
+    wf: &mut WaterfallState,
+    viz: &mut Viz3dState,
+    fx: &crate::effects::Effects,
+    script: &mut crate::script::Script,
 ) {
     ui.group(|ui| {
         ui.strong("Display");
@@ -53,6 +62,50 @@ pub fn show(
                 if ui.selectable_label(phosphor.palette == p, label).clicked() {
                     phosphor.palette = p;
                 }
+            }
+        });
+    });
+
+    ui.group(|ui| {
+        ui.strong("Visualizations");
+        ui.horizontal(|ui| {
+            if ui.checkbox(&mut wf.on, "Waterfall").changed() && wf.on {
+                fft.enabled = true; // the waterfall consumes the spectrum
+            }
+            ui.label("3D");
+            egui::ComboBox::from_id_salt("viz3d-mode")
+                .selected_text(viz.mode.name())
+                .show_ui(ui, |ui| {
+                    for m in Viz3d::ALL {
+                        if ui.selectable_label(viz.mode == m, m.name()).clicked() {
+                            viz.mode = m;
+                            if m == Viz3d::Terrain {
+                                fft.enabled = true;
+                            }
+                        }
+                    }
+                });
+        });
+        ui.horizontal(|ui| {
+            ui.label("Effect");
+            let current = fx.active.as_deref().unwrap_or("off").to_string();
+            egui::ComboBox::from_id_salt("user-effect")
+                .selected_text(current.clone())
+                .show_ui(ui, |ui| {
+                    if ui.selectable_label(fx.active.is_none(), "off").clicked() {
+                        script.inject(crate::script::Action::Effect(None));
+                    }
+                    for name in &fx.available {
+                        if ui
+                            .selectable_label(current == *name, name.clone())
+                            .clicked()
+                        {
+                            script.inject(crate::script::Action::Effect(Some(name.clone())));
+                        }
+                    }
+                });
+            if ui.button("Reload").clicked() {
+                script.inject(crate::script::Action::EffectReload);
             }
         });
     });

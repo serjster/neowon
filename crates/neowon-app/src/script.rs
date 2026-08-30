@@ -44,10 +44,17 @@
 //! markers <0|1>                         # on-graph drag handles
 //! record <0|1> / recordclear
 //! export <wav|csv|raw> <path>           # write the recording
+//! capsave <path.nwc> / capload <path>   # capture files (.nwc, vendor .cap)
+//! history <idx|prev|next|live>          # scrub the recorded ring
+//! refsave <ch> / ref <on|off> / refclear  # ghost reference traces
+//! sessionsave <path> / sessionload <path> # setup files (are scripts)
+//! trigpos <fraction>                    # horizontal trigger position
+//! waterfall <on|off>                    # realtime spectrogram window
+//! viz <off|terrain|tunnel|phase|xytime> # 3D signal viewport
 //! palette <phosphor|thermal|green>
 //! window <W>x<H>                        # resize (layout tests)
 //! layout <path.json>                    # named-ROI map + open menu
-//! shot <path.ppm> [x y w h]             # plot-texture region (default: all)
+//! shot <path> [x y w h]                 # plot region; .png or .ppm
 //! quit
 //! ```
 //! `wait` advances a cumulative timeline; other actions fire when their
@@ -70,6 +77,16 @@ use crate::ui::{Menu, MenuState};
 
 /// Shots in flight (readback observers decrement).
 static PENDING_SHOTS: AtomicUsize = AtomicUsize::new(0);
+
+/// Later-phase resources bundled into one system param (Bevy caps
+/// systems at 16 parameters).
+type ExtraState<'w> = (
+    ResMut<'w, crate::record::History>,
+    ResMut<'w, crate::refs::RefState>,
+    ResMut<'w, crate::viz::waterfall::WaterfallState>,
+    ResMut<'w, crate::viz::three_d::Viz3dState>,
+    ResMut<'w, crate::effects::Effects>,
+);
 
 #[derive(Debug, Clone)]
 pub enum Action {
@@ -154,6 +171,10 @@ pub enum Action {
     RefSave(usize),
     RefShow(bool),
     RefClear,
+    Waterfall(bool),
+    Viz(crate::viz::three_d::Viz3d),
+    Effect(Option<String>),
+    EffectReload,
     SessionSave(String),
     SessionLoad(String),
     Quit,
@@ -437,6 +458,15 @@ pub(crate) fn parse(text: &str) -> Result<VecDeque<(f64, Action)>, String> {
             "capsave" => Action::CapSave(rest()?.to_string()),
             "capload" => Action::CapLoad(rest()?.to_string()),
             "refsave" => Action::RefSave(rest()?.parse().map_err(|_| err("bad ch"))?),
+            "waterfall" => Action::Waterfall(rest()? == "on"),
+            "effect" => Action::Effect(match rest()? {
+                "off" => None,
+                name => Some(name.to_string()),
+            }),
+            "effectreload" => Action::EffectReload,
+            "viz" => Action::Viz(
+                crate::viz::three_d::Viz3d::parse(rest()?).ok_or_else(|| err("bad viz mode"))?,
+            ),
             "ref" => Action::RefShow(rest()? == "on"),
             "refclear" => Action::RefClear,
             "sessionsave" => Action::SessionSave(rest()?.to_string()),
@@ -465,9 +495,10 @@ pub fn run_script(
     mut fft: ResMut<FftState>,
     mut pf: ResMut<PfState>,
     mut rec: ResMut<crate::record::Recorder>,
-    mut hist: ResMut<crate::record::History>,
-    mut refs: ResMut<crate::refs::RefState>,
+    mut shaders: ResMut<Assets<Shader>>,
+    mut ext: ExtraState,
 ) {
+    let (hist, refs, wf, viz3d, fx) = (&mut ext.0, &mut ext.1, &mut ext.2, &mut ext.3, &mut ext.4);
     let now = time.elapsed_secs_f64();
     while let Some((due, _)) = script.queue.front() {
         if *due > now {
@@ -670,10 +701,14 @@ pub fn run_script(
             }
             Action::Shot { path, roi } => {
                 PENDING_SHOTS.fetch_add(1, Ordering::SeqCst);
+                // WYSIWYG: capture the effect output while one is active.
+                let shot_source = if fx.active.is_some() {
+                    fx.output.clone()
+                } else {
+                    phosphor.display_image.clone()
+                };
                 commands
-                    .spawn(bevy::render::gpu_readback::Readback::texture(
-                        phosphor.display_image.clone(),
-                    ))
+                    .spawn(bevy::render::gpu_readback::Readback::texture(shot_source))
                     .observe(
                         move |event: On<bevy::render::gpu_readback::ReadbackComplete>,
                               mut cmd: Commands| {
@@ -726,8 +761,31 @@ pub fn run_script(
             }
             Action::RefShow(on) => refs.show = on,
             Action::RefClear => refs.clear(),
+            Action::Waterfall(on) => {
+                wf.on = on;
+                if on {
+                    // The waterfall consumes the per-record spectrum.
+                    fft.enabled = true;
+                }
+            }
+            Action::Viz(mode) => {
+                viz3d.mode = mode;
+                if mode == crate::viz::three_d::Viz3d::Terrain {
+                    fft.enabled = true;
+                }
+            }
+            Action::Effect(name) => {
+                crate::effects::activate(fx, &mut shaders, name.as_deref());
+            }
+            Action::EffectReload => {
+                crate::effects::scan(fx);
+                let current = fx.active.clone();
+                crate::effects::activate(fx, &mut shaders, current.as_deref());
+            }
             Action::SessionSave(path) => {
-                let text = crate::session::emit(&link, &phosphor, &math, &meas, &fft, &cur, &pf);
+                let text = crate::session::emit(
+                    &link, &phosphor, &math, &meas, &fft, &cur, &pf, wf, viz3d, fx,
+                );
                 match std::fs::write(&path, text) {
                     Ok(()) => info!("script: saved session to {path}"),
                     Err(e) => error!("script: sessionsave failed: {e}"),

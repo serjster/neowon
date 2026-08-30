@@ -49,11 +49,27 @@ the roadmap.
   script grammar plus JSON state/measurement queries, and the bundled
   `neowon-mcp` server lets LLM clients (Claude, etc.) drive the scope and
   *see* its display via PNG screenshots.
+- **Visualization playground**: realtime waterfall spectrogram, a 3D
+  viewport (spectrogram terrain, waveform tunnel, delay-embedding phase
+  portrait, XY-vs-time cube) with orbit controls, and **user-loadable
+  display shaders** — drop a WGSL file in `assets/shaders/user/`, pick it
+  live, hit Reload to iterate (kaleidoscope, signal-driven ripple, and a
+  heavy-CRT warp ship as examples).
+- **Always-on scrollback**: the capture ring records continuously like a
+  terminal's scrollback — pause, scrub back through history, resume;
+  oldest frames drop on overflow (~20 min).
 - **Virtual testbench**: a deterministic signal engine (sine/square/
   trapezoid/chirp/AM/FM sums, XY figures, WAV playback, simulated
   triggering) verifies every DSP and render path in CI-friendly tests.
 
+![Visualization playground](docs/media/viz-playground.png)
+*Waterfall + 3D spectrogram terrain + the `crt-warp` user shader on a chirp.*
+
+![XY vs time](docs/media/viz-xytime.png)
+*A Lissajous figure with history as depth (`viz xytime`).*
+
 ![Oscilloscope Quake](docs/media/quake-demo.png)
+*Oscilloscope Quake (`--demo`): E1M1, drawn by an audio waveform in XY mode.*
 
 ## Hardware
 

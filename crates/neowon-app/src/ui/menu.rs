@@ -118,6 +118,9 @@ pub fn show(
     hist: &mut crate::record::History,
     refs: &mut crate::refs::RefState,
     script: &mut crate::script::Script,
+    wf: &mut crate::viz::waterfall::WaterfallState,
+    viz: &mut crate::viz::three_d::Viz3dState,
+    fx: &crate::effects::Effects,
 ) {
     let rect = Roi::Dialog.rect(l);
     let mut frame = egui::Frame::new();
@@ -156,9 +159,9 @@ pub fn show(
                                 Menu::Horizontal => dialog_horizontal::show(ui, link),
                                 Menu::Trigger => dialog_trigger::show(ui, link),
                                 Menu::Acquire => dialog_acquire::show(ui, link),
-                                Menu::Display => {
-                                    dialog_display::show(ui, link, phosphor, cur, refs)
-                                }
+                                Menu::Display => dialog_display::show(
+                                    ui, link, phosphor, cur, refs, fft, wf, viz, fx, script,
+                                ),
                                 Menu::Measure => dialog_measure::show(ui, meas),
                                 Menu::Math => dialog_math::show(ui, math),
                                 Menu::Cursor => dialog_cursor::show(ui, link, cur, meas),

@@ -16,6 +16,8 @@ use crate::Link;
 use crate::cursors::CursorState;
 use crate::derived::{FftState, MathState, MeasureState, PfState};
 use crate::gpu::{Palette, Persistence, Phosphor, TraceMode};
+use crate::viz::three_d::Viz3dState;
+use crate::viz::waterfall::WaterfallState;
 
 fn sweep_name(s: Sweep) -> &'static str {
     match s {
@@ -47,6 +49,9 @@ pub fn emit(
     fft: &FftState,
     cur: &CursorState,
     pf: &PfState,
+    wf: &WaterfallState,
+    viz: &Viz3dState,
+    fx: &crate::effects::Effects,
 ) -> String {
     let mut s = String::from("# neowon session\n");
     let w = &mut s;
@@ -178,6 +183,9 @@ pub fn emit(
         Window::Triangular => "triangular",
     };
     let _ = writeln!(w, "fftwnd {wnd}");
+    let _ = writeln!(w, "waterfall {}", if wf.on { "on" } else { "off" });
+    let _ = writeln!(w, "viz {}", viz.mode.name());
+    let _ = writeln!(w, "effect {}", fx.active.as_deref().unwrap_or("off"));
 
     let _ = writeln!(w, "cursor time {}", if cur.time_on { "on" } else { "off" });
     let _ = writeln!(w, "cursor amp {}", if cur.amp_on { "on" } else { "off" });
