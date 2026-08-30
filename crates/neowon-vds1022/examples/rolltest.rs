@@ -15,6 +15,11 @@
 //!
 //! Requires the scope with the 1 kHz probe-comp signal on CH1.
 //!
+//! It also answers a second question that matters more for a host-side deep
+//! view: of the reads that succeed, how many are *distinct* acquisitions?
+//! A tight loop can re-read the same buffer, which costs USB traffic but
+//! adds no coverage.
+//!
 //!   cargo run -p neowon-vds1022 --example rolltest
 
 use std::time::{Duration, Instant};
@@ -41,8 +46,8 @@ fn main() {
     .unwrap();
 
     println!(
-        "{:>10}  {:>6}  {:>7}  {:>9}  {:>9}  {:>8}  verdict",
-        "rate", "roll", "frames", "read int.", "wrap", "cursors"
+        "{:>10}  {:>6}  {:>9}  {:>9}  {:>9}  {:>8}  verdict",
+        "rate", "roll", "new/reads", "read int.", "wrap", "cursors"
     );
 
     for rate in [2.5e3, 25e3, 250e3, 2.5e6] {
@@ -59,6 +64,8 @@ fn main() {
 
             let mut cursors: Vec<u16> = Vec::new();
             let mut reads = 0u32;
+            let mut distinct = 0u32;
+            let mut last: Option<Vec<i8>> = None;
             let start = Instant::now();
             let deadline = start + Duration::from_secs(3);
             while Instant::now() < deadline {
@@ -67,6 +74,14 @@ fn main() {
                         reads += 1;
                         if let Some(f) = frames.first() {
                             cursors.push(f.cursor);
+                            // Distinct acquisitions, not just successful
+                            // reads: identical payloads are the same record
+                            // handed back twice.
+                            let now = f.samples().to_vec();
+                            if last.as_ref() != Some(&now) {
+                                distinct += 1;
+                                last = Some(now);
+                            }
                         }
                     }
                     Err(_) => std::thread::sleep(Duration::from_millis(5)),
@@ -104,9 +119,10 @@ fn main() {
                 )
             };
             println!(
-                "{:>10}  {:>6}  {:>7}  {:>8.1}ms  {:>8.1}ms  {:>8}  {}",
+                "{:>10}  {:>6}  {:>4}/{:<4}  {:>8.1}ms  {:>8.1}ms  {:>8}  {}",
                 fmt_rate(actual),
                 roll,
+                distinct,
                 reads,
                 read_interval * 1e3,
                 wrap * 1e3,

@@ -40,6 +40,11 @@ pub enum Event {
 pub struct Supervisor {
     pub commands: Sender<Command>,
     pub events: Receiver<Event>,
+    /// Frames the acquisition thread captured but could not hand over
+    /// because the consumer was behind. Dropping is the right call — never
+    /// stall acquisition — but it is coverage lost, so it is counted rather
+    /// than silent.
+    pub dropped: std::sync::Arc<std::sync::atomic::AtomicU64>,
     handle: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -67,16 +72,21 @@ where
     let (cmd_tx, cmd_rx) = unbounded::<Command>();
     // Bounded so a stalled UI applies backpressure instead of growing a queue;
     // frames are Arc-shared and cheap to drop.
-    let (event_tx, event_rx) = bounded::<Event>(64);
+    // Deep enough that a brief UI stall (shader compile, window resize)
+    // does not cost coverage at the ~131 frames/s the device can serve.
+    let (event_tx, event_rx) = bounded::<Event>(256);
+    let dropped = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let dropped_tx = dropped.clone();
 
     let handle = std::thread::Builder::new()
         .name("neowon-acq".into())
-        .spawn(move || run(&mut factory, cmd_rx, event_tx))
+        .spawn(move || run(&mut factory, cmd_rx, event_tx, dropped_tx))
         .expect("spawn acquisition thread");
 
     Supervisor {
         commands: cmd_tx,
         events: event_rx,
+        dropped,
         handle: Some(handle),
     }
 }
@@ -136,6 +146,7 @@ fn run(
     factory: &mut dyn FnMut() -> Result<Box<dyn Backend>, String>,
     commands: Receiver<Command>,
     events: Sender<Event>,
+    dropped: std::sync::Arc<std::sync::atomic::AtomicU64>,
 ) {
     let mut wanted: Option<ScopeConfig> = None;
     let mut averager = Averager::default();
@@ -266,7 +277,11 @@ fn run(
                             _ => frame,
                         };
                         // Prefer dropping frames over blocking acquisition.
-                        let _ = events.try_send(Event::Frame(frame));
+                        // Prefer dropping frames over blocking acquisition,
+                        // but account for what was dropped.
+                        if events.try_send(Event::Frame(frame)).is_err() {
+                            dropped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
 
                         // Single sweep: one record, then stop.
                         if let Some(cfg) = &mut wanted

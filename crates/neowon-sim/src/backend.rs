@@ -39,7 +39,14 @@ impl SimBackend {
             },
             cfg: ScopeConfig::default(),
             next_at: Instant::now(),
-            interval: Duration::from_millis(33),
+            // NEOWON_SIM_FPS drives the pacing in tests that need a known
+            // capture rate; the default is the usual ~30 records/s.
+            interval: std::env::var("NEOWON_SIM_FPS")
+                .ok()
+                .and_then(|v| v.parse::<f64>().ok())
+                .filter(|f| *f > 0.0)
+                .map(|f| Duration::from_secs_f64(1.0 / f))
+                .unwrap_or(Duration::from_millis(33)),
         }
     }
 

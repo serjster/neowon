@@ -226,16 +226,21 @@ pub fn record_frames(link: Res<Link>, mut rec: ResMut<Recorder>, hist: Res<Histo
     if !rec.on || hist.active.is_some() {
         return;
     }
-    let Some(frame) = &link.latest else { return };
-    if frame.seq == rec.last_seq {
-        return;
+    // Every frame that arrived this update, not just the newest one: the
+    // instrument captures faster than the display refreshes, so taking one
+    // per rendered frame silently dropped the rest and capped the scrollback
+    // at the render rate.
+    for frame in &link.arrived {
+        if frame.seq == rec.last_seq {
+            continue;
+        }
+        if rec.frames.len() >= MAX_FRAMES {
+            // Scrollback overflow: drop the oldest chunk (amortized).
+            rec.frames.drain(..MAX_FRAMES / 8);
+        }
+        rec.last_seq = frame.seq;
+        rec.frames.push(frame.clone());
     }
-    if rec.frames.len() >= MAX_FRAMES {
-        // Scrollback overflow: drop the oldest chunk (amortized).
-        rec.frames.drain(..MAX_FRAMES / 8);
-    }
-    rec.last_seq = frame.seq;
-    rec.frames.push(frame.clone());
 }
 
 #[cfg(test)]

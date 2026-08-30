@@ -65,6 +65,11 @@ pub struct Link {
     /// Elapsed time when the last frame arrived — the WAIT indicator in the
     /// menu bar compares against it (starved Normal/Single trigger).
     pub last_frame_at: f64,
+    /// Every frame that arrived this update, oldest first. `latest` is the
+    /// newest of them; consumers that need one record read that, while the
+    /// recorder takes them all — otherwise the scrollback is capped at the
+    /// render rate no matter how fast the instrument captures.
+    pub arrived: Vec<SharedFrame>,
     /// Name of the active stimulus (generating backends only).
     pub stimulus: String,
     /// The channel pointer gestures and scroll steps act on.
@@ -147,6 +152,7 @@ fn main() {
             frames_seen: 0,
             multi: MultiMode::TriggerOut,
             last_frame_at: 0.0,
+            arrived: Vec::new(),
             stimulus: "probe-comp".into(),
             selected: 0,
         })
@@ -412,6 +418,7 @@ fn update_phosphor(
 }
 
 fn ingest(time: Res<Time>, mut link: ResMut<Link>) {
+    link.arrived.clear();
     while let Ok(event) = link.sup.events.try_recv() {
         match event {
             Event::Connected(caps) => {
@@ -425,6 +432,7 @@ fn ingest(time: Res<Time>, mut link: ResMut<Link>) {
             Event::Frame(f) => {
                 link.frames_seen += 1;
                 link.last_frame_at = time.elapsed_secs_f64();
+                link.arrived.push(f.clone());
                 if link.frames_seen == 1 || link.frames_seen.is_multiple_of(500) {
                     tracing::info!(frames = link.frames_seen, "acquiring");
                 }

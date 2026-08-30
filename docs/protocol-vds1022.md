@@ -292,3 +292,45 @@ matches). It carries no protocol, register or calibration information. Of
 note only as a parallel effort: it also concluded that a long scrollable
 history (it offers a 1–600 s memory window) is what this instrument is
 missing.
+
+## Verified 2026-08-30 (correction: reads/s is not records/s)
+
+Earlier in this session the "~131 reads/s in a tight `GET_DATA` loop" figure
+was read as headroom to raise the capture duty cycle. That was wrong, and the
+correction matters for any host-side deep record.
+
+`rolltest` now counts **distinct** acquisitions as well as successful reads
+(payload compared against the previous one). Every read turns out to be
+distinct — the device never hands back the same buffer twice — but the rate
+at which it will produce them depends on the mode:
+
+| rate | roll | distinct/reads over 3 s | interval |
+|---|---|---|---|
+| 250 kS/s | off | 109/109 | 27.8 ms |
+| 250 kS/s | on | 397/397 | 7.6 ms |
+| 2.5 MS/s | off | 323/323 | 9.3 ms |
+| 2.5 MS/s | on | 399/399 | 7.5 ms |
+
+So with roll off at 250 kS/s the instrument yields ~36 records/s no matter how
+fast it is polled — 36 x 20 ms = **the 71 % coverage is a device limit, not a
+polling limit**. The earlier 131/s came from roll being forced on.
+
+What the adaptive backoff *does* buy, measured end to end in the app after
+replacing the flat 60 ms wait with `record_duration / 4` (clamped 1–60 ms):
+
+| time base | rate | before | after |
+|---|---|---|---|
+| 2 ms/div | 250 kS/s | 35.7 fps | 35.7 fps (device-limited) |
+| 200 us/div | 2.5 MS/s | ~16 fps | **100 fps** |
+| 20 us/div | 25 MS/s | ~16 fps | **125 fps** |
+
+At fast time bases the old flat wait was throwing away 6–8 records out of
+every 7 — that is waveform update rate, and it is what a phosphor display
+lives on.
+
+**Where gapless capture might still come from:** in roll mode the device
+serves fresh content every 7.6 ms while the 5000-sample buffer wraps every
+20 ms at 250 kS/s, so consecutive reads overlap by roughly 60 %. There is no
+cursor to place them with, but overlapping windows can in principle be
+stitched by correlating one read's tail against the next one's head. That is
+a real route to a gapless high-rate record, and it is not implemented.

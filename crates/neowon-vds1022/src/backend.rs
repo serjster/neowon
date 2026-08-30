@@ -19,6 +19,23 @@ pub struct Vds1022Backend {
 }
 
 impl Vds1022Backend {
+    /// How long to wait after a not-ready reply before asking again.
+    ///
+    /// A flat 60 ms (what the vendor apps use) throws away whole records:
+    /// at 250 kS/s a fresh 5000-sample buffer exists every 20 ms, so one
+    /// missed poll can cost three of them, and the capture duty cycle sat
+    /// near 71%. Scaling with the record's own fill time keeps the poll
+    /// ahead of the buffer without spinning at fast time bases, where the
+    /// 7.6 ms USB round trip dominates anyway.
+    fn retry_backoff(&self) -> Duration {
+        let record_s = self
+            .applied
+            .as_ref()
+            .map(|c| consts::SAMPLES as f64 / c.sample_rate.max(1.0))
+            .unwrap_or(0.02);
+        Duration::from_secs_f64((record_s / 4.0).clamp(0.001, 0.06))
+    }
+
     pub fn open(fpga_dir: Option<&std::path::Path>) -> Result<Self, Error> {
         let dev = Vds1022::open(fpga_dir)?;
         let caps = Capabilities {
@@ -116,8 +133,7 @@ impl Backend for Vds1022Backend {
         match self.dev.try_capture() {
             Ok(Some(frame)) => Ok(Some(Arc::new(frame))),
             Ok(None) => {
-                // Not ready: the vendor apps back off ~60 ms.
-                std::thread::sleep(budget.min(Duration::from_millis(60)));
+                std::thread::sleep(budget.min(self.retry_backoff()));
                 Ok(None)
             }
             Err(e) => Err(fatal(e)),

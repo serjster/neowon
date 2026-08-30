@@ -301,6 +301,7 @@ mod tests {
             frames_seen: 0,
             multi: neowon_backend::MultiMode::TriggerOut,
             last_frame_at: 0.0,
+            arrived: Vec::new(),
             stimulus: String::new(),
             selected: 0,
         }
