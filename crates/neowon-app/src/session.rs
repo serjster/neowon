@@ -42,6 +42,7 @@ pub(crate) fn condition_words(c: PulseCondition) -> (&'static str, &'static str)
 /// Emit the current state as script text.
 #[allow(clippy::too_many_arguments)]
 pub fn emit(
+    ap: &crate::autopeak::AutoPeak,
     link: &Link,
     phosphor: &Phosphor,
     math: &MathState,
@@ -62,7 +63,9 @@ pub fn emit(
     }
     let _ = writeln!(w, "rate {}", c.sample_rate);
     let _ = writeln!(w, "trigpos {}", c.position);
-    let acq = match c.acq {
+    // The user's selection, never the mode auto peak engaged — otherwise a
+    // session saved at a slow time base would restore stuck in Peak.
+    let acq = match ap.user_acq {
         AcqMode::Sample => "sample",
         AcqMode::Peak => "peak",
         AcqMode::Average(4) => "avg4",
@@ -70,6 +73,7 @@ pub fn emit(
         AcqMode::Average(_) => "avg16",
     };
     let _ = writeln!(w, "acq {acq}");
+    let _ = writeln!(w, "autopeak {}", if ap.on { "on" } else { "off" });
 
     for (ch, cc) in c.channels.iter().enumerate().take(2) {
         let _ = writeln!(w, "enable {ch} {}", cc.enabled as u8);

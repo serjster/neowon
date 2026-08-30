@@ -43,6 +43,7 @@ type VizState<'w> = (
     Res<'w, crate::effects::Effects>,
     ResMut<'w, crate::ui::layout::UiRects>,
     Res<'w, crate::ui::UiScale>,
+    ResMut<'w, crate::autopeak::AutoPeak>,
 );
 
 #[allow(clippy::too_many_arguments)]
@@ -112,6 +113,7 @@ pub fn panel(
         &mut viz.1,
         &viz.2,
         &viz.4,
+        &mut viz.5,
     );
     rects.put("dialog", r);
     crate::refs::overlay(&ctx, &layout, &refs);

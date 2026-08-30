@@ -186,7 +186,7 @@ pub const METRICS: [Metric; N_METRICS] = [
     ("Vbase", |m| Some(m.vbase), Unit::Volt),
     ("Vamp", |m| Some(m.vamp), Unit::Volt),
     ("Vavg", |m| Some(m.vavg), Unit::Volt),
-    ("Vrms", |m| Some(m.vrms), Unit::Volt),
+    ("Vrms", |m| m.vrms, Unit::Volt),
     ("Rise", |m| m.rise, Unit::Second),
     ("Fall", |m| m.fall, Unit::Second),
     ("+Width", |m| m.pwidth, Unit::Second),
@@ -244,8 +244,19 @@ pub fn compute_derived(
         }
     }
     slot_caps[2] = math.trace.as_ref();
+    // Envelope records (hardware peak detect) store interleaved min/max
+    // pairs, not successive samples: measuring them as a waveform yields
+    // confident nonsense, so only what survives decimation is reported and
+    // the rest shows as absent.
+    let envelope = frame.acq == neowon_core::AcqMode::Peak;
     for (slot, cap) in slot_caps.iter().enumerate() {
-        let m = cap.and_then(|c| measure(c, frame.sample_rate));
+        let m = cap.and_then(|c| {
+            if envelope {
+                neowon_dsp::measure_envelope(c)
+            } else {
+                measure(c, frame.sample_rate)
+            }
+        });
         meas.latest[slot] = m;
         if let Some(m) = m {
             for (i, (_, get, _)) in METRICS.iter().enumerate() {

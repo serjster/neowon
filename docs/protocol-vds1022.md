@@ -194,3 +194,22 @@ properly. Above that the honest option is a segmented record — many complete
 buffers placed on a time axis with explicit gaps — whose coverage can be
 pushed from today's ~71 % toward ~100 % by reading faster, but which needs a
 capture timestamp on `CaptureFrame` to be placed truthfully.
+
+## Verified 2026-08-30 (peak detect: the min/max pair phase is not fixed)
+
+Peak-detect records interleave a minimum and a maximum per decimation
+interval, which `AcqMode`'s doc comment described as "odd = max, even = min".
+Measured on the probe-comp signal at 500 S/s with peak engaged:
+
+- One exported record had `even` mean -5.99 (min -6, max -5) and `odd` mean
+  70.50 (min 70, max 72) — every pair had `even < odd`, i.e. even = min.
+- Consecutive live records reported `Vmax` and `Vmin` **swapped**, i.e. the
+  same code read even = max.
+
+So the pairing phase shifts between records; it is not a stable convention.
+Anything that de-interleaves must **detect** which series is which (compare
+the two series' means) rather than assume an ordering, and anything that only
+needs extrema should take them over the whole record, where the phase cannot
+matter. `neowon_dsp::measure_envelope` does both; the naive assumption
+produces a *negative* peak-to-peak on the shifted records, which is how this
+was noticed.

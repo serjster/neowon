@@ -24,6 +24,7 @@
 //! horizontal position (trigger delay, or the zoom window), marker drags =
 //! level/offset/position (ui/touch.rs).
 
+mod autopeak;
 mod control;
 mod cursors;
 mod derived;
@@ -162,6 +163,7 @@ fn main() {
         .init_resource::<Layout>()
         .init_resource::<ui::layout::UiRects>()
         .init_resource::<ui::UiScale>()
+        .init_resource::<autopeak::AutoPeak>()
         .init_resource::<ui::touch::TouchState>()
         .init_resource::<ui::MenuState>()
         .init_resource::<derived::MathState>()
@@ -211,6 +213,9 @@ fn main() {
                     ui::touch::plot_pointer,
                     control::poll,
                     script::run_script,
+                    // Before `flush`: the rule writes `config.acq`, which
+                    // `flush` is what actually sends to the instrument.
+                    autopeak::update,
                     flush,
                     derived::compute_derived,
                     viz::waterfall::update,
@@ -438,6 +443,7 @@ fn input(
     egui_wants: Res<EguiWantsInput>,
     mut link: ResMut<Link>,
     mut phosphor: ResMut<Phosphor>,
+    mut autopeak: ResMut<autopeak::AutoPeak>,
 ) {
     if egui_wants.wants_any_keyboard_input() {
         return;
@@ -501,13 +507,15 @@ fn input(
         link.dirty = true;
     }
     if keys.just_pressed(KeyCode::KeyM) {
-        link.config.acq = match link.config.acq {
+        let next = match autopeak.user_acq {
             AcqMode::Sample => AcqMode::Peak,
             AcqMode::Peak => AcqMode::Average(4),
             AcqMode::Average(4) => AcqMode::Average(16),
             AcqMode::Average(16) => AcqMode::Average(64),
             AcqMode::Average(_) => AcqMode::Sample,
         };
+        autopeak.set_user(next);
+        link.config.acq = next;
         link.dirty = true;
     }
     if keys.just_pressed(KeyCode::KeyC) {

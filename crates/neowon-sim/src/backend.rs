@@ -117,6 +117,8 @@ impl Backend for SimBackend {
             self.src.set_range(i, c.volts_div * 10.0 * c.probe);
             self.src.set_offset(i, c.offset);
         }
+        self.src
+            .set_peak(matches!(cfg.acq, neowon_core::AcqMode::Peak));
         self.cfg = cfg.clone();
         Ok(())
     }

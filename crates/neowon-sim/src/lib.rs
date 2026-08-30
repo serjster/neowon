@@ -36,6 +36,9 @@ pub struct SimSource {
     /// Per-frame time advance override, seconds. `None` = one record length
     /// (free-running); WAV playback uses one UI tick so audio runs at 1x.
     frame_advance: Option<f64>,
+    /// Emulate hardware peak detect: each output pair is the (min, max) of
+    /// the signal over the interval those two samples span.
+    peak: bool,
     /// Samples per record; WAV playback shortens records to exactly the
     /// audio advanced per tick so every sample is drawn once.
     frame_len: usize,
@@ -60,6 +63,7 @@ impl SimSource {
             seq: 0,
             t0: 0.0,
             frame_advance: None,
+            peak: false,
             frame_len: SAMPLES,
             rng: Xorshift::default(),
         }
@@ -111,6 +115,11 @@ impl SimSource {
 
     /// Reposition the sample-time origin; used to align a trigger crossing
     /// with the requested horizontal trigger position.
+    /// Hardware peak detect emulation (`AcqMode::Peak`).
+    pub fn set_peak(&mut self, on: bool) {
+        self.peak = on;
+    }
+
     pub fn set_time(&mut self, t: f64) {
         self.t0 = t;
     }
@@ -120,24 +129,61 @@ impl SimSource {
         self.scenario.sample_quiet(t)
     }
 
+    /// Quantize one volt reading into the scope's i8 code, applying the
+    /// zero-DAC offset exactly as `device.rs::configure_channel` does.
+    fn quantize(&self, ch: usize, volts: f64, out: &mut Vec<i8>, clipped: &mut bool) {
+        let lsb = self.ranges[ch] / 250.0;
+        let pos0 = (250.0 * self.offsets[ch]).round();
+        let q = (volts / lsb).round() + pos0;
+        let r = q.clamp(-125.0, 125.0);
+        if r != q {
+            *clipped = true;
+        }
+        out.push(r as i8);
+    }
+
+    /// Peak detect: the instrument's ADC runs far faster than the storage
+    /// rate and each stored *pair* keeps the extremes seen over its
+    /// interval, which is what stops a fast signal aliasing away at slow
+    /// time bases. Even index = min, odd = max (the VDS1022 convention).
+    fn fill_peak(&mut self, n: usize, raws: &mut [Vec<i8>; 2], clipped: &mut [bool; 2]) {
+        /// Sub-samples per output pair — the emulated ADC oversampling.
+        const OVER: usize = 16;
+        let dt = 1.0 / self.sample_rate;
+        for k in 0..n.div_ceil(2) {
+            let t0 = self.t0 + (2 * k) as f64 * dt;
+            let mut lo = [f64::INFINITY; 2];
+            let mut hi = [f64::NEG_INFINITY; 2];
+            for s in 0..OVER {
+                let t = t0 + (s as f64 / OVER as f64) * 2.0 * dt;
+                let v = self.scenario.sample(t, &mut self.rng);
+                for ch in 0..2 {
+                    lo[ch] = lo[ch].min(v[ch]);
+                    hi[ch] = hi[ch].max(v[ch]);
+                }
+            }
+            for ch in 0..2 {
+                self.quantize(ch, lo[ch], &mut raws[ch], &mut clipped[ch]);
+                if raws[ch].len() < n {
+                    self.quantize(ch, hi[ch], &mut raws[ch], &mut clipped[ch]);
+                }
+            }
+        }
+    }
+
     pub fn next_frame(&mut self) -> CaptureFrame {
         let n = self.frame_len;
         let mut raws = [Vec::with_capacity(n), Vec::with_capacity(n)];
         let mut clipped = [false, false];
-        for i in 0..n {
-            let t = self.t0 + i as f64 / self.sample_rate;
-            let v = self.scenario.sample(t, &mut self.rng);
-            for ch in 0..2 {
-                let lsb = self.ranges[ch] / 250.0;
-                // The zero DAC shifts the raw codes by round(250*offset),
-                // exactly like hardware (device.rs `configure_channel`).
-                let pos0 = (250.0 * self.offsets[ch]).round();
-                let q = (v[ch] / lsb).round() + pos0;
-                let r = q.clamp(-125.0, 125.0);
-                if r != q {
-                    clipped[ch] = true;
+        if self.peak {
+            self.fill_peak(n, &mut raws, &mut clipped);
+        } else {
+            for i in 0..n {
+                let t = self.t0 + i as f64 / self.sample_rate;
+                let v = self.scenario.sample(t, &mut self.rng);
+                for ch in 0..2 {
+                    self.quantize(ch, v[ch], &mut raws[ch], &mut clipped[ch]);
                 }
-                raws[ch].push(r as i8);
             }
         }
         self.t0 += self.frame_advance.unwrap_or(n as f64 / self.sample_rate);
@@ -156,7 +202,11 @@ impl SimSource {
         CaptureFrame {
             seq: self.seq,
             sample_rate: self.sample_rate,
-            acq: AcqMode::Sample,
+            acq: if self.peak {
+                AcqMode::Peak
+            } else {
+                AcqMode::Sample
+            },
             channels,
         }
     }
@@ -215,5 +265,64 @@ mod tests {
             a.next_frame().channels[0].raw,
             b.next_frame().channels[0].raw
         );
+    }
+
+    /// The reported failure, reproduced and fixed in the simulator: sampling
+    /// a 1 kHz signal at 500 S/s aliases it away, while peak detect keeps
+    /// the envelope because each pair holds the extremes of its interval.
+    #[test]
+    fn peak_detect_survives_a_time_base_that_aliases() {
+        let mut plain = SimSource::default();
+        plain.set_scenario(Scenario::preset("sine-1k").unwrap());
+        plain.set_enabled(0, true);
+        plain.set_range(0, 2.0);
+        plain.sample_rate = 500.0;
+
+        let mut peak = SimSource::default();
+        peak.set_scenario(Scenario::preset("sine-1k").unwrap());
+        peak.set_enabled(0, true);
+        peak.set_range(0, 2.0);
+        peak.sample_rate = 500.0;
+        peak.set_peak(true);
+
+        let span = |f: &CaptureFrame| {
+            let r = &f.channels[0].raw;
+            (*r.iter().max().unwrap() as i32) - (*r.iter().min().unwrap() as i32)
+        };
+        let plain_span = span(&plain.next_frame());
+        let peak_frame = peak.next_frame();
+        assert_eq!(peak_frame.acq, AcqMode::Peak);
+        let peak_span = span(&peak_frame);
+
+        // The true amplitude is +-1 V on a +-1 V range = +-125 counts.
+        assert!(
+            peak_span > 200,
+            "peak detect lost the envelope: span {peak_span}"
+        );
+        assert!(
+            peak_span > plain_span * 2,
+            "peak {peak_span} should dwarf aliased {plain_span}"
+        );
+    }
+
+    #[test]
+    fn peak_pairs_are_min_then_max() {
+        let mut src = SimSource::default();
+        src.set_scenario(Scenario::preset("sine-1k").unwrap());
+        src.set_enabled(0, true);
+        src.set_range(0, 2.0);
+        src.sample_rate = 500.0;
+        src.set_peak(true);
+        let f = src.next_frame();
+        let raw = &f.channels[0].raw;
+        assert_eq!(raw.len(), SAMPLES);
+        for k in 0..raw.len() / 2 {
+            assert!(
+                raw[2 * k] <= raw[2 * k + 1],
+                "pair {k}: min {} > max {}",
+                raw[2 * k],
+                raw[2 * k + 1]
+            );
+        }
     }
 }

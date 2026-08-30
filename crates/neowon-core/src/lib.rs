@@ -32,8 +32,10 @@ pub enum Sweep {
     Single,
 }
 
-/// Acquisition mode. `Peak` captures min/max pairs (odd = max, even = min on
-/// the VDS1022); `Average` is a host-side running average over N records.
+/// Acquisition mode. `Peak` captures min/max pairs — but note the pairing
+/// phase is **not** fixed on the VDS1022: consecutive records swap which of
+/// the two is the maximum (docs/protocol-vds1022.md), so consumers must
+/// detect it. `Average` is a host-side running average over N records.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcqMode {
     Sample,

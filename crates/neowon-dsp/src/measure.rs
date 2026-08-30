@@ -66,7 +66,9 @@ pub struct Measurements {
     pub vbase: f64,
     pub vamp: f64,
     pub vavg: f64,
-    pub vrms: f64,
+    /// `None` on an envelope record: the RMS of a min/max envelope is not
+    /// the signal's RMS (it is biased high by construction).
+    pub vrms: Option<f64>,
     pub overshoot: Option<f64>,
     pub preshoot: Option<f64>,
     pub period: Option<f64>,
@@ -216,6 +218,64 @@ fn edge_time(raw: &[i8], c: &Crossing, low_level: f64, high_level: f64) -> Optio
     (t1 > t0).then_some(t1 - t0)
 }
 
+/// Measure an **envelope** record — hardware peak detect, or our own deep
+/// view, both of which store interleaved (min, max) pairs rather than
+/// successive samples.
+///
+/// Only the metrics that survive min/max decimation are reported. Extrema do
+/// survive, so amplitudes are exact; anything derived from the spacing of
+/// samples does not, because adjacent entries are two views of the *same*
+/// instant rather than two instants. Measuring such a record as if it were a
+/// waveform is what produces the classic nonsense — every pair reads as a
+/// full cycle, so the frequency comes out at half the column rate whatever
+/// the signal is, and edge-time searches terminate after one step.
+pub fn measure_envelope(cap: &ChannelCapture) -> Option<Measurements> {
+    if cap.raw.len() < 2 {
+        return None;
+    }
+    let lsb = cap.volts_per_lsb;
+    let z = cap.zero_volts;
+    // Extrema survive min/max decimation whatever the interleave phase is,
+    // so take them over the whole record rather than over one series.
+    let all = raw_stats(&cap.raw)?;
+
+    // For the flat-top/flat-bottom histograms the two series must be told
+    // apart, and which one holds the maxima is NOT fixed: the phase of the
+    // pairing shifts between records on the VDS1022 (observed on hardware —
+    // consecutive records reported Vmax and Vmin swapped). Identify it from
+    // the data instead of trusting a convention.
+    let a: Vec<i8> = cap.raw.iter().step_by(2).copied().collect();
+    let b: Vec<i8> = cap.raw.iter().skip(1).step_by(2).copied().collect();
+    let (sa, sb) = (raw_stats(&a)?, raw_stats(&b)?);
+    let (maxs, mins, hi, lo) = if sa.mean >= sb.mean {
+        (&a, &b, sa, sb)
+    } else {
+        (&b, &a, sb, sa)
+    };
+    let (top_r, _) = top_base(maxs, hi.min, hi.max);
+    let (_, base_r) = top_base(mins, lo.min, lo.max);
+
+    let mut m = Measurements {
+        vmin: all.min as f64 * lsb + z,
+        vmax: all.max as f64 * lsb + z,
+        vpp: (all.max - all.min) as f64 * lsb,
+        vtop: top_r * lsb + z,
+        vbase: base_r * lsb + z,
+        vamp: (top_r - base_r) * lsb,
+        // The envelope's midline: the signal's mean for a symmetric wave,
+        // and an honest centre otherwise.
+        vavg: (lo.mean + hi.mean) / 2.0 * lsb + z,
+        vrms: None,
+        ..Default::default()
+    };
+    let amp_r = top_r - base_r;
+    if amp_r >= 8.0 {
+        m.overshoot = Some((all.max as f64 - top_r) / amp_r);
+        m.preshoot = Some((base_r - all.min as f64) / amp_r);
+    }
+    Some(m)
+}
+
 pub fn measure(cap: &ChannelCapture, sample_rate: f64) -> Option<Measurements> {
     let raw = &cap.raw;
     let rs = raw_stats(raw)?;
@@ -232,13 +292,13 @@ pub fn measure(cap: &ChannelCapture, sample_rate: f64) -> Option<Measurements> {
         vbase: base_r * lsb + z,
         vamp: (top_r - base_r) * lsb,
         vavg: rs.mean * lsb + z,
-        vrms: {
+        vrms: Some({
             let zero = z / lsb;
             (rs.mean_sq + 2.0 * zero * rs.mean + zero * zero)
                 .max(0.0)
                 .sqrt()
                 * lsb
-        },
+        }),
         ..Default::default()
     };
     let amp_r = top_r - base_r;
@@ -438,5 +498,62 @@ mod tests {
         assert!(m.vbase < -0.9, "vbase {}", m.vbase);
         let d = m.pduty.unwrap();
         assert!((d - 0.5).abs() < 0.03, "duty {d}");
+    }
+
+    #[test]
+    fn envelope_measurements_keep_amplitudes_and_drop_timings() {
+        // A 1 kHz square seen as min/max pairs: alternating -100/+100.
+        let raw: Vec<i8> = (0..5000)
+            .map(|i| if i % 2 == 0 { -100 } else { 100 })
+            .collect();
+        let cap = cap(raw, 0.01);
+        let e = measure_envelope(&cap).unwrap();
+
+        // Extrema survive min/max decimation exactly.
+        assert!((e.vmax - 1.0).abs() < 1e-9, "vmax {}", e.vmax);
+        assert!((e.vmin + 1.0).abs() < 1e-9, "vmin {}", e.vmin);
+        assert!((e.vpp - 2.0).abs() < 1e-9, "vpp {}", e.vpp);
+
+        // Nothing derived from sample spacing is reported.
+        assert_eq!(e.freq, None);
+        assert_eq!(e.period, None);
+        assert_eq!(e.rise, None);
+        assert_eq!(e.fall, None);
+        assert_eq!(e.pwidth, None);
+        assert_eq!(e.pduty, None);
+        assert_eq!(e.vrms, None);
+
+        // Measured as if it were a waveform, the same record claims a
+        // frequency of half the sample rate — the nonsense this avoids.
+        let bogus = measure(&cap, 250e3).unwrap();
+        assert!(
+            bogus.freq.unwrap() > 100e3,
+            "expected the aliased reading, got {:?}",
+            bogus.freq
+        );
+    }
+
+    #[test]
+    fn envelope_measurement_ignores_the_interleave_phase() {
+        // The same envelope with the pairs offset by one sample: the
+        // VDS1022 shifts this phase between records, so the result must not
+        // depend on it (a naive even=min assumption reports a negative Vpp
+        // on the shifted record).
+        let a: Vec<i8> = (0..5000)
+            .map(|i| if i % 2 == 0 { -100 } else { 100 })
+            .collect();
+        let b: Vec<i8> = (0..5000)
+            .map(|i| if i % 2 == 0 { 100 } else { -100 })
+            .collect();
+        let ma = measure_envelope(&cap(a, 0.01)).unwrap();
+        let mb = measure_envelope(&cap(b, 0.01)).unwrap();
+        for m in [&ma, &mb] {
+            assert!(m.vpp > 0.0, "vpp must be positive, got {}", m.vpp);
+            assert!((m.vpp - 2.0).abs() < 1e-9, "vpp {}", m.vpp);
+            assert!((m.vmax - 1.0).abs() < 1e-9, "vmax {}", m.vmax);
+            assert!((m.vmin + 1.0).abs() < 1e-9, "vmin {}", m.vmin);
+        }
+        assert_eq!(ma.vtop, mb.vtop);
+        assert_eq!(ma.vbase, mb.vbase);
     }
 }

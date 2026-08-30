@@ -124,6 +124,7 @@ pub fn show(
     viz: &mut crate::viz::three_d::Viz3dState,
     fx: &crate::effects::Effects,
     scale: &crate::ui::UiScale,
+    ap: &mut crate::autopeak::AutoPeak,
 ) -> egui::Rect {
     let rect = l.points(Roi::Dialog.rect(l));
     let mut frame = egui::Frame::new();
@@ -173,7 +174,7 @@ pub fn show(
                                 Menu::Channel(ch) => dialog_channel::show(ui, link, ch),
                                 Menu::Horizontal => dialog_horizontal::show(ui, link, phosphor),
                                 Menu::Trigger => dialog_trigger::show(ui, link),
-                                Menu::Acquire => dialog_acquire::show(ui, link),
+                                Menu::Acquire => dialog_acquire::show(ui, link, ap),
                                 Menu::Display => dialog_display::show(
                                     ui, link, phosphor, cur, refs, fft, wf, viz, fx, script,
                                 ),
