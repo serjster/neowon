@@ -6,7 +6,12 @@ use neowon_core::PulseCondition;
 
 /// Ladders used before the backend's capabilities arrive.
 pub const FALLBACK_VDIV: [f64; 10] = [0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0];
-pub const FALLBACK_RATES: [f64; 6] = [2.5e3, 25e3, 250e3, 2.5e6, 25e6, 100e6];
+/// The VDS1022 prescaler ladder — 2.5 S/s to 100 MS/s, which on a 5000-point
+/// record is 200 s/div down to 50 us/div.
+pub const FALLBACK_RATES: [f64; 24] = [
+    2.5, 5.0, 12.5, 25.0, 50.0, 125.0, 250.0, 500.0, 1.25e3, 2.5e3, 5e3, 12.5e3, 25e3, 50e3, 125e3,
+    250e3, 500e3, 1.25e6, 2.5e6, 5e6, 12.5e6, 25e6, 50e6, 100e6,
+];
 pub const PROBES: [f64; 7] = [1.0, 10.0, 20.0, 50.0, 100.0, 500.0, 1000.0];
 
 /// Channel hues — shared with the GPU trace colors in `gpu.rs`.

@@ -5,6 +5,12 @@
 use bevy_egui::egui::{self, Color32, Sense, Stroke, Vec2};
 
 const SIZE: f32 = 40.0;
+/// Total widget width — a knob is a fixed-size cell so a row of them can
+/// never outgrow the dock (the labels used to claim the parent's remaining
+/// width and push the panel over the plot).
+pub const KNOB_W: f32 = 74.0;
+/// Two label lines under the dial.
+const LABEL_H: f32 = 24.0;
 /// Vertical drag pixels for a full min->max sweep.
 const DRAG_PIXELS: f32 = 160.0;
 /// Pointer sweep: -135..+135 degrees from the top.
@@ -23,7 +29,14 @@ pub fn knob(
 ) -> bool {
     let (lo, hi) = range;
     let before = *value;
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(SIZE, SIZE), Sense::click_and_drag());
+    // One fixed cell: dial on top, two centred label lines under it.
+    let (cell, _) = ui.allocate_exact_size(egui::vec2(KNOB_W, SIZE + LABEL_H), Sense::hover());
+    let dial = egui::Rect::from_center_size(
+        egui::pos2(cell.center().x, cell.top() + SIZE / 2.0),
+        egui::vec2(SIZE, SIZE),
+    );
+    let resp = ui.interact(dial, ui.id().with(("knob", label)), Sense::click_and_drag());
+    let rect = dial;
 
     if resp.double_clicked() {
         *value = default;
@@ -77,15 +90,22 @@ pub fn knob(
     );
     painter.line_segment([c, c], Stroke::NONE);
 
-    ui.vertical_centered(|ui| {
-        ui.label(
-            egui::RichText::new(fmt(*value))
-                .monospace()
-                .size(10.0)
-                .color(Color32::from_gray(190)),
-        );
-        ui.label(egui::RichText::new(label).size(9.0).color(Color32::GRAY));
-    });
+    // Labels are painted (not laid out) so they stay inside the cell
+    // whatever their length.
+    painter.text(
+        egui::pos2(cell.center().x, dial.bottom() + 2.0),
+        egui::Align2::CENTER_TOP,
+        fmt(*value),
+        egui::FontId::monospace(10.0),
+        Color32::from_gray(190),
+    );
+    painter.text(
+        egui::pos2(cell.center().x, dial.bottom() + 13.0),
+        egui::Align2::CENTER_TOP,
+        label,
+        egui::FontId::proportional(9.0),
+        Color32::GRAY,
+    );
 
     resp.on_hover_text(format!(
         "{label}: {}\ndrag = turn · scroll = step · 2x-click = {default_text}",

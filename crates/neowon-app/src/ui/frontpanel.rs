@@ -35,9 +35,9 @@ pub fn show(
     math: &mut MathState,
     meas: &mut MeasureState,
     menus: &mut MenuState,
-) {
-    let rect = Roi::FrontPanel.rect(l);
-    egui::Area::new("frontpanel".into())
+) -> egui::Rect {
+    let rect = l.points(Roi::FrontPanel.rect(l));
+    let resp = egui::Area::new("frontpanel".into())
         .fixed_pos(rect.min)
         .show(ctx, |ui| {
             ui.set_max_width(rect.width());
@@ -143,6 +143,7 @@ pub fn show(
                 });
             });
         });
+    l.pixels(resp.response.rect)
 }
 
 fn group(ui: &mut egui::Ui, name: &str, content: impl FnOnce(&mut egui::Ui)) {

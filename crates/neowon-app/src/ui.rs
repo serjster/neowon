@@ -32,7 +32,18 @@ use crate::derived::{FftState, MathState, MeasureState, PfState, Unit, fmt_opt_s
 use crate::gpu::Phosphor;
 use crate::ui::layout::Layout;
 
+pub use layout::UiScale;
 pub use menu::{Menu, MenuState};
+
+/// Later-phase resources bundled into one system param (Bevy caps systems
+/// at 16 parameters).
+type VizState<'w> = (
+    ResMut<'w, crate::viz::waterfall::WaterfallState>,
+    ResMut<'w, crate::viz::three_d::Viz3dState>,
+    Res<'w, crate::effects::Effects>,
+    ResMut<'w, crate::ui::layout::UiRects>,
+    Res<'w, crate::ui::UiScale>,
+);
 
 #[allow(clippy::too_many_arguments)]
 pub fn panel(
@@ -51,21 +62,28 @@ pub fn panel(
     mut hist: ResMut<crate::record::History>,
     mut refs: ResMut<crate::refs::RefState>,
     mut script: ResMut<crate::script::Script>,
-    mut viz: (
-        ResMut<crate::viz::waterfall::WaterfallState>,
-        ResMut<crate::viz::three_d::Viz3dState>,
-        Res<crate::effects::Effects>,
-    ),
+    mut viz: VizState,
 ) {
     let wf_tex = contexts.add_image(bevy_egui::EguiTextureHandle::Strong(viz.0.image.clone()));
     let viz_tex = contexts.add_image(bevy_egui::EguiTextureHandle::Strong(viz.1.image.clone()));
     let Ok(ctx) = contexts.ctx_mut() else { return };
     let ctx = ctx.clone();
     let now = time.elapsed_secs_f64();
+    // The UI scale is one egui zoom factor; Layout carries the same number
+    // so the Bevy-side geometry (plot sprite, gizmos, hit tests) agrees.
+    if (ctx.zoom_factor() - layout.scale).abs() > 1e-3 {
+        ctx.set_zoom_factor(layout.scale);
+    }
 
-    menubar::show(&ctx, &layout, &mut link, &mut menus, now);
-    descriptors::show(&ctx, &layout, &mut link, &phosphor, &mut meas, &mut menus);
-    frontpanel::show(
+    let rects = &mut viz.3;
+    rects.begin();
+    let r = menubar::show(&ctx, &layout, &mut link, &mut menus, now);
+    rects.put("menu_bar", r);
+    let (desc, overlay) =
+        descriptors::show(&ctx, &layout, &mut link, &phosphor, &mut meas, &mut menus);
+    rects.put("descriptors", desc);
+    rects.put("meas_overlay", overlay);
+    let r = frontpanel::show(
         &ctx,
         &layout,
         &mut link,
@@ -74,7 +92,8 @@ pub fn panel(
         &mut meas,
         &mut menus,
     );
-    menu::show(
+    rects.put("front_panel", r);
+    let r = menu::show(
         &ctx,
         &layout,
         &mut menus,
@@ -92,7 +111,9 @@ pub fn panel(
         &mut viz.0,
         &mut viz.1,
         &viz.2,
+        &viz.4,
     );
+    rects.put("dialog", r);
     crate::refs::overlay(&ctx, &layout, &refs);
 
     if fft.enabled {
@@ -103,6 +124,17 @@ pub fn panel(
     }
     if viz.1.mode != crate::viz::three_d::Viz3d::Off {
         viz_windows::viz3d(&ctx, viz_tex, &mut viz.1);
+    }
+    // Floating windows are user-movable, so they are reported for the
+    // layout dump but never constrained.
+    for (name, id) in [
+        ("spectrum", "Spectrum"),
+        ("waterfall", "Waterfall"),
+        ("viz3d", "3D View"),
+    ] {
+        if let Some(r) = ctx.memory(|m| m.area_rect(egui::Id::new(id))) {
+            rects.floating.push((name.into(), r));
+        }
     }
 }
 

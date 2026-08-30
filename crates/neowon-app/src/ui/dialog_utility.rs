@@ -15,7 +15,30 @@ pub fn show(
     pf: &mut PfState,
     fft: &mut FftState,
     script: &mut Script,
+    scale: &crate::ui::UiScale,
 ) {
+    ui.group(|ui| {
+        ui.strong("Display scale");
+        let mut s = scale.0;
+        if ui
+            .add(
+                egui::Slider::new(
+                    &mut s,
+                    crate::ui::layout::UI_SCALE_RANGE.0..=crate::ui::layout::UI_SCALE_RANGE.1,
+                )
+                .step_by(0.25)
+                .text("UI scale"),
+            )
+            .changed()
+        {
+            script.inject(Action::UiScaleSet(s));
+        }
+        ui.label(
+            egui::RichText::new("for hi-DPI screens the OS does not scale")
+                .weak()
+                .small(),
+        );
+    });
     ui.group(|ui| {
         ui.strong("Session");
         ui.horizontal(|ui| {

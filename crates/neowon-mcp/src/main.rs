@@ -23,41 +23,116 @@ use rmcp::{
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-/// Line client for the app's control socket.
-struct ScopeClient {
+/// What the client talks to; kept so a broken link can be re-established
+/// (the app restarting, or a spawned sim dying, must not strand the
+/// long-lived MCP server).
+enum Target {
+    /// Attach to a running app's control socket.
+    Addr(String),
+    /// Own a `neowon-app --sim` child, respawned if it dies.
+    SpawnSim,
+}
+
+struct Conn {
     out: TcpStream,
     lines: std::io::Lines<BufReader<TcpStream>>,
-    /// Keeps a spawned `neowon-app --sim` alive (killed on drop).
+}
+
+/// Line client for the app's control socket, with reconnect.
+struct ScopeClient {
+    target: Target,
+    conn: Option<Conn>,
+    /// The spawned `neowon-app --sim` (killed on drop).
     child: Option<std::process::Child>,
 }
 
-impl ScopeClient {
-    fn connect(addr: &str, deadline: Duration) -> std::io::Result<TcpStream> {
-        let until = Instant::now() + deadline;
-        loop {
-            match TcpStream::connect(addr) {
-                Ok(s) => return Ok(s),
-                Err(e) if Instant::now() >= until => return Err(e),
-                Err(_) => std::thread::sleep(Duration::from_millis(200)),
-            }
+fn connect(addr: &str, deadline: Duration) -> std::io::Result<Conn> {
+    let until = Instant::now() + deadline;
+    let stream = loop {
+        match TcpStream::connect(addr) {
+            Ok(s) => break s,
+            Err(e) if Instant::now() >= until => return Err(e),
+            Err(_) => std::thread::sleep(Duration::from_millis(200)),
         }
+    };
+    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    Ok(Conn {
+        out: stream.try_clone()?,
+        lines: BufReader::new(stream).lines(),
+    })
+}
+
+impl ScopeClient {
+    fn new(target: Target) -> std::io::Result<Self> {
+        let mut client = Self {
+            target,
+            conn: None,
+            child: None,
+        };
+        client.ensure()?;
+        Ok(client)
     }
 
-    fn attach(addr: &str, child: Option<std::process::Child>) -> std::io::Result<Self> {
-        let stream = Self::connect(addr, Duration::from_secs(20))?;
-        stream.set_read_timeout(Some(Duration::from_secs(10)))?;
-        Ok(Self {
-            out: stream.try_clone()?,
-            lines: BufReader::new(stream).lines(),
-            child,
-        })
+    /// Establish (or re-establish) the connection per the target.
+    fn ensure(&mut self) -> std::io::Result<()> {
+        if self.conn.is_some() {
+            return Ok(());
+        }
+        match &self.target {
+            Target::Addr(addr) => {
+                self.conn = Some(connect(addr, Duration::from_secs(5))?);
+            }
+            Target::SpawnSim => {
+                // Singleton by port: if an app already serves the default
+                // control port — a previous spawn, another MCP server
+                // instance's child, or a user-launched app (real hardware
+                // included) — attach to it instead of opening yet another
+                // window.
+                let addr = format!("127.0.0.1:{}", default_port());
+                if let Ok(conn) = connect(&addr, Duration::from_millis(400)) {
+                    self.conn = Some(conn);
+                    return Ok(());
+                }
+                // Reap a dead child (or kill a wedged one) before respawn.
+                if let Some(child) = &mut self.child {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    self.child = None;
+                }
+                self.child = Some(
+                    std::process::Command::new(app_binary())
+                        .arg("--sim")
+                        .env("NEOWON_CONTROL", default_port().to_string())
+                        .env_remove("NEOWON_SCRIPT")
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn()?,
+                );
+                self.conn = Some(connect(&addr, Duration::from_secs(20))?);
+            }
+        }
+        Ok(())
+    }
+
+    fn try_request(&mut self, line: &str) -> std::io::Result<String> {
+        self.ensure()?;
+        let conn = self.conn.as_mut().expect("ensured");
+        writeln!(conn.out, "{line}")?;
+        conn.lines
+            .next()
+            .ok_or_else(|| std::io::Error::other("control connection closed"))?
     }
 
     fn request(&mut self, line: &str) -> std::io::Result<String> {
-        writeln!(self.out, "{line}")?;
-        self.lines
-            .next()
-            .ok_or_else(|| std::io::Error::other("control connection closed"))?
+        match self.try_request(line) {
+            Ok(reply) => Ok(reply),
+            Err(_) => {
+                // One reconnect attempt: the app may have restarted (or
+                // the spawned sim died) since the last call.
+                self.conn = None;
+                self.try_request(line)
+            }
+        }
     }
 }
 
@@ -70,6 +145,15 @@ impl Drop for ScopeClient {
     }
 }
 
+/// The shared control port `--spawn-sim` uses (`NEOWON_MCP_PORT`
+/// overrides; tests use that for hermetic runs).
+fn default_port() -> u16 {
+    std::env::var("NEOWON_MCP_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(7777)
+}
+
 /// Find the neowon-app binary next to our own executable (same target
 /// dir), or take `NEOWON_APP_BIN`.
 fn app_binary() -> std::path::PathBuf {
@@ -79,20 +163,6 @@ fn app_binary() -> std::path::PathBuf {
     let mut p = std::env::current_exe().unwrap_or_default();
     p.set_file_name("neowon-app");
     p
-}
-
-fn spawn_sim() -> std::io::Result<ScopeClient> {
-    let port = std::net::TcpListener::bind("127.0.0.1:0")?
-        .local_addr()?
-        .port();
-    let child = std::process::Command::new(app_binary())
-        .arg("--sim")
-        .env("NEOWON_CONTROL", port.to_string())
-        .env_remove("NEOWON_SCRIPT")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()?;
-    ScopeClient::attach(&format!("127.0.0.1:{port}"), Some(child))
 }
 
 // ---------------------------------------------------------------- tools
@@ -128,12 +198,20 @@ struct TriggerParams {
 
 #[derive(Deserialize, JsonSchema)]
 struct HorizontalParams {
-    /// Sample rate in S/s (hardware ladder 2.5 S/s … 100 MS/s in
-    /// 1-2.5-5 steps; e.g. 250000).
+    /// Time base in seconds per division — the primary horizontal control,
+    /// like a scope's horizontal scale knob. The record spans the 10
+    /// graticule divisions, so this picks the sample rate for you
+    /// (5000 points: 50 us/div … 200 s/div). E.g. 0.002 = 2 ms/div.
+    seconds_per_div: Option<f64>,
+    /// Sample rate in S/s, if you would rather set it directly (hardware
+    /// ladder 2.5 S/s … 100 MS/s in 1-2.5-5 steps; e.g. 250000).
     sample_rate: Option<f64>,
     /// Horizontal trigger position as a fraction of the record
-    /// (0.5 = centered).
+    /// (0.5 = centered); the trigger delay control.
     trigger_position: Option<f64>,
+    /// Zoom (delayed sweep) window: a magnified view into the already
+    /// acquired record. Off by default, as on a bench scope.
+    zoom_window: Option<bool>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -255,19 +333,27 @@ impl Scope {
         ))
     }
 
-    #[tool(description = "Configure the horizontal system: sample rate and/or \
-        horizontal trigger position.")]
+    #[tool(description = "Configure the horizontal system the way a bench \
+        scope does: seconds_per_div is the primary time base (it sets the \
+        sample rate), trigger_position is the delay, and zoom_window turns \
+        on the delayed-sweep view of the acquired record.")]
     async fn configure_horizontal(
         &self,
         p: Parameters<HorizontalParams>,
     ) -> Result<String, ErrorData> {
         let p = p.0;
         let mut script = String::new();
+        if let Some(s) = p.seconds_per_div {
+            script.push_str(&format!("timebase {s}\n"));
+        }
         if let Some(r) = p.sample_rate {
             script.push_str(&format!("rate {r}\n"));
         }
         if let Some(t) = p.trigger_position {
             script.push_str(&format!("trigpos {t}\n"));
+        }
+        if let Some(z) = p.zoom_window {
+            script.push_str(&format!("zoomwin {}\n", if z { "on" } else { "off" }));
         }
         self.exec_lines(&script)
     }
@@ -352,9 +438,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let addr = args
             .get(i + 1)
             .ok_or("--connect needs an ADDR:PORT argument")?;
-        ScopeClient::attach(addr, None)?
+        ScopeClient::new(Target::Addr(addr.clone()))?
     } else if args.iter().any(|a| a == "--spawn-sim") {
-        spawn_sim()?
+        ScopeClient::new(Target::SpawnSim)?
     } else {
         eprintln!("usage: neowon-mcp --connect ADDR:PORT | --spawn-sim");
         std::process::exit(2);

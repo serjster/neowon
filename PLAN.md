@@ -182,7 +182,38 @@ Each phase ends with something runnable and testable — most against the real s
 > slab allocator (use gizmos); a second camera steals bevy_egui's auto
 > context (pin `PrimaryEguiContext`). Tests: `--test effects_pixels`
 > (`--ignored`), the shaders test covers the examples, viz builders
-> unit-tested. Next: Phase 8 (protocol decoders).
+> unit-tested. **Phase 7.7 + 7.8 DONE** (horizontal buffer view, then the
+> lab-semantics audit that corrected it; specs:
+> docs/tasks/phase77-view-spec.md, docs/tasks/phase78-lab-semantics-spec.md).
+> 7.7 added the zoom window into the record (`Phosphor.hview`, shader
+> window, cursors through the window), an egui-painter icon set and a
+> rotary knob widget. 7.8 audited every control against the Rigol MSO5000
+> / Keysight InfiniiVision / R&S RTM3000 / Tek MSO manuals and fixed the
+> control model: **s/div is the primary horizontal control and it drives
+> the sample rate** (5000 points x the 24-rung ladder = 50 us/div …
+> 200 s/div, so seconds per division are reachable — verified at 4 s/div
+> on hardware), horizontal position is the trigger delay, and the zoom
+> window became an explicit secondary "delayed sweep" mode (`zoomwin`,
+> zoom-band indicator) that re-targets the same gestures. Stopped
+> acquisitions zoom stored data (InfiniiVision rule); a ROLL badge lights
+> below 2.5 kS/s (= 200 ms/div). Also fixed: the dock slid over the plot
+> when a section's content overflowed the rail (Area `constrain` + knob
+> labels claiming parent width) — it now clips and scrolls, and hi-DPI
+> screens get a real UI scale (`ui::UiScale`, `uiscale` action, monitor
+> auto-fit). New tests: `--test ui_geometry` asserts from the app's own
+> painted-rect JSON dump that no chrome overlaps the plot across window
+> sizes x UI scales x every dock section. Known gap: roll still paints
+> whole records instead of scrolling right-to-left (needs the device roll
+> cursor), and **no deep memory**: the record is a fixed 5000 points, so
+> `MDepth = SRate x TScale x HDivs` forces span and sample rate to trade
+> against each other — zooming out to 1 s/div drops to 500 S/s and aliases
+> a 1 kHz signal to a flat line (peak detect recovers the envelope, and the
+> app should say so). Decoupling zoom from rate needs a host-side segmented
+> "deep view" stitched from the scrollback ring: measured 71% wall-clock
+> coverage at 250 kS/s (35.7 fps x 20 ms), so it needs a capture timestamp
+> on `CaptureFrame` and honest gap drawing. Both gaps are written up in
+> docs/tasks/phase78-lab-semantics-spec.md (G1, G2). Next: Phase 8
+> (protocol decoders).
 
 ### Phase 0 — Scaffold + simulated trace (½ day)
 

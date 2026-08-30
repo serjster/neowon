@@ -23,8 +23,16 @@ impl Mcp {
             app.exists(),
             "build the app first: cargo build -p neowon-app"
         );
+        // Hermetic: a private control port so the test never attaches to
+        // (or is joined by) a developer's running app on the default one.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
         let mut child = Command::new(env!("CARGO_BIN_EXE_neowon-mcp"))
             .arg("--spawn-sim")
+            .env("NEOWON_MCP_PORT", port.to_string())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

@@ -102,6 +102,8 @@ impl MenuState {
     }
 }
 
+/// Draws the dock and returns the rect it actually painted into — the
+/// caller records it so tests can assert the rail never reaches the plot.
 #[allow(clippy::too_many_arguments)]
 pub fn show(
     ctx: &egui::Context,
@@ -121,8 +123,9 @@ pub fn show(
     wf: &mut crate::viz::waterfall::WaterfallState,
     viz: &mut crate::viz::three_d::Viz3dState,
     fx: &crate::effects::Effects,
-) {
-    let rect = Roi::Dialog.rect(l);
+    scale: &crate::ui::UiScale,
+) -> egui::Rect {
+    let rect = l.points(Roi::Dialog.rect(l));
     let mut frame = egui::Frame::new();
     frame.fill = egui::Color32::from_rgb(12, 14, 18);
     frame.stroke = egui::Stroke::new(1.0, egui::Color32::from_gray(50));
@@ -140,18 +143,29 @@ pub fn show(
         Menu::Display,
     ];
 
-    egui::Area::new("dock".into())
+    // `constrain` is off and the clip rect is pinned to the dock: an Area
+    // that egui is allowed to constrain slides *left* over the plot as soon
+    // as its content is wider than the rail, which is how expanding a
+    // channel section came to cover the trigger marker. Content is clipped
+    // to the rail, so overflow can never reach the waveform.
+    let resp = egui::Area::new("dock".into())
         .fixed_pos(rect.min)
-        .constrain(true)
+        .constrain(false)
         .show(ctx, |ui| {
+            ui.set_clip_rect(rect);
             ui.set_max_width(rect.width());
             ui.set_min_width(rect.width());
             ui.set_max_height(rect.height());
             frame.show(ui, |ui| {
-                ui.set_min_height(rect.height() - 12.0);
-                egui::ScrollArea::vertical()
+                ui.set_min_height(rect.height() - 16.0);
+                // Scrolls in both axes: a section too wide for the rail
+                // scrolls (manual 7.6 — "scrollbar when overflowing")
+                // instead of spilling over the grid.
+                egui::ScrollArea::both()
                     .max_height(rect.height() - 16.0)
+                    .max_width(rect.width() - 12.0)
                     .show(ui, |ui| {
+                        ui.set_max_width(rect.width() - 24.0);
                         ui.set_min_width(rect.width() - 24.0);
                         view_toolbar(ui, link, phosphor);
                         for m in SECTIONS {
@@ -175,11 +189,12 @@ pub fn show(
                             dialog_record::show(ui, link, rec, hist, script)
                         });
                         section(ui, menus, Menu::Utility, |ui, _| {
-                            dialog_utility::show(ui, link, math, pf, fft, script)
+                            dialog_utility::show(ui, link, math, pf, fft, script, scale)
                         });
                     });
             });
         });
+    l.pixels(resp.response.rect)
 }
 
 /// Always-visible zoom/pan/home strip at the top of the dock — the same
@@ -210,25 +225,23 @@ fn view_toolbar(ui: &mut egui::Ui, link: &mut crate::Link, phosphor: &mut crate:
         {
             crate::view::zoom_channel(link, sel, true);
         }
-        if button(
-            ui,
-            Icon::ZoomOut,
-            "Horizontal zoom out — wider record window",
-            26.0,
-        )
-        .clicked()
-        {
-            crate::view::hview_zoom(phosphor, 0.5, false);
+        let zoomed = crate::view::zoom_active(phosphor);
+        let (out_tip, in_tip) = if zoomed {
+            (
+                "Horizontal zoom out — wider zoom window",
+                "Horizontal zoom in — narrower zoom window",
+            )
+        } else {
+            (
+                "Horizontal zoom out — slower time base (more s/div)",
+                "Horizontal zoom in — faster time base (fewer s/div)",
+            )
+        };
+        if button(ui, Icon::ZoomOut, out_tip, 26.0).clicked() {
+            crate::view::hzoom(link, phosphor, phosphor.hview.0, false);
         }
-        if button(
-            ui,
-            Icon::ZoomIn,
-            "Horizontal zoom in — narrower record window",
-            26.0,
-        )
-        .clicked()
-        {
-            crate::view::hview_zoom(phosphor, 0.5, true);
+        if button(ui, Icon::ZoomIn, in_tip, 26.0).clicked() {
+            crate::view::hzoom(link, phosphor, phosphor.hview.0, true);
         }
         if button(
             ui,

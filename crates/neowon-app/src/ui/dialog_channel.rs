@@ -70,9 +70,12 @@ pub fn show(ui: &mut egui::Ui, link: &mut Link, ch: usize) {
                 c.volts_div = vdiv;
                 dirty = true;
             }
+            // Offset reads as a voltage, the way scopes label it; the
+            // config stores it as a fraction of full scale.
+            let full_scale = c.volts_div * 10.0 * c.probe;
             let mut off = c.offset;
             if knob(ui, "Offset", &mut off, (-0.5, 0.5), None, 0.0, |v| {
-                format!("{:+.2} FS", v)
+                fmt_si(v * full_scale, "V")
             }) {
                 c.offset = off;
                 dirty = true;

@@ -19,9 +19,9 @@ pub fn show(
     phosphor: &Phosphor,
     meas: &mut MeasureState,
     menus: &mut MenuState,
-) {
-    let rect = Roi::Descriptors.rect(l);
-    egui::Area::new("descriptors".into())
+) -> (egui::Rect, egui::Rect) {
+    let rect = l.points(Roi::Descriptors.rect(l));
+    let resp = egui::Area::new("descriptors".into())
         .fixed_pos(rect.min)
         .show(ctx, |ui| {
             ui.set_max_width(rect.width());
@@ -109,13 +109,14 @@ pub fn show(
             });
         });
 
-    measurement_overlay(ctx, l, meas);
+    let overlay = measurement_overlay(ctx, l, meas);
+    (l.pixels(resp.response.rect), overlay)
 }
 
 /// Latest measurements per slot, source-colored, along the plot bottom.
-fn measurement_overlay(ctx: &egui::Context, l: &Layout, meas: &mut MeasureState) {
-    let rect = Roi::MeasOverlay.rect(l);
-    egui::Area::new("meas-overlay".into())
+fn measurement_overlay(ctx: &egui::Context, l: &Layout, meas: &mut MeasureState) -> egui::Rect {
+    let rect = l.points(Roi::MeasOverlay.rect(l));
+    let r = egui::Area::new("meas-overlay".into())
         .fixed_pos(rect.min)
         .show(ctx, |ui| {
             ui.set_max_width(rect.width());
@@ -165,5 +166,8 @@ fn measurement_overlay(ctx: &egui::Context, l: &Layout, meas: &mut MeasureState)
                     );
                 }
             });
-        });
+        })
+        .response
+        .rect;
+    l.pixels(r)
 }

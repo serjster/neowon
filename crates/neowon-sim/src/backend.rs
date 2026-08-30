@@ -26,7 +26,13 @@ impl SimBackend {
                 name: "Simulated".into(),
                 serial: "sim-0".into(),
                 channels: 2,
-                sample_rates: vec![2.5e3, 25e3, 250e3, 2.5e6, 25e6, 100e6],
+                // The VDS1022's full prescaler ladder (docs/protocol-
+                // vds1022.md): the sim must offer the same time-base range
+                // as hardware, down to seconds per division.
+                sample_rates: vec![
+                    2.5, 5.0, 12.5, 25.0, 50.0, 125.0, 250.0, 500.0, 1.25e3, 2.5e3, 5e3, 12.5e3,
+                    25e3, 50e3, 125e3, 250e3, 500e3, 1.25e6, 2.5e6, 5e6, 12.5e6, 25e6, 50e6, 100e6,
+                ],
                 volts_div: vec![0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0],
                 probes: vec![1.0, 10.0, 100.0],
                 record_len: crate::SAMPLES,

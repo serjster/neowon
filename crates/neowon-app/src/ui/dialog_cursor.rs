@@ -11,7 +11,9 @@ pub fn show(ui: &mut egui::Ui, link: &Link, cur: &mut CursorState, meas: &Measur
         ui.strong("Cursors");
         ui.checkbox(&mut cur.time_on, "Time cursors");
         ui.checkbox(&mut cur.amp_on, "Amplitude cursors");
-        let record_s = 5000.0 / meas.sample_rate.max(1.0);
+        // Cursor times are record fractions, so the span comes from the
+        // instrument's own record length, not an assumed 5000 points.
+        let record_s = crate::view::record_len(link) as f64 / meas.sample_rate.max(1.0);
         if cur.time_on {
             let dt = ((cur.pos[1] - cur.pos[0]).abs() as f64) * record_s;
             let dt_s = fmt_si_sticky(dt, "s", &mut cur.bands[0]);

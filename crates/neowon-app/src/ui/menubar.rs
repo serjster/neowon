@@ -26,9 +26,15 @@ pub fn run_state(link: &Link, now: f64) -> (&'static str, egui::Color32) {
     }
 }
 
-pub fn show(ctx: &egui::Context, l: &Layout, link: &mut Link, _menus: &mut MenuState, now: f64) {
-    let rect = Roi::MenuBar.rect(l);
-    egui::Area::new("menubar".into())
+pub fn show(
+    ctx: &egui::Context,
+    l: &Layout,
+    link: &mut Link,
+    _menus: &mut MenuState,
+    now: f64,
+) -> egui::Rect {
+    let rect = l.points(Roi::MenuBar.rect(l));
+    let resp = egui::Area::new("menubar".into())
         .fixed_pos(rect.min)
         .show(ctx, |ui| {
             ui.set_max_width(rect.width());
@@ -57,6 +63,31 @@ pub fn show(ctx: &egui::Context, l: &Layout, link: &mut Link, _menus: &mut MenuS
                     ))
                     .monospace(),
                 );
+                // Slow time bases run the instrument in roll mode, where the
+                // record fills progressively and the trigger is not used —
+                // scopes always say so on screen.
+                if crate::view::is_roll(link.config.sample_rate) {
+                    let (r, resp) =
+                        ui.allocate_exact_size(egui::vec2(52.0, 20.0), egui::Sense::hover());
+                    ui.painter().rect(
+                        r,
+                        4.0,
+                        egui::Color32::from_rgb(40, 44, 54),
+                        egui::Stroke::new(1.0, WAIT_COLOR),
+                        egui::StrokeKind::Middle,
+                    );
+                    ui.painter().text(
+                        r.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "ROLL",
+                        egui::FontId::proportional(11.0),
+                        WAIT_COLOR,
+                    );
+                    resp.on_hover_text(
+                        "Roll mode: at this time base the instrument streams \
+                         the record progressively and the trigger is not used.",
+                    );
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // Fixed 8-char field: the counter widening a digit must
                     // not nudge the device label beside it.
@@ -72,4 +103,5 @@ pub fn show(ctx: &egui::Context, l: &Layout, link: &mut Link, _menus: &mut MenuS
                 });
             });
         });
+    l.pixels(resp.response.rect)
 }

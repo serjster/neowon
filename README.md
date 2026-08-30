@@ -39,9 +39,19 @@ the roadmap.
 - **Reference traces & sessions**: freeze a channel as a ghost trace for
   visual comparison; save/restore the full instrument setup — a session
   file is itself a neowon automation script, readable and editable.
+- **Bench-scope horizontal controls**: s/div is the primary time base and
+  it drives the sample rate, so zooming out runs from 50 µs/div all the
+  way to 200 s/div (the trace rolls, as on a real scope, below
+  200 ms/div); horizontal position is the trigger delay; and Zoom
+  (delayed sweep) is an explicit magnified window into the acquired
+  record, with a band showing which slice you are looking at. Stopping
+  acquisition turns the time-base control into a zoom over stored data.
 - **Touch-scope interaction on a desktop**: drag the trigger level and
   position, drag traces to move offsets, scroll to change volts/div,
-  shift+scroll for the timebase.
+  shift+scroll for the horizontal zoom.
+- **Scales to your display**: the window and UI size themselves to the
+  monitor, with a manual override for hi-DPI panels the OS does not scale
+  (`NEOWON_UI_SCALE`, or the Utility dialog's slider).
 - **Fully scriptable**: every control is reachable from a plain-text
   automation script (`NEOWON_SCRIPT`), including plot-texture screenshots
   with regions of interest — the same mechanism the test suite uses.

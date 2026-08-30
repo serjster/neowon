@@ -132,7 +132,7 @@ pub fn draw_cursors(
         for i in 0..2 {
             // Cursors outside the zoom window hide at the plot edge.
             let xf = view_frac(cur.pos[i], phosphor.hview);
-            if xf < 0.0 || xf > 1.0 {
+            if !(0.0..=1.0).contains(&xf) {
                 continue;
             }
             let x = cur.x_world(&layout, phosphor.hview, i);

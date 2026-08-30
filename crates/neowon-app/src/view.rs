@@ -2,18 +2,162 @@
 //! pointer gestures (`ui/touch.rs`), keyboard shortcuts, and script actions:
 //! one code path for every entry point.
 //!
-//! Zoom and pan act on acquisition parameters the way a bench scope does:
-//! vertical zoom = volts/div, horizontal zoom = sample rate, vertical pan =
-//! channel offset, horizontal pan = trigger position.
+//! The horizontal controls follow the bench-scope model (docs/tasks/
+//! phase78-lab-semantics-spec.md §1):
+//!
+//! - **Time base** (s/div) is the primary horizontal control. The record
+//!   always spans the graticule's 10 divisions, so `s/div = record_len /
+//!   (sample_rate x 10)`; turning it slower steps down the sample-rate
+//!   ladder, which is how a scope reaches seconds per division.
+//! - **Horizontal position** (trigger delay) slides the trigger point
+//!   through the record — the acquisition control, not a display pan.
+//! - **Zoom** (delayed sweep) is a *secondary* magnified window into the
+//!   already-acquired record (`Phosphor.hview`), off by default. While it
+//!   is on, the horizontal zoom gestures drive the window instead of the
+//!   time base, exactly like a scope's Zoom mode.
+//!
+//! Vertical: zoom = volts/div, pan = channel offset.
 
 use neowon_backend::ScopeConfig;
 
 use crate::Link;
 use crate::gpu::Phosphor;
+use crate::ui::layout::H_DIVS;
 use crate::ui::widgets::FALLBACK_VDIV;
 
 /// Narrowest horizontal zoom window (100x).
 pub const HVIEW_MIN_SPAN: f64 = 0.01;
+
+/// Samples per record before capabilities arrive (VDS1022/sim shape).
+pub const FALLBACK_RECORD_LEN: usize = 5000;
+
+/// Record length of the attached instrument.
+pub fn record_len(link: &Link) -> usize {
+    link.caps
+        .as_ref()
+        .map(|c| c.record_len)
+        .unwrap_or(FALLBACK_RECORD_LEN)
+}
+
+/// Seconds per division for a sample rate: the record spans the graticule.
+pub fn s_per_div(rate: f64, record_len: usize) -> f64 {
+    record_len as f64 / rate.max(1e-12) / H_DIVS as f64
+}
+
+/// The sample rate that puts `s_div` on one division.
+pub fn rate_for_s_per_div(s_div: f64, record_len: usize) -> f64 {
+    record_len as f64 / (s_div.max(1e-15) * H_DIVS as f64)
+}
+
+/// The sample-rate ladder the instrument offers.
+pub fn rate_ladder(link: &Link) -> Vec<f64> {
+    link.caps
+        .as_ref()
+        .map(|c| c.sample_rates.clone())
+        .unwrap_or_else(|| crate::ui::widgets::FALLBACK_RATES.to_vec())
+}
+
+/// The achievable time-base ladder in s/div, fastest (smallest) first.
+pub fn timebase_ladder(link: &Link) -> Vec<f64> {
+    let n = record_len(link);
+    let mut l: Vec<f64> = rate_ladder(link).iter().map(|&r| s_per_div(r, n)).collect();
+    l.sort_by(f64::total_cmp);
+    l
+}
+
+/// Current time base, s/div.
+pub fn timebase(link: &Link) -> f64 {
+    s_per_div(link.config.sample_rate, record_len(link))
+}
+
+/// Set the time base to the ladder rung nearest `s_div`.
+pub fn set_timebase(link: &mut Link, s_div: f64) {
+    let n = record_len(link);
+    let want = rate_for_s_per_div(s_div, n);
+    let ladder = rate_ladder(link);
+    let rate = ladder
+        .iter()
+        .copied()
+        .min_by(|a, b| {
+            let da = (a.ln() - want.max(1e-12).ln()).abs();
+            let db = (b.ln() - want.max(1e-12).ln()).abs();
+            da.total_cmp(&db)
+        })
+        .unwrap_or(want);
+    if rate != link.config.sample_rate {
+        link.config.sample_rate = rate;
+        link.dirty = true;
+    }
+}
+
+/// Step the time base one rung. `slower` = more seconds per division (a
+/// wider time window), which means a slower sample rate.
+pub fn timebase_step(link: &mut Link, slower: bool) {
+    let ladder = rate_ladder(link);
+    let rate = step_ladder(&ladder, link.config.sample_rate, !slower);
+    if rate != link.config.sample_rate {
+        link.config.sample_rate = rate;
+        link.dirty = true;
+    }
+}
+
+/// Below this sample rate the VDS1022 runs in roll mode (docs/protocol-
+/// vds1022.md) — on a 5000-point record that is 200 ms/div, the same
+/// threshold Rigol's MSO5000 uses.
+pub const ROLL_RATE: f64 = 2500.0;
+
+/// Does this sample rate put the instrument in roll mode?
+pub fn is_roll(rate: f64) -> bool {
+    rate < ROLL_RATE
+}
+
+/// Is the zoom (delayed-sweep) window active? Off = the window is the whole
+/// record, which is the plain main time base.
+pub fn zoom_active(p: &Phosphor) -> bool {
+    p.hview.1 < 0.999
+}
+
+/// Turn the zoom window on (half the record) or off (whole record).
+pub fn set_zoom(p: &mut Phosphor, on: bool) {
+    p.hview = if on {
+        hview_clamp(p.hview.0, 0.5)
+    } else {
+        (0.5, 1.0)
+    };
+}
+
+/// The horizontal zoom control, with a scope's mode split: the time base
+/// when the zoom window is off, the zoom window when it is on. `anchor` is
+/// a record fraction (e.g. under the pointer) and only matters when zoomed.
+///
+/// While the acquisition is stopped the time base has nothing to re-acquire,
+/// so it zooms the stored record instead — the InfiniiVision rule: "When
+/// running, adjusting the horizontal scale knob changes the sample rate.
+/// When stopped, adjusting the horizontal scale knob lets you zoom into
+/// acquired data."
+pub fn hzoom(link: &mut Link, p: &mut Phosphor, anchor: f64, inward: bool) {
+    if zoom_active(p) || !link.config.running {
+        hview_zoom(p, anchor, inward);
+    } else {
+        timebase_step(link, !inward);
+    }
+}
+
+/// The horizontal position control, with the same mode split: the trigger
+/// delay when the zoom window is off (the acquisition control), the zoom
+/// window's position when it is on. `dfrac` is a fraction of the visible
+/// width, positive = the waveform moves right.
+pub fn hposition(link: &mut Link, p: &mut Phosphor, dfrac: f64) {
+    if zoom_active(p) {
+        hview_pan(p, -dfrac * p.hview.1);
+    } else {
+        let pos = (link.config.position + dfrac).clamp(0.0, 1.0);
+        if pos != link.config.position {
+            link.config.position = pos;
+            link.dirty = true;
+        }
+    }
+}
 
 /// Clamp a (center, span) window inside the record.
 pub fn hview_clamp(center: f64, span: f64) -> (f64, f64) {
@@ -102,16 +246,17 @@ pub enum Pan {
     Down,
 }
 
-/// Pan one step: left/right slide the horizontal zoom window (content
-/// follows the arrow), up/down move the selected channel's offset by a
-/// tenth of full scale.
+/// Pan one step: left/right are the horizontal position control (trigger
+/// delay, or the zoom window while zoomed) with the waveform following the
+/// arrow; up/down move the selected channel's offset by a tenth of full
+/// scale.
 pub fn pan(link: &mut Link, phosphor: &mut Phosphor, dir: Pan) {
     const STEP: f64 = 0.1;
     match dir {
         // Content follows the arrow, like dragging the waveform that way:
         // pan left slides it left, revealing later samples.
-        Pan::Left => hview_pan(phosphor, STEP * phosphor.hview.1),
-        Pan::Right => hview_pan(phosphor, -STEP * phosphor.hview.1),
+        Pan::Left => hposition(link, phosphor, -STEP),
+        Pan::Right => hposition(link, phosphor, STEP),
         Pan::Up | Pan::Down => {
             let sel = link.selected.min(1);
             let d = if dir == Pan::Up { STEP } else { -STEP };
@@ -159,6 +304,105 @@ mod tests {
             stimulus: String::new(),
             selected: 0,
         }
+    }
+
+    #[test]
+    fn timebase_is_record_over_rate_over_divisions() {
+        // Rigol's MDepth = SRate x TScale x HDivs, solved for the scale.
+        assert!((s_per_div(250e3, 5000) - 2e-3).abs() < 1e-12);
+        assert!((s_per_div(2.5, 5000) - 200.0).abs() < 1e-9);
+        assert!((rate_for_s_per_div(2e-3, 5000) - 250e3).abs() < 1e-6);
+    }
+
+    #[test]
+    fn timebase_zooms_out_into_seconds_per_division() {
+        // The complaint this phase fixes: at 250 kS/s the horizontal control
+        // stopped at the 20 ms record. Stepping the time base slower walks
+        // the rate ladder down to whole seconds per division.
+        let mut link = link();
+        link.config.sample_rate = 250e3;
+        assert!((timebase(&link) - 2e-3).abs() < 1e-12);
+        let mut p = Phosphor::default();
+        // "I remember setting the zoom to about 5 seconds": the ladder's
+        // neighbouring rungs are 4 s/div (125 S/s) and 10 s/div (50 S/s).
+        let mut rungs = Vec::new();
+        for _ in 0..24 {
+            hzoom(&mut link, &mut p, 0.5, false);
+            rungs.push(timebase(&link));
+        }
+        assert!(
+            rungs.iter().any(|&t| (t - 4.0).abs() < 1e-9),
+            "seconds-per-division is not reachable by zooming out: {rungs:?}"
+        );
+        // Bottoms out at the slowest rate, 200 s/div on a 5000-point record.
+        assert_eq!(link.config.sample_rate, 2.5);
+        assert!((timebase(&link) - 200.0).abs() < 1e-9);
+        // The zoom window stayed out of it: this is the acquisition control.
+        assert_eq!(p.hview, (0.5, 1.0));
+    }
+
+    #[test]
+    fn set_timebase_snaps_to_a_reachable_rung() {
+        let mut link = link();
+        set_timebase(&mut link, 5.0); // 5 s/div -> 100 S/s wanted
+        // Nearest rung on the ladder (125 S/s -> 4 s/div).
+        assert!(rate_ladder(&link).contains(&link.config.sample_rate));
+        assert!(timebase(&link) > 1.0 && timebase(&link) < 20.0);
+        assert!(link.dirty);
+    }
+
+    #[test]
+    fn zoom_window_takes_over_the_horizontal_zoom() {
+        let mut link = link();
+        link.config.sample_rate = 250e3;
+        let mut p = Phosphor::default();
+        assert!(!zoom_active(&p));
+        set_zoom(&mut p, true);
+        assert!(zoom_active(&p));
+        let rate = link.config.sample_rate;
+        hzoom(&mut link, &mut p, 0.5, true);
+        // While zoomed the time base is untouched — the window narrows.
+        assert_eq!(link.config.sample_rate, rate);
+        assert!((p.hview.1 - 0.25).abs() < 1e-9);
+        set_zoom(&mut p, false);
+        assert_eq!(p.hview, (0.5, 1.0));
+    }
+
+    #[test]
+    fn stopped_acquisition_zooms_the_stored_record() {
+        // InfiniiVision rule: running = sample rate, stopped = zoom memory.
+        let mut link = link();
+        link.config.running = false;
+        let rate = link.config.sample_rate;
+        let mut p = Phosphor::default();
+        hzoom(&mut link, &mut p, 0.5, true);
+        assert_eq!(link.config.sample_rate, rate);
+        assert!((p.hview.1 - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn horizontal_position_is_the_trigger_delay_until_zoomed() {
+        let mut link = link();
+        let mut p = Phosphor::default();
+        let pos = link.config.position;
+        hposition(&mut link, &mut p, 0.1);
+        assert!((link.config.position - (pos + 0.1)).abs() < 1e-9);
+        assert_eq!(p.hview, (0.5, 1.0), "not a display pan while unzoomed");
+        // Zoomed, the same control moves the window and leaves the
+        // acquisition alone.
+        set_zoom(&mut p, true);
+        let pos = link.config.position;
+        hposition(&mut link, &mut p, 0.1);
+        assert_eq!(link.config.position, pos);
+        assert!((p.hview.0 - 0.45).abs() < 1e-9);
+    }
+
+    #[test]
+    fn roll_threshold_matches_the_instrument() {
+        assert!(is_roll(250.0));
+        assert!(!is_roll(2500.0));
+        // 2.5 kS/s on a 5000-point record is 200 ms/div.
+        assert!((s_per_div(ROLL_RATE, 5000) - 0.2).abs() < 1e-12);
     }
 
     #[test]

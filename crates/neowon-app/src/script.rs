@@ -21,9 +21,11 @@
 //! holdoff <seconds>
 //! autoset
 //! force
-//! zoom <h|v> <in|out>                 # h = record window, v = selected ch V/div
-//! hzoom <in|out>                      # horizontal window zoom (about centre)
-//! hview <centre> <span>               # horizontal window, fractions of record
+//! timebase <s/div>                    # primary horizontal control
+//! zoom <h|v> <in|out>                 # h = horizontal (see hzoom), v = V/div
+//! hzoom <in|out>                      # time base, or zoom window when on
+//! zoomwin <on|off>                    # zoom (delayed sweep) window
+//! hview <centre> <span>               # zoom window, fractions of record
 //! pan <left|right|up|down>            # window (h) / offset (v), one step
 //! home                                # default zoom + centre position
 //! acq <sample|peak|avg4|avg16|avg64>
@@ -58,6 +60,7 @@
 //! viz <off|terrain|tunnel|phase|xytime> # 3D signal viewport
 //! palette <phosphor|thermal|green>
 //! window <W>x<H>                        # resize (layout tests)
+//! uiscale <factor>                      # egui zoom factor (hi-DPI screens)
 //! layout <path.json>                    # named-ROI map + open menu
 //! shot <path> [x y w h]                 # plot region; .png or .ppm
 //! quit
@@ -91,6 +94,8 @@ type ExtraState<'w> = (
     ResMut<'w, crate::viz::waterfall::WaterfallState>,
     ResMut<'w, crate::viz::three_d::Viz3dState>,
     ResMut<'w, crate::effects::Effects>,
+    Res<'w, crate::ui::layout::UiRects>,
+    ResMut<'w, crate::ui::UiScale>,
 );
 
 #[derive(Debug, Clone)]
@@ -138,6 +143,10 @@ pub enum Action {
         inward: bool,
     },
     HView(f64, f64),
+    /// Time base in seconds per division (the primary horizontal control).
+    Timebase(f64),
+    /// Zoom (delayed-sweep) window on/off.
+    ZoomWin(bool),
     Pan(crate::view::Pan),
     Home,
     Acq(AcqMode),
@@ -153,6 +162,7 @@ pub enum Action {
     Export(String, String),
     PaletteSet(crate::gpu::Palette),
     WindowSize(f32, f32),
+    UiScaleSet(f32),
     Math(Option<MathOp>),
     Run(bool),
     Multi(MultiMode),
@@ -368,6 +378,8 @@ pub(crate) fn parse(text: &str) -> Result<VecDeque<(f64, Action)>, String> {
                 rest()?.parse().map_err(|_| err("bad centre"))?,
                 rest()?.parse().map_err(|_| err("bad span"))?,
             ),
+            "timebase" => Action::Timebase(rest()?.parse().map_err(|_| err("bad s/div"))?),
+            "zoomwin" => Action::ZoomWin(rest()? == "on"),
             "pan" => Action::Pan(match rest()? {
                 "left" => crate::view::Pan::Left,
                 "right" => crate::view::Pan::Right,
@@ -473,6 +485,7 @@ pub(crate) fn parse(text: &str) -> Result<VecDeque<(f64, Action)>, String> {
                 "record" => Some(Menu::Record),
                 _ => return Err(err("bad menu")),
             }),
+            "uiscale" => Action::UiScaleSet(rest()?.parse().map_err(|_| err("bad scale"))?),
             "layout" => Action::Layout(rest()?.to_string()),
             "shot" => {
                 let path = rest()?.to_string();
@@ -545,6 +558,8 @@ pub fn run_script(
     mut ext: ExtraState,
 ) {
     let (hist, refs, wf, viz3d, fx) = (&mut ext.0, &mut ext.1, &mut ext.2, &mut ext.3, &mut ext.4);
+    let rects = &ext.5;
+    let ui_scale = &mut ext.6;
     let now = time.elapsed_secs_f64();
     while let Some((due, _)) = script.queue.front() {
         if *due > now {
@@ -642,13 +657,19 @@ pub fn run_script(
             }
             Action::Zoom { horiz, inward } => {
                 if horiz {
-                    crate::view::hview_zoom(&mut phosphor, 0.5, inward);
+                    let anchor = phosphor.hview.0;
+                    crate::view::hzoom(&mut link, &mut phosphor, anchor, inward);
                 } else {
                     let sel = link.selected.min(1);
                     crate::view::zoom_channel(&mut link, sel, inward);
                 }
             }
-            Action::HZoom { inward } => crate::view::hview_zoom(&mut phosphor, 0.5, inward),
+            Action::HZoom { inward } => {
+                let anchor = phosphor.hview.0;
+                crate::view::hzoom(&mut link, &mut phosphor, anchor, inward)
+            }
+            Action::Timebase(s_div) => crate::view::set_timebase(&mut link, s_div),
+            Action::ZoomWin(on) => crate::view::set_zoom(&mut phosphor, on),
             Action::HView(center, span) => {
                 phosphor.hview = crate::view::hview_clamp(center, span);
             }
@@ -689,6 +710,12 @@ pub fn run_script(
                 if let Ok(mut window) = windows.single_mut() {
                     window.resolution.set(w, h);
                 }
+            }
+            Action::UiScaleSet(s) => {
+                ui_scale.0 = s.clamp(
+                    crate::ui::layout::UI_SCALE_RANGE.0,
+                    crate::ui::layout::UI_SCALE_RANGE.1,
+                );
             }
             Action::Math(op) => match op {
                 None => math.enabled = false,
@@ -753,7 +780,7 @@ pub fn run_script(
             Action::Layout(path) => {
                 let names: Vec<&str> = menus.open_list().iter().map(|m| menu_name(*m)).collect();
                 let open = (!names.is_empty()).then(|| names.join(","));
-                let json = dump_json(&layout, open.as_deref());
+                let json = dump_json(&layout, open.as_deref(), rects);
                 match std::fs::write(&path, json) {
                     Ok(()) => info!("script: wrote layout {path}"),
                     Err(e) => error!("script: cannot write {path}: {e}"),

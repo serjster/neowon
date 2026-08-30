@@ -160,18 +160,50 @@ fn view_controls_move_the_window_and_the_pixels() {
         conn.wait_config(r#""volts_div":0.5"#);
         std::thread::sleep(Duration::from_millis(800));
 
+        // The horizontal control is the time base while the zoom window is
+        // off: zooming out walks the rate ladder down into seconds per
+        // division instead of stopping at the record (the Phase 7.8 fix).
+        assert!(conn.request("timebase 0.002").contains(r#""ok":true"#));
+        conn.wait_config(r#""sample_rate":250000"#);
+        for _ in 0..10 {
+            assert!(conn.request("hzoom out").contains(r#""ok":true"#));
+        }
+        // Ten rungs down from 2 ms/div is 125 S/s = 4 s/div on a 5000-point
+        // record: seconds per division, the case that used to be
+        // unreachable. The zoom window never moved — this is the
+        // acquisition control, not a display zoom.
+        let cfg = conn.wait_config(r#""sample_rate":125,"#);
+        assert!(cfg.contains(r#""hview":[0.5,1]"#), "{cfg}");
+        // Horizontal position is the trigger delay while unzoomed.
+        assert!(conn.request("trigpos 0.5").contains(r#""ok":true"#));
+        conn.wait_config(r#""trigger_position":0.5"#);
+        assert!(conn.request("pan right").contains(r#""ok":true"#));
+        let cfg = conn.wait_config(r#""trigger_position":0.6"#);
+        assert!(cfg.contains(r#""hview":[0.5,1]"#), "{cfg}");
+        // Back to a sane rate, then switch the zoom window on: the same
+        // gesture now scales the window and leaves the rate alone.
+        assert!(conn.request("timebase 0.002").contains(r#""ok":true"#));
+        conn.wait_config(r#""sample_rate":250000"#);
+        assert!(conn.request("zoomwin on").contains(r#""ok":true"#));
+        conn.wait_config(r#""hview":[0.5,0.5]"#);
+        assert!(conn.request("hzoom in").contains(r#""ok":true"#));
+        let cfg = conn.wait_config(r#""hview":[0.5,0.25]"#);
+        assert!(cfg.contains(r#""sample_rate":250000"#), "{cfg}");
+        assert!(conn.request("zoomwin off").contains(r#""ok":true"#));
+        conn.wait_config(r#""hview":[0.5,1]"#);
+
         // hview lands in the config JSON (window [0, 0.5]).
         assert!(conn.request("hview 0.25 0.5").contains(r#""ok":true"#));
         conn.wait_config(r#""hview":[0.25,0.5]"#);
-        // hzoom halves the span about record fraction 0.5 — the window's
-        // right edge — which stays pinned: [0.25, 0.5].
+        // hzoom halves the span about the window's centre, which stays put
+        // (the manuals' rescaling reference point).
         assert!(conn.request("hzoom in").contains(r#""ok":true"#));
-        conn.wait_config(r#""hview":[0.375,0.25]"#);
+        conn.wait_config(r#""hview":[0.25,0.25]"#);
         // pan left/right slides the window a tenth of its span (±0.025).
         assert!(conn.request("pan left").contains(r#""ok":true"#));
-        conn.wait_config(r#""hview":[0.4,0.25]"#);
+        conn.wait_config(r#""hview":[0.275,0.25]"#);
         assert!(conn.request("pan right").contains(r#""ok":true"#));
-        conn.wait_config(r#""hview":[0.375,0.25]"#);
+        conn.wait_config(r#""hview":[0.25,0.25]"#);
 
         // Pixel level: pan up shifts the DC trace, home restores it.
         let base = dir.join("base.ppm");

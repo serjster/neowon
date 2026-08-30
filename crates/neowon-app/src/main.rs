@@ -6,7 +6,7 @@
 //! Keys:
 //!   Space       run/stop
 //!   Up/Down     CH1 volts/div
-//!   Left/Right  sample rate
+//!   Left/Right  time base (s/div), the horizontal scale control
 //!   ,/.         trigger level down/up
 //!   S           toggle trigger slope
 //!   N           cycle sweep (auto -> normal -> single)
@@ -19,9 +19,10 @@
 //!   X           cycle trace mode (vectors -> dots -> XY)
 //!   H           home — default zoom + centre position
 //!
-//! Pointer on the plot: scroll = volts/div, shift+scroll = sample rate,
-//! 2-D wheel x = horizontal pan, drag = pan (offset + trigger position),
-//! marker drags = level/offset/position (ui/touch.rs).
+//! Pointer on the plot: scroll = volts/div, shift+scroll = horizontal zoom
+//! (time base, or the zoom window when zoom is on), drag/2-D wheel x =
+//! horizontal position (trigger delay, or the zoom window), marker drags =
+//! level/offset/position (ui/touch.rs).
 
 mod control;
 mod cursors;
@@ -159,6 +160,8 @@ fn main() {
             p
         })
         .init_resource::<Layout>()
+        .init_resource::<ui::layout::UiRects>()
+        .init_resource::<ui::UiScale>()
         .init_resource::<ui::touch::TouchState>()
         .init_resource::<ui::MenuState>()
         .init_resource::<derived::MathState>()
@@ -184,7 +187,15 @@ fn main() {
                 egui.auto_create_primary_context = false;
             },
         )
-        .add_systems(Startup, (setup, viz::waterfall::setup, viz::three_d::setup))
+        .add_systems(
+            Startup,
+            (
+                setup,
+                viz::waterfall::setup,
+                viz::three_d::setup,
+                fit_display,
+            ),
+        )
         .add_systems(EguiPrimaryContextPass, ui::panel)
         .add_systems(
             Update,
@@ -214,6 +225,7 @@ fn main() {
                     draw_pf_mask,
                     draw_guides,
                     draw_markers,
+                    draw_zoom_band,
                     draw_clip_warnings,
                     cursors::draw_cursors,
                     update_title,
@@ -260,15 +272,60 @@ fn setup(
 #[derive(Component)]
 pub struct PlotSprite;
 
+/// Fit the app to the display it opened on. A 4K panel the OS does not scale
+/// leaves 12 pt text 12 physical pixels tall, so the UI scale comes from the
+/// monitor unless `NEOWON_UI_SCALE` overrides it; the window grows to match
+/// so the chrome still leaves a usable grid. `NEOWON_WINDOW` pins the size
+/// for layout tests and wins over the fit.
+fn fit_display(
+    monitors: Query<&bevy::window::Monitor>,
+    mut windows: Query<&mut Window>,
+    mut scale: ResMut<ui::UiScale>,
+) {
+    let env_scale = std::env::var("NEOWON_UI_SCALE")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok());
+    let Ok(mut window) = windows.single_mut() else {
+        if let Some(s) = env_scale {
+            scale.0 = s.clamp(ui::layout::UI_SCALE_RANGE.0, ui::layout::UI_SCALE_RANGE.1);
+        }
+        return;
+    };
+    let monitor = monitors.iter().next();
+    let auto = monitor
+        .map(|m| ui::layout::auto_scale(m.physical_height, m.scale_factor as f32))
+        .unwrap_or(1.0);
+    scale.0 = env_scale
+        .unwrap_or(auto)
+        .clamp(ui::layout::UI_SCALE_RANGE.0, ui::layout::UI_SCALE_RANGE.1);
+
+    window.resize_constraints.min_width = ui::layout::MIN_W * scale.0;
+    window.resize_constraints.min_height = ui::layout::MIN_H * scale.0;
+    if std::env::var_os("NEOWON_WINDOW").is_some() {
+        return;
+    }
+    if let Some(m) = monitor {
+        // ~70% of the monitor, never below the scaled minimum.
+        let (mw, mh) = (
+            m.physical_width as f32 / m.scale_factor as f32,
+            m.physical_height as f32 / m.scale_factor as f32,
+        );
+        let w = (mw * 0.7).max(ui::layout::MIN_W * scale.0).min(mw - 40.0);
+        let h = (mh * 0.7).max(ui::layout::MIN_H * scale.0).min(mh - 80.0);
+        window.resolution.set(w, h);
+    }
+}
+
 /// Recompute the layout when the window size changes and keep the plot
 /// sprite stretched over the plot region.
 fn sync_layout(
     windows: Query<&Window>,
+    scale: Res<ui::UiScale>,
     mut layout: ResMut<Layout>,
     mut sprite: Query<(&mut Sprite, &mut Transform), With<PlotSprite>>,
 ) {
     let Ok(window) = windows.single() else { return };
-    let next = Layout::compute(window.width(), window.height());
+    let next = Layout::compute(window.width(), window.height(), scale.0);
     if *layout != next {
         *layout = next;
     }
@@ -390,11 +447,6 @@ fn input(
         .as_ref()
         .map(|c| c.volts_div.clone())
         .unwrap_or_else(|| vec![0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0]);
-    let rate_ladder = link
-        .caps
-        .as_ref()
-        .map(|c| c.sample_rates.clone())
-        .unwrap_or_else(|| vec![2.5e3, 25e3, 250e3, 2.5e6, 25e6, 100e6]);
 
     if keys.just_pressed(KeyCode::Space) {
         link.config.running = !link.config.running;
@@ -410,15 +462,13 @@ fn input(
         link.config.channels[0].volts_div = v;
         link.dirty = true;
     }
+    // Horizontal scale, the bench-scope way: right = faster s/div (zoom in),
+    // left = slower s/div, all the way down the rate ladder.
     if keys.just_pressed(KeyCode::ArrowRight) {
-        link.config.sample_rate =
-            crate::view::step_ladder(&rate_ladder, link.config.sample_rate, true);
-        link.dirty = true;
+        crate::view::timebase_step(&mut link, false);
     }
     if keys.just_pressed(KeyCode::ArrowLeft) {
-        link.config.sample_rate =
-            crate::view::step_ladder(&rate_ladder, link.config.sample_rate, false);
-        link.dirty = true;
+        crate::view::timebase_step(&mut link, true);
     }
     let trig_step = link.config.channels[0].volts_div; // one div per press
     if keys.just_pressed(KeyCode::Period) {
@@ -700,6 +750,38 @@ fn draw_markers(
                 col,
             );
         }
+    }
+}
+
+/// Zoom-window band along the plot's top edge: a full-width track for the
+/// record with the magnified slice highlighted. Scopes show the zoom region
+/// as a box on the main sweep; the app has one grid, so the band is the
+/// compact equivalent — without it a zoomed display gives no clue which part
+/// of the record is on screen.
+fn draw_zoom_band(phosphor: Res<Phosphor>, layout: Res<Layout>, mut gizmos: Gizmos) {
+    if !view::zoom_active(&phosphor) {
+        return;
+    }
+    let (w, h) = (layout.plot.width(), layout.plot.height());
+    let o = layout.plot_center;
+    let (left, top) = (o.x - w / 2.0, o.y + h / 2.0);
+    let y = top + 5.0;
+    gizmos.line_2d(
+        Vec2::new(left, y),
+        Vec2::new(left + w, y),
+        Color::srgba(0.5, 0.5, 0.55, 0.5),
+    );
+    let (center, span) = phosphor.hview;
+    let (x0, x1) = (
+        left + (center - span / 2.0) as f32 * w,
+        left + (center + span / 2.0) as f32 * w,
+    );
+    let col = Color::srgb(0.3, 0.9, 0.6);
+    for dy in [-1.0f32, 0.0, 1.0] {
+        gizmos.line_2d(Vec2::new(x0, y + dy), Vec2::new(x1, y + dy), col);
+    }
+    for x in [x0, x1] {
+        gizmos.line_2d(Vec2::new(x, y - 4.0), Vec2::new(x, y + 4.0), col);
     }
 }
 

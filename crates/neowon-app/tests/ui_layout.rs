@@ -62,6 +62,11 @@ fn run_layout_script(name: &str, script: &str) -> Vec<PathBuf> {
     let status = Command::new(env!("CARGO_BIN_EXE_neowon-app"))
         .arg("--sim")
         .env("NEOWON_SCRIPT", &script_path)
+        // Geometry here is asserted in unscaled pixels; pin the UI scale so
+        // the hi-DPI auto-fit does not rewrite the numbers under the test
+        // (ui_geometry.rs is the suite that sweeps scales).
+        .env("NEOWON_UI_SCALE", "1.0")
+        .env("NEOWON_WINDOW", "1520x820")
         .env_remove("NEOWON_SHOT")
         .status()
         .expect("launch app");

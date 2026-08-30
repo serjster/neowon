@@ -144,11 +144,14 @@ pub fn plot_pointer(
             // Scroll up = zoom in (finer scale).
             let inward = steps[0] > 0.0;
             if keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) {
+                // Horizontal zoom: the time base, or the zoom window while
+                // zoom is on (view::hzoom owns that split).
                 let anchor = ((world.x - (layout.plot_center.x - layout.plot.width() / 2.0))
                     / layout.plot.width())
                 .clamp(0.0, 1.0);
                 let (c, s) = phosphor.hview;
-                view::hview_zoom(&mut phosphor, (c - s / 2.0) + anchor as f64 * s, inward);
+                let anchor = (c - s / 2.0) + anchor as f64 * s;
+                view::hzoom(&mut link, &mut phosphor, anchor, inward);
             } else {
                 let sel = link.selected.min(1);
                 view::zoom_channel(&mut link, sel, inward);
@@ -156,9 +159,8 @@ pub fn plot_pointer(
         }
         if steps[1].abs() >= 0.5 {
             // Content follows the finger: swipe right slides the waveform
-            // right (the window moves earlier in the record).
-            let d = -(steps[1] as f64) * 0.02 * phosphor.hview.1;
-            view::hview_pan(&mut phosphor, d);
+            // right (later data leaves the screen).
+            view::hposition(&mut link, &mut phosphor, steps[1] as f64 * 0.02);
         }
     } else {
         wheel.clear();
@@ -220,11 +222,10 @@ pub fn plot_pointer(
             let off = (link.config.channels[sel].offset + dfrac).clamp(-0.5, 0.5);
             link.config.channels[sel].offset = off;
             link.dirty = true;
-            // Horizontal: pan the zoom window (instant; the trigger-position
-            // marker stays the acquisition control). Waveform follows the
-            // pointer, so dragging right moves the window earlier.
-            let d = -(delta.x / layout.plot.width()) as f64 * phosphor.hview.1;
-            view::hview_pan(&mut phosphor, d);
+            // Horizontal: the position control — trigger delay, or the zoom
+            // window while zoomed. The waveform follows the pointer.
+            let d = (delta.x / layout.plot.width()) as f64;
+            view::hposition(&mut link, &mut phosphor, d);
         }
     }
 }
@@ -234,7 +235,7 @@ mod tests {
     use super::*;
 
     fn layout() -> Layout {
-        Layout::compute(1520.0, 820.0)
+        Layout::compute(1520.0, 820.0, 1.0)
     }
 
     #[test]
