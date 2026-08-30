@@ -1,4 +1,5 @@
 /target
+/.idea/
 *.csv
 *.cap
 /assets/demo/*.wav
