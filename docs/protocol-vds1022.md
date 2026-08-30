@@ -94,6 +94,19 @@ macOS, nusb). The full register map lives in
   right after a `smoke` run, then passed standalone repeatedly). Allow ~4 s
   for the first gated capture after reconnect.
 
+## Verified 2026-08-30 (Linux host bring-up)
+
+- **Permissions**: `/dev/bus/usb/<bus>/<dev>` is root-owned `0660` by
+  default; without a udev rule granting access, `open()` fails with
+  `Permission denied` and the app retries silently (error only in the window
+  title). Same symptom class as "nothing happens".
+- **Kernel driver squat**: mainline Linux matches VID `0x5345` / PID `0x1234`
+  in `usb_serial_simple`, which binds interface 0 and makes nusb's
+  `claim_interface` fail with `EBUSY` ("interface is busy (errno 16)").
+  The scope is not a serial device; the driver must be unbound. Fix in the
+  repo README (udev rule with a `RUN+=` unbind on plug-in). Neither problem
+  exists on macOS.
+
 ## Still to verify
 
 - FPGA upload handshake on a cold (power-cycled) device.

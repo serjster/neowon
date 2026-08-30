@@ -75,9 +75,19 @@ cargo build --release
 
 - **macOS**: works out of the box (pure-Rust USB via `nusb`; no driver).
 - **Linux**: install Bevy's system deps (`libasound2-dev libudev-dev` on
-  Debian/Ubuntu) and give yourself USB access:
-  `SUBSYSTEMS=="usb", ATTRS{idVendor}=="5345", ATTRS{idProduct}=="1234", MODE="0666"`
-  in a udev rule.
+  Debian/Ubuntu) and install the shipped udev rules:
+
+  ```sh
+  sudo cp scripts/99-vds1022.rules /etc/udev/rules.d/
+  sudo udevadm control --reload   # then replug the scope
+  ```
+
+  They grant USB access *and* stop the kernel's `usb_serial_simple` driver
+  from claiming the scope's interface (which otherwise makes
+  `claim_interface` fail with `EBUSY`). If a session is already wedged:
+  `echo <bus>-<port>:1.0 | sudo tee
+  /sys/bus/usb/drivers/usb_serial_simple/unbind` (see
+  `docs/protocol-vds1022.md`).
 - **Windows**: untested; contributions welcome.
 
 ### FPGA bitstreams (hardware only)

@@ -1,0 +1,18 @@
+# udev rules for the OWON VDS1022I (VID 5345 / PID 1234).
+#
+# Install:
+#   sudo cp scripts/99-vds1022.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload
+#   ... then replug the scope (or re-trigger: sudo udevadm trigger)
+#
+# Line 1 grants non-root users read/write access to the device node —
+# without it, opening the scope fails with "Permission denied".
+# Line 2 unbinds the kernel's usb_serial_simple driver, which matches the
+# scope's VID/PID in mainline Linux and claims interface 0, making the
+# claim fail with EBUSY ("interface is busy (errno 16)"). The scope is not
+# a serial device; neowon speaks its raw bulk protocol.
+# Background: docs/protocol-vds1022.md, "Verified 2026-08-30 (Linux host
+# bring-up)".
+
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="5345", ATTRS{idProduct}=="1234", MODE="0666"
+ACTION=="add", SUBSYSTEM=="usb", DRIVER=="usb_serial_simple", ATTRS{idVendor}=="5345", RUN+="/bin/sh -c 'echo %k > /sys/bus/usb/drivers/usb_serial_simple/unbind'"
