@@ -215,15 +215,47 @@ claude mcp add neowon -- ./target/release/neowon-mcp --connect 127.0.0.1:7777
 
 ## Testing
 
+Everything below the first line needs a GPU and a window, so those suites are
+`#[ignore]`d and opted into explicitly. All of them run against the simulator;
+none touch the instrument.
+
 ```sh
 cargo test                                        # unit + virtual testbench
-cargo test -p neowon-app --test ui_pixels  -- --ignored  # render geometry (opens a window)
-cargo test -p neowon-app --test ui_layout  -- --ignored  # layout invariants
-cargo test -p neowon-app --test capture_flows  -- --ignored  # capture/session flows
-cargo test -p neowon-mcp --test mcp_e2e       -- --ignored  # MCP end-to-end
-cargo run -p neowon-vds1022 --example trigtest    # trigger matrix (needs hardware)
 cargo test -p neowon-app --test shaders           # naga-validate all WGSL
 ```
+
+The rest, each with `-p neowon-app -- --ignored`:
+
+| Suite | What it would catch |
+| --- | --- |
+| `accuracy` | scaling bugs, via invariance: the same signal measured through different time bases and volts/div must give the same answer. A frequency that moves when you change the time base looks perfectly fine on screen, which is why it needs a test rather than an eye |
+| `ui_geometry` | chrome overlapping the waveform grid, swept over a window-size × UI-scale matrix from 1520×820 to 2688×1512 at scales 1.0–2.0, with each dock section opened in turn |
+| `ui_layout` | layout invariants (region ordering, no zero-size regions) |
+| `ui_pixels` | the render path: what actually reaches the framebuffer |
+| `effects_pixels` | user display-effect shaders still composite correctly |
+| `view_controls` | zoom, pan and time base behaving as the horizontal model says |
+| `deep_view` | the timeline's whole reason to exist: spanning more time than one record holds *without* dropping the sample rate, plus gap accounting and follow-mode stability |
+| `decode_flow` | protocol decoders end to end, from stimulus to decoded bytes |
+| `capture_flows` | capture save/reload and session round trips |
+
+```sh
+cargo test -p neowon-mcp --test mcp_e2e -- --ignored   # MCP end-to-end
+cargo run -p neowon-vds1022 --example trigtest         # trigger matrix (NEEDS HARDWARE)
+```
+
+## Releasing
+
+CI builds and tests every push. Publishing is deliberate: push a tag and the
+release workflow builds Linux, macOS (Intel and Apple Silicon) and Windows,
+packages each with the shaders, bitstreams, licences and udev rule, and
+attaches them to a GitHub release.
+
+```sh
+git tag -a v0.1.0 -m "v0.1.0" && git push origin v0.1.0
+```
+
+Run the same workflow from the Actions tab (`workflow_dispatch`) to build and
+inspect the archives without publishing anything.
 
 ## Repository layout
 

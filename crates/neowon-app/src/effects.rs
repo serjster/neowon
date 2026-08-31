@@ -54,23 +54,49 @@ pub struct Effects {
     pub epoch: u32,
 }
 
-/// Shader search path: `$NEOWON_SHADER_DIR`, else `assets/shaders/user`.
+/// Shader search path: `$NEOWON_SHADER_DIR`, else `assets/shaders/user`
+/// relative to the working directory, else beside the executable.
+///
+/// The last step is what makes a released build work: the archive puts the
+/// shaders next to the binary, and a binary launched from a file manager or by
+/// absolute path has a working directory somewhere else entirely. Without it
+/// the effect list is silently empty — `scan` cannot tell "no shaders here"
+/// from "wrong directory".
 pub fn shader_dir() -> std::path::PathBuf {
-    std::env::var_os("NEOWON_SHADER_DIR")
-        .map(Into::into)
-        .unwrap_or_else(|| "assets/shaders/user".into())
+    if let Some(dir) = std::env::var_os("NEOWON_SHADER_DIR") {
+        return dir.into();
+    }
+    let relative = std::path::PathBuf::from("assets/shaders/user");
+    if relative.is_dir() {
+        return relative;
+    }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let beside = dir.join("assets/shaders/user");
+        if beside.is_dir() {
+            return beside;
+        }
+    }
+    relative
 }
 
 /// Scan the shader dir for `*.wgsl` files.
 pub fn scan(fx: &mut Effects) {
     fx.available.clear();
-    if let Ok(entries) = std::fs::read_dir(shader_dir()) {
-        for e in entries.flatten() {
-            let p = e.path();
-            if p.extension().is_some_and(|x| x == "wgsl")
-                && let Some(stem) = p.file_stem().and_then(|s| s.to_str())
-            {
-                fx.available.push(stem.to_string());
+    let dir = shader_dir();
+    match std::fs::read_dir(&dir) {
+        // An empty effect list otherwise looks like a deliberate build rather
+        // than a directory we failed to find.
+        Err(e) => warn_once!("effects: no shaders in {}: {e}", dir.display()),
+        Ok(entries) => {
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.extension().is_some_and(|x| x == "wgsl")
+                    && let Some(stem) = p.file_stem().and_then(|s| s.to_str())
+                {
+                    fx.available.push(stem.to_string());
+                }
             }
         }
     }
