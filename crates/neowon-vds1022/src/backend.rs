@@ -382,10 +382,24 @@ pub fn default_fpga_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("NEOWON_FPGA_DIR") {
         return PathBuf::from(dir);
     }
+    // Working directory first (a source checkout, or a package the user has
+    // cd'd into), then beside the executable — a released build is usually
+    // launched from somewhere else entirely, and without the bitstream the
+    // instrument will not come up after a power cycle.
     for candidate in ["fwr", "3rdparty/fw", "../OWON-VDS1022/fwr"] {
         let p = PathBuf::from(candidate);
         if p.is_dir() {
             return p;
+        }
+    }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        for candidate in ["fwr", "3rdparty/fw"] {
+            let p = dir.join(candidate);
+            if p.is_dir() {
+                return p;
+            }
         }
     }
     PathBuf::from("fwr")

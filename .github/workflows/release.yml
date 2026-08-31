@@ -1,0 +1,132 @@
+name: Release
+
+# Cutting a release is a deliberate act: push a tag like v0.2.0, or run this
+# by hand from the Actions tab to produce artifacts without publishing.
+on:
+  push:
+    tags: ["v*"]
+  # Manual runs build and upload artifacts but publish nothing, so the
+  # packaging can be checked without creating anything public.
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            archive: tar.gz
+          - os: macos-13
+            target: x86_64-apple-darwin
+            archive: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      # Bevy needs ALSA and udev headers; cpal (the audio backend) needs ALSA
+      # too, so this is required for the release build and not only for tests.
+      - name: Bevy + audio system deps
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev pkg-config
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} -p neowon-app -p neowon-cli -p neowon-mcp
+
+      # What ships alongside the binaries, and why:
+      #   assets/shaders/user  the display-effect contract lives in these
+      #                        examples, and the app loads them from disk
+      #   fwr/                 the VDS1022 needs a bitstream uploaded on a
+      #                        cold start; without these it will not run
+      #                        after a power cycle
+      #   scripts/99-vds1022.rules  Linux USB permissions; the device is
+      #                        unreachable as a normal user without it
+      - name: Stage
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Note: a bare `[ cond ] && cmd` would abort the step under `set -e`
+          # whenever the condition is false, so these are real ifs.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            name="neowon-dev-${{ matrix.target }}"
+          else
+            name="neowon-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          fi
+          ext=""
+          if [ "${{ runner.os }}" = "Windows" ]; then ext=".exe"; fi
+          mkdir -p "dist/$name/assets/shaders"
+          for bin in neowon-app neowon neowon-mcp; do
+            cp "target/${{ matrix.target }}/release/${bin}${ext}" "dist/$name/"
+          done
+          cp -r assets/shaders/user "dist/$name/assets/shaders/user"
+          # Named `fwr` because that is the first directory the driver looks in,
+          # both beside the binary and in the working directory.
+          cp -r 3rdparty/fw "dist/$name/fwr"
+          cp README.md LICENSE-MIT LICENSE-APACHE docs/ui-anatomy.md "dist/$name/"
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            cp scripts/99-vds1022.rules "dist/$name/"
+          fi
+          echo "STAGED=$name" >> "$GITHUB_ENV"
+
+      - name: Archive (tar.gz)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: tar -C dist -czf "dist/${STAGED}.tar.gz" "$STAGED"
+
+      - name: Archive (zip)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: Compress-Archive -Path "dist/$env:STAGED" -DestinationPath "dist/$env:STAGED.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.STAGED }}
+          path: dist/*.${{ matrix.archive }}
+          if-no-files-found: error
+
+  publish:
+    name: publish release
+    # Only a real tag publishes; a manual run stops at artifacts so it can be
+    # used to check the packaging without creating anything public.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ls -la dist
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            --verify-tag \
+            dist/*

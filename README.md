@@ -12,6 +12,20 @@ the roadmap.
 
 ![The neowon UI](docs/media/ui.png)
 
+## Install
+
+Prebuilt binaries for Linux, macOS (Intel and Apple Silicon) and Windows are
+attached to each [release](https://github.com/serjster/neowon/releases).
+Unpack and run `neowon-app`; the archive carries the display-effect shaders,
+the VDS1022 FPGA bitstreams (needed after the instrument is power-cycled) and,
+on Linux, the udev rule that makes the device reachable as a normal user:
+
+```sh
+sudo cp 99-vds1022.rules /etc/udev/rules.d/ && sudo udevadm control --reload
+```
+
+Or build from source with `cargo build --release`.
+
 ## Features
 
 - **GPU digital-phosphor display**: compute-shader rasterization with
