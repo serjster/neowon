@@ -10,9 +10,20 @@ use neowon_core::SharedFrame;
 
 use crate::Link;
 
-/// Scrollback bound: ~20 min at 36 records/s. On overflow the oldest
-/// chunk is dropped, terminal-scrollback style.
-const MAX_FRAMES: usize = 40_000;
+/// Default scrollback budget in bytes. The ring is bounded by memory
+/// rather than by a frame count so that history length does not silently
+/// shrink when the capture rate rises or records get longer; the Settings
+/// dialog exposes it.
+pub const DEFAULT_BUDGET: usize = 2 << 30;
+
+/// Samples per tile in the min/max summaries. 64 costs ~3 % of a record's
+/// memory and lets a wide timeline window be drawn from summaries instead
+/// of from every sample.
+const TILE: usize = 64;
+
+/// Per-frame min/max summaries, one entry per channel of the frame, kept in
+/// lockstep with `frames`.
+pub type FrameTiles = Vec<neowon_dsp::timeline::Tiles>;
 
 #[derive(Resource)]
 pub struct Recorder {
@@ -20,6 +31,12 @@ pub struct Recorder {
     /// button and the `record` script action toggle it).
     pub on: bool,
     pub frames: Vec<SharedFrame>,
+    /// `tiles[i]` summarizes `frames[i]`, same order and length.
+    pub tiles: Vec<FrameTiles>,
+    /// Memory budget in bytes; the oldest frames are dropped to stay under.
+    pub budget: usize,
+    /// Approximate bytes held by `frames`.
+    bytes: usize,
     last_seq: u64,
     /// Last export destination, for the UI.
     pub last_export: Option<String>,
@@ -34,6 +51,9 @@ impl Default for Recorder {
             // terminal, you can always scroll back until it overflows.
             on: true,
             frames: Vec::new(),
+            tiles: Vec::new(),
+            budget: DEFAULT_BUDGET,
+            bytes: 0,
             last_seq: 0,
             last_export: None,
             load_path: String::new(),
@@ -77,7 +97,58 @@ impl History {
 impl Recorder {
     pub fn clear(&mut self) {
         self.frames.clear();
+        self.tiles.clear();
+        self.bytes = 0;
         self.last_seq = 0;
+    }
+
+    /// Bytes the ring currently holds (samples only; the per-frame overhead
+    /// is small beside a 5000-sample record).
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    /// Seconds of wall time the ring spans, from the capture timestamps —
+    /// the honest answer, unlike summing record durations, which ignores the
+    /// dead time between them.
+    pub fn span_seconds(&self) -> f64 {
+        match (self.frames.first(), self.frames.last()) {
+            (Some(a), Some(b)) => (b.t_start() + b.duration() - a.t_start()).max(0.0),
+            _ => 0.0,
+        }
+    }
+
+    /// Store a frame, summarize it, and evict the oldest while over budget.
+    pub fn push(&mut self, frame: SharedFrame) {
+        let bytes = frame_bytes(&frame);
+        self.tiles.push(
+            frame
+                .channels
+                .iter()
+                .map(|c| neowon_dsp::timeline::summarize(&c.raw, TILE))
+                .collect(),
+        );
+        self.frames.push(frame);
+        self.bytes += bytes;
+        // Scrollback overflow: drop the oldest chunk, terminal style. In
+        // chunks rather than one at a time so the Vec shift is amortized.
+        while self.bytes > self.budget && self.frames.len() > 8 {
+            let drop = (self.frames.len() / 8).max(1);
+            self.bytes = self
+                .bytes
+                .saturating_sub(self.frames[..drop].iter().map(frame_bytes).sum::<usize>());
+            self.frames.drain(..drop);
+            self.tiles.drain(..drop);
+        }
+        debug_assert_eq!(self.frames.len(), self.tiles.len());
+    }
+
+    /// Index of the first frame that could overlap `t`. The ring is in
+    /// capture order, so this is a search rather than a scan — which is what
+    /// keeps a wide timeline window affordable on a large ring.
+    pub fn first_after(&self, t: f64) -> usize {
+        self.frames
+            .partition_point(|f| f.t_start() + f.duration() <= t)
     }
 
     /// Save the ring as an `.nwc` capture file.
@@ -97,7 +168,10 @@ impl Recorder {
             neowon_core::nwc::read(path)?
         };
         self.on = false;
-        self.frames = frames;
+        self.clear();
+        for f in frames {
+            self.push(f);
+        }
         self.last_seq = self.frames.last().map_or(0, |f| f.seq);
         Ok(self.frames.len())
     }
@@ -203,6 +277,11 @@ impl Recorder {
     }
 }
 
+/// Sample bytes a frame holds.
+fn frame_bytes(f: &SharedFrame) -> usize {
+    f.channels.iter().map(|c| c.raw.len()).sum()
+}
+
 /// Default export directory: `~/neowon-captures`.
 pub fn export_dir() -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
@@ -234,12 +313,8 @@ pub fn record_frames(link: Res<Link>, mut rec: ResMut<Recorder>, hist: Res<Histo
         if frame.seq == rec.last_seq {
             continue;
         }
-        if rec.frames.len() >= MAX_FRAMES {
-            // Scrollback overflow: drop the oldest chunk (amortized).
-            rec.frames.drain(..MAX_FRAMES / 8);
-        }
         rec.last_seq = frame.seq;
-        rec.frames.push(frame.clone());
+        rec.push(frame.clone());
     }
 }
 
@@ -281,5 +356,43 @@ mod tests {
         assert_eq!(frames.len(), 8);
         // i8 50 << 8 = 12800 -> 12800/32768
         assert!((frames[1].0 - 12800.0 / 32768.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn the_ring_is_bounded_by_memory_not_by_frame_count() {
+        let mut rec = Recorder {
+            // Room for about 20 frames of 1000 samples.
+            budget: 20_000,
+            ..Default::default()
+        };
+        for i in 0..200 {
+            rec.push(frame(i, &vec![0i8; 1000]));
+        }
+        assert!(
+            rec.bytes() <= rec.budget,
+            "held {} bytes over a {} budget",
+            rec.bytes(),
+            rec.budget
+        );
+        assert!(rec.frames.len() < 200, "nothing was evicted");
+        assert_eq!(rec.frames.len(), rec.tiles.len(), "tiles must stay in step");
+        // The newest frame is always the one kept.
+        assert_eq!(rec.frames.last().unwrap().seq, 199);
+    }
+
+    #[test]
+    fn frames_are_found_by_time_rather_than_scanned() {
+        let mut rec = Recorder::default();
+        // 100 frames of 1000 samples at 1 kS/s: one second each, contiguous.
+        for i in 0..100u64 {
+            let mut f = (*frame(i, &vec![0i8; 1000])).clone();
+            f.sample_rate = 1000.0;
+            f.t_capture = Some(i as f64);
+            rec.push(std::sync::Arc::new(f));
+        }
+        assert_eq!(rec.first_after(0.0), 0);
+        assert_eq!(rec.first_after(49.5), 49);
+        assert_eq!(rec.first_after(1e9), rec.frames.len());
+        assert!((rec.span_seconds() - 100.0).abs() < 1e-9);
     }
 }

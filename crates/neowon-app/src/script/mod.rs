@@ -67,6 +67,8 @@
 //! palette <phosphor|thermal|green>
 //! window <W>x<H>                        # resize (layout tests)
 //! uiscale <factor>                      # egui zoom factor (hi-DPI screens)
+//! scrollback <bytes>                    # capture history memory budget
+//! settings <on|off>                     # Settings window
 //! layout <path.json>                    # named-ROI map + open menu
 //! shot <path> [x y w h]                 # plot region; .png or .ppm
 //! quit
@@ -105,6 +107,7 @@ type ExtraState<'w> = (
     ResMut<'w, crate::autopeak::AutoPeak>,
     ResMut<'w, crate::deep::DeepView>,
     ResMut<'w, crate::decode::DecodeState>,
+    ResMut<'w, crate::ui::settings::Settings>,
 );
 
 #[derive(Debug, Clone)]
@@ -184,6 +187,10 @@ pub enum Action {
     PaletteSet(crate::gpu::Palette),
     WindowSize(f32, f32),
     UiScaleSet(f32),
+    /// Scrollback memory budget, bytes.
+    Scrollback(usize),
+    /// Show or hide the Settings window.
+    SettingsOpen(bool),
     Math(Option<MathOp>),
     Run(bool),
     Multi(MultiMode),
@@ -290,6 +297,7 @@ pub fn run_script(
     let autopeak = &mut ext.7;
     let deep = &mut ext.8;
     let dec = &mut ext.9;
+    let settings = &mut ext.10;
     let now = time.elapsed_secs_f64();
     while let Some((due, _)) = script.queue.front() {
         if *due > now {
@@ -470,6 +478,8 @@ pub fn run_script(
                     window.resolution.set(w, h);
                 }
             }
+            Action::Scrollback(b) => rec.budget = b.max(1 << 20),
+            Action::SettingsOpen(on) => settings.open = on,
             Action::UiScaleSet(s) => {
                 ui_scale.0 = s.clamp(
                     crate::ui::layout::UI_SCALE_RANGE.0,
@@ -630,7 +640,8 @@ pub fn run_script(
             }
             Action::SessionSave(path) => {
                 let text = crate::session::emit(
-                    autopeak, deep, &link, &phosphor, &math, &meas, &fft, &cur, &pf, wf, viz3d, fx,
+                    autopeak, deep, rec.budget, &link, &phosphor, &math, &meas, &fft, &cur, &pf,
+                    wf, viz3d, fx,
                 );
                 match std::fs::write(&path, text) {
                     Ok(()) => info!("script: saved session to {path}"),

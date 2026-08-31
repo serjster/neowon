@@ -151,19 +151,26 @@ pub fn build(
     let mut enabled = [false; CHANNELS];
     let mut gaps: Vec<u32> = Vec::new();
     let mut coverage = 0.0;
+    // Only the frames overlapping the window, found by search rather than
+    // by scanning the ring: with a large scrollback the scan alone cost more
+    // than the reduction did.
+    let from = rec.first_after(window.0);
     for ch in 0..CHANNELS {
         let mut segs: Vec<Segment<'_>> = Vec::new();
-        for f in &rec.frames {
+        for (i, f) in rec.frames.iter().enumerate().skip(from) {
             let t0 = f.t_start();
-            if t0 + f.duration() <= window.0 || t0 >= window.1 {
-                continue;
+            if t0 >= window.1 {
+                break;
             }
-            if let Some(cap) = f.channels.iter().find(|c| c.ch == ch) {
+            if let Some((k, cap)) = f.channels.iter().enumerate().find(|(_, c)| c.ch == ch) {
                 segs.push(Segment {
                     t0,
                     sample_rate: f.sample_rate,
                     raw: &cap.raw,
-                    tiles: None,
+                    // Summaries make a wide window affordable: a column
+                    // spanning thousands of samples reads a handful of
+                    // tiles instead of every one of them.
+                    tiles: rec.tiles.get(i).and_then(|t| t.get(k)),
                 });
             }
         }

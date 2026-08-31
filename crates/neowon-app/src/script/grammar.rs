@@ -270,6 +270,8 @@ pub(crate) fn parse(text: &str) -> Result<VecDeque<(f64, Action)>, String> {
                 _ => return Err(err("bad menu")),
             }),
             "uiscale" => Action::UiScaleSet(rest()?.parse().map_err(|_| err("bad scale"))?),
+            "scrollback" => Action::Scrollback(rest()?.parse().map_err(|_| err("bad bytes"))?),
+            "settings" => Action::SettingsOpen(rest()? == "on"),
             "layout" => Action::Layout(rest()?.to_string()),
             "shot" => {
                 let path = rest()?.to_string();

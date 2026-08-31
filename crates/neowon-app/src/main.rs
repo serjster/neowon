@@ -180,6 +180,7 @@ fn main() {
         .init_resource::<autopeak::AutoPeak>()
         .init_resource::<deep::DeepView>()
         .init_resource::<decode::DecodeState>()
+        .init_resource::<ui::settings::Settings>()
         .init_resource::<ui::touch::TouchState>()
         .init_resource::<ui::MenuState>()
         .init_resource::<derived::MathState>()

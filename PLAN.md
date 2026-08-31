@@ -228,8 +228,34 @@ Each phase ends with something runnable and testable — most against the real s
 > which is what actually validates the abstraction. `neowon_dsp::decode`
 > adds UART/I2C/SPI/1-Wire over a separate digitizing layer, refusing below
 > 12 samples per bit rather than guessing; the sim's `uart-hello` stimulus
-> makes it demonstrable without hardware. Next: Phase 8 (a settings surface
-> and app menu bar; decoder polish).
+> makes it demonstrable without hardware. **Phase 7.10 DONE**: the timeline now
+> holds real history. The rebuild was O(samples in window) and cost 27.7 ms
+> at a 100 s span against an 8.4 ms baseline — measured, and it would have
+> got worse with a bigger ring — so the recorder builds per-frame min/max
+> tile summaries and the window is found by binary search on capture time;
+> a 100 s span now costs nothing (8.3 ms). With that fixed the ring is
+> bounded by memory rather than a frame count, default 2 GB, settable from a
+> new Settings window behind a real application menu bar (File / View /
+> Settings), which also took the UI scale out of Utility. `get status`
+> reports the ring in bytes and seconds. Next: Phase 8 (decoder polish;
+> roll-mode direction).
+>
+> **Polish backlog** (small, known, not blocking):
+> - Decoders: no post-decoder layer, so a protocol that changes bit rate
+>   mid-capture (ISO 7816 smartcards) cannot be followed; the results table
+>   is not searchable or filterable; on-plot annotations are gizmos, so
+>   unlike the timeline's gap markers they do not appear in `shot` or the
+>   MCP screenshot and cannot be pixel-asserted.
+> - Audio backend unverified end to end: on macOS, querying an input device
+>   blocks until microphone access is decided and a CLI binary cannot raise
+>   the prompt, so `--audio` waits at "connecting…" until the terminal is
+>   granted microphone access.
+> - `Recorder::export_csv` writes `t = i / rate` across concatenated frames,
+>   which asserts a contiguity that `t_capture` now shows is false.
+> - `refs`/pass-fail overlays and the trigger-position marker are anchored in
+>   record-fraction space, so they are meaningless while the timeline is on
+>   and are simply left drawn.
+> - The sim's UART stimulus is capped at 8 bytes (`Component` is `Copy`).
 
 ### Phase 0 — Scaffold + simulated trace (½ day)
 

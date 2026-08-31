@@ -44,6 +44,7 @@ pub(crate) fn condition_words(c: PulseCondition) -> (&'static str, &'static str)
 pub fn emit(
     ap: &crate::autopeak::AutoPeak,
     deep: &crate::deep::DeepView,
+    budget: usize,
     link: &Link,
     phosphor: &Phosphor,
     math: &MathState,
@@ -207,6 +208,7 @@ pub fn emit(
     let _ = writeln!(w, "pfsrc {}", pf.source_slot);
     let _ = writeln!(w, "pftol {} {}", pf.h_div, pf.v_div);
 
+    let _ = writeln!(w, "scrollback {budget}");
     let _ = writeln!(w, "run {}", c.running as u8);
     s
 }

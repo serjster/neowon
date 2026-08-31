@@ -125,7 +125,6 @@ pub fn show(
     wf: &mut crate::viz::waterfall::WaterfallState,
     viz: &mut crate::viz::three_d::Viz3dState,
     fx: &crate::effects::Effects,
-    scale: &crate::ui::UiScale,
     ap: &mut crate::autopeak::AutoPeak,
     deep: &mut crate::deep::DeepView,
     dec: &mut crate::decode::DecodeState,
@@ -198,7 +197,7 @@ pub fn show(
                             dialog_record::show(ui, link, rec, hist, script)
                         });
                         section(ui, menus, Menu::Utility, |ui, _| {
-                            dialog_utility::show(ui, link, math, pf, fft, script, scale)
+                            dialog_utility::show(ui, link, math, pf, fft, script)
                         });
                     });
             });

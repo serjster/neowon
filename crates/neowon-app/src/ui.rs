@@ -20,6 +20,7 @@ pub mod knob;
 pub mod layout;
 pub mod menu;
 pub mod menubar;
+pub mod settings;
 pub mod touch;
 pub mod viz_windows;
 pub mod widgets;
@@ -47,6 +48,7 @@ type VizState<'w> = (
     ResMut<'w, crate::autopeak::AutoPeak>,
     ResMut<'w, crate::deep::DeepView>,
     ResMut<'w, crate::decode::DecodeState>,
+    ResMut<'w, settings::Settings>,
 );
 
 #[allow(clippy::too_many_arguments)]
@@ -81,7 +83,15 @@ pub fn panel(
 
     let rects = &mut viz.3;
     rects.begin();
-    let r = menubar::show(&ctx, &layout, &mut link, &mut menus, now, &viz.6);
+    let mut bar = menubar::BarState {
+        settings: &mut viz.8,
+        script: &mut script,
+        menus: &mut menus,
+        fft: &mut fft,
+        wf: &mut viz.0,
+        viz: &mut viz.1,
+    };
+    let r = menubar::show(&ctx, &layout, &mut link, now, &viz.6, &mut bar);
     rects.put("menu_bar", r);
     let (desc, overlay) =
         descriptors::show(&ctx, &layout, &mut link, &phosphor, &mut meas, &mut menus);
@@ -115,12 +125,12 @@ pub fn panel(
         &mut viz.0,
         &mut viz.1,
         &viz.2,
-        &viz.4,
         &mut viz.5,
         &mut viz.6,
         &mut viz.7,
     );
     rects.put("dialog", r);
+    settings::window(&ctx, &mut viz.8, &mut rec, &viz.4, &mut script);
     crate::refs::overlay(&ctx, &layout, &refs);
 
     if fft.enabled {

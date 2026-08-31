@@ -1,6 +1,7 @@
-//! Status bar: run state, timebase/rate, backend identity, frame counter.
-//! Function menus live in the always-visible dock (menu.rs), so this strip
-//! carries ambient status only.
+//! The application bar: drop-down menus on the left, ambient status on the
+//! right. Instrument *function* menus live in the always-visible dock
+//! (menu.rs) — these are the app-level ones: files, which views are showing,
+//! and settings that are not part of an instrument setup.
 
 use bevy_egui::egui;
 use neowon_core::Sweep;
@@ -30,9 +31,9 @@ pub fn show(
     ctx: &egui::Context,
     l: &Layout,
     link: &mut Link,
-    _menus: &mut MenuState,
     now: f64,
     deep: &crate::deep::DeepView,
+    bar: &mut BarState<'_>,
 ) -> egui::Rect {
     let rect = l.points(Roi::MenuBar.rect(l));
     let resp = egui::Area::new("menubar".into())
@@ -42,6 +43,8 @@ pub fn show(
             ui.set_height(rect.height());
             ui.horizontal_centered(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
+                menus(ui, bar);
+                ui.separator();
                 // Run state badge (manual 8.5: Run = yellow, Stop = red).
                 let (label, color) = run_state(link, now);
                 let (r, _) = ui.allocate_exact_size(egui::vec2(64.0, 22.0), egui::Sense::hover());
@@ -138,4 +141,85 @@ pub fn show(
             });
         });
     l.pixels(resp.response.rect)
+}
+
+/// What the menus need to reach. Bundled so the bar keeps one parameter.
+pub struct BarState<'a> {
+    pub settings: &'a mut crate::ui::settings::Settings,
+    pub script: &'a mut crate::script::Script,
+    pub menus: &'a mut MenuState,
+    pub fft: &'a mut crate::derived::FftState,
+    pub wf: &'a mut crate::viz::waterfall::WaterfallState,
+    pub viz: &'a mut crate::viz::three_d::Viz3dState,
+}
+
+/// The drop-downs. Every item routes through a script action where one
+/// exists, so the menu and a script take the same path.
+fn menus(ui: &mut egui::Ui, bar: &mut BarState<'_>) {
+    use crate::script::Action;
+    // The menu buttons go straight into the bar's existing row: an
+    // `egui::MenuBar` claims the full available width, which pushes the
+    // status readouts onto a second row that the fixed-height bar clips.
+    {
+        ui.menu_button("File", |ui| {
+            let dir = crate::record::export_dir();
+            if ui.button("Save setup…").clicked() {
+                let p = dir.join("setup.nws");
+                bar.script
+                    .inject(Action::SessionSave(p.display().to_string()));
+                ui.close();
+            }
+            if ui.button("Load setup").clicked() {
+                let p = dir.join("setup.nws");
+                bar.script
+                    .inject(Action::SessionLoad(p.display().to_string()));
+                ui.close();
+            }
+            ui.separator();
+            if ui.button("Save capture (.nwc)").clicked() {
+                let p = dir.join(format!("{}.nwc", crate::record::default_stem()));
+                bar.script.inject(Action::CapSave(p.display().to_string()));
+                ui.close();
+            }
+            if ui.button("Export WAV").clicked() {
+                let p = dir.join(format!("{}.wav", crate::record::default_stem()));
+                bar.script
+                    .inject(Action::Export("wav".into(), p.display().to_string()));
+                ui.close();
+            }
+            if ui.button("Export CSV").clicked() {
+                let p = dir.join(format!("{}.csv", crate::record::default_stem()));
+                bar.script
+                    .inject(Action::Export("csv".into(), p.display().to_string()));
+                ui.close();
+            }
+        });
+        ui.menu_button("View", |ui| {
+            ui.checkbox(&mut bar.fft.enabled, "Spectrum");
+            ui.checkbox(&mut bar.wf.on, "Waterfall");
+            let mut viz_on = bar.viz.mode != crate::viz::three_d::Viz3d::Off;
+            if ui.checkbox(&mut viz_on, "3D viewport").changed() {
+                bar.viz.mode = if viz_on {
+                    crate::viz::three_d::Viz3d::Terrain
+                } else {
+                    crate::viz::three_d::Viz3d::Off
+                };
+            }
+            ui.separator();
+            for (label, m) in [
+                ("Measurements", crate::ui::Menu::Measure),
+                ("Cursors", crate::ui::Menu::Cursor),
+                ("Decode", crate::ui::Menu::Decode),
+                ("Record / Export", crate::ui::Menu::Record),
+            ] {
+                let mut on = bar.menus.is_open(m);
+                if ui.checkbox(&mut on, label).changed() {
+                    bar.menus.toggle(m);
+                }
+            }
+        });
+        if ui.button("Settings").clicked() {
+            bar.settings.open = !bar.settings.open;
+        }
+    }
 }

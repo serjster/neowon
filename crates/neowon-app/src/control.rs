@@ -173,7 +173,8 @@ fn status_json(link: &Link, rec: &Recorder, hist: &History) -> String {
     format!(
         concat!(
             r#"{{"ok":true,"running":{},"frames_seen":{},"backend":"{}","serial":"{}","#,
-            r#""status":"{}","stimulus":"{}","recorder":{{"on":{},"frames":{}}},"dropped":{},"#,
+            r#""status":"{}","stimulus":"{}","#,
+            r#""recorder":{{"on":{},"frames":{},"bytes":{},"budget":{},"seconds":{}}},"dropped":{},"#,
             r#""history":{},"last_export":{}}}"#
         ),
         link.config.running,
@@ -184,6 +185,9 @@ fn status_json(link: &Link, rec: &Recorder, hist: &History) -> String {
         escape(&link.stimulus),
         rec.on,
         rec.frames.len(),
+        rec.bytes(),
+        rec.budget,
+        num(rec.span_seconds()),
         link.sup.dropped.load(std::sync::atomic::Ordering::Relaxed),
         hist.active.map_or("null".to_string(), |i| i.to_string()),
         rec.last_export
