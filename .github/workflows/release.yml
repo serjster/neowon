@@ -50,6 +50,12 @@ jobs:
         with:
           key: release-${{ matrix.target }}
 
+      # CI proper only watches branches, so a tag would otherwise publish
+      # without ever running the suite. Once, on Linux, is enough to gate it.
+      - name: Test
+        if: runner.os == 'Linux'
+        run: cargo test --workspace
+
       - name: Build
         run: cargo build --release --target ${{ matrix.target }} -p neowon-app -p neowon-cli -p neowon-mcp
 
@@ -125,8 +131,12 @@ jobs:
         run: |
           set -euo pipefail
           ls -la dist
-          gh release create "${GITHUB_REF_NAME}" \
-            --title "${GITHUB_REF_NAME}" \
-            --generate-notes \
-            --verify-tag \
-            dist/*
+          # Re-runnable: a second attempt after a partial failure should
+          # attach the artifacts, not fall over because the release exists.
+          if ! gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release create "${GITHUB_REF_NAME}" \
+              --title "${GITHUB_REF_NAME}" \
+              --generate-notes \
+              --verify-tag
+          fi
+          gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
