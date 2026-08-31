@@ -423,7 +423,11 @@ pub fn run_script(
             Action::Timebase(s_div) => crate::view::set_timebase(&mut link, s_div),
             Action::ZoomWin(on) => crate::view::set_zoom(&mut phosphor, on),
             Action::HView(center, span) => {
+                // Setting a window narrower than the record *is* zooming, so
+                // the mode follows the window rather than having to be
+                // switched on separately.
                 phosphor.hview = crate::view::hview_clamp(center, span);
+                phosphor.zoom_on = phosphor.hview.1 < 0.999;
             }
             Action::Pan(dir) => crate::view::pan(&mut link, &mut phosphor, dir),
             Action::Home => {

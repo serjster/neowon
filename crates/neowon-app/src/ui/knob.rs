@@ -1,6 +1,11 @@
-//! Rotary knob widget — the front-panel idiom for ladder/range controls and
-//! the mouse-scroll substitute: drag vertically to turn, scroll to step one
-//! rung, double-click to restore the default.
+//! Rotary knob widget — the front-panel idiom for ladder/range controls:
+//! drag vertically to turn, double-click to restore the default.
+//!
+//! Deliberately **not** scroll-driven. The dock these live in is a scrolling
+//! rail, and a widget that reacts to the wheel changes its value whenever
+//! the pointer happens to cross it while the rail is being scrolled — the
+//! scroll reaches both. egui's own sliders and drag-values take the same
+//! line.
 
 use bevy_egui::egui::{self, Color32, Sense, Stroke, Vec2};
 
@@ -51,16 +56,6 @@ pub fn knob(
         };
         *value += d as f64 * step;
     }
-    if resp.hovered() {
-        let scroll = ui.input(|i| i.smooth_scroll_delta.y);
-        if scroll.abs() > 1.0 {
-            let dir = if scroll > 0.0 { 1 } else { -1 };
-            *value = match ladder {
-                Some(l) => ladder_step(l, *value, dir > 0),
-                None => *value + dir as f64 * (hi - lo) / 20.0,
-            };
-        }
-    }
     *value = value.clamp(lo, hi);
     if let Some(l) = ladder {
         *value = nearest_rung(l, *value);
@@ -108,7 +103,7 @@ pub fn knob(
     );
 
     resp.on_hover_text(format!(
-        "{label}: {}\ndrag = turn · scroll = step · 2x-click = {default_text}",
+        "{label}: {}\ndrag = turn · 2x-click = {default_text}",
         fmt(*value),
         default_text = fmt(default)
     ));
@@ -126,24 +121,6 @@ fn nearest_rung(ladder: &[f64], v: f64) -> f64 {
     best
 }
 
-fn ladder_step(ladder: &[f64], current: f64, up: bool) -> f64 {
-    let mut idx = 0;
-    let mut best = f64::MAX;
-    for (i, &v) in ladder.iter().enumerate() {
-        let d = (v.ln() - current.max(1e-12).ln()).abs();
-        if d < best {
-            best = d;
-            idx = i;
-        }
-    }
-    let idx = if up {
-        (idx + 1).min(ladder.len() - 1)
-    } else {
-        idx.saturating_sub(1)
-    };
-    ladder[idx]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,9 +130,5 @@ mod tests {
         let l = [0.1, 0.2, 0.5, 1.0];
         assert_eq!(nearest_rung(&l, 0.24), 0.2);
         assert_eq!(nearest_rung(&l, 0.42), 0.5);
-        assert_eq!(ladder_step(&l, 0.2, true), 0.5);
-        assert_eq!(ladder_step(&l, 0.2, false), 0.1);
-        assert_eq!(ladder_step(&l, 1.0, true), 1.0);
-        assert_eq!(ladder_step(&l, 0.1, false), 0.1);
     }
 }

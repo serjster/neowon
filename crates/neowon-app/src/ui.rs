@@ -18,6 +18,7 @@ pub mod frontpanel;
 pub mod icons;
 pub mod knob;
 pub mod layout;
+pub mod measure_window;
 pub mod menu;
 pub mod menubar;
 pub mod settings;
@@ -133,6 +134,7 @@ pub fn panel(
     settings::window(&ctx, &mut viz.8, &mut rec, &viz.4, &mut script);
     crate::refs::overlay(&ctx, &layout, &refs);
 
+    measure_window::show(&ctx, &mut meas);
     if fft.enabled {
         spectrum_window(&ctx, &mut fft);
     }

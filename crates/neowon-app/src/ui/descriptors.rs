@@ -54,7 +54,7 @@ pub fn show(
                     // Click = select + configure; never toggles the channel.
                     if chip(ui, channel_color(ch), &text, c.enabled, selected).clicked() {
                         link.selected = ch;
-                        menus.open(Menu::Channel(ch));
+                        menus.reveal(Menu::Channel(ch));
                     }
                 }
 
@@ -63,7 +63,7 @@ pub fn show(
                     && meas.latest[2].is_some()
                     && chip(ui, MATH_COLOR, "F Math", true, false).clicked()
                 {
-                    menus.open(Menu::Math);
+                    menus.reveal(Menu::Math);
                 }
 
                 ui.add_space(8.0);
@@ -78,7 +78,7 @@ pub fn show(
                     record_len,
                 );
                 if chip(ui, egui::Color32::from_gray(150), &tb, true, false).clicked() {
-                    menus.open(Menu::Horizontal);
+                    menus.reveal(Menu::Horizontal);
                 }
 
                 // Trigger descriptor box (manual 7.5).
@@ -104,7 +104,7 @@ pub fn show(
                     sweep,
                 );
                 if chip(ui, egui::Color32::from_rgb(255, 128, 64), &tg, true, false).clicked() {
-                    menus.open(Menu::Trigger);
+                    menus.reveal(Menu::Trigger);
                 }
             });
         });

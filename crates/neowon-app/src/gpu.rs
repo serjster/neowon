@@ -94,6 +94,11 @@ pub struct Phosphor {
     /// Horizontal zoom window into the record: (center, span) as fractions
     /// of the record. (0.5, 1.0) shows the whole record — the home view.
     pub hview: (f64, f64),
+    /// Is the zoom (delayed-sweep) window engaged? Explicit rather than
+    /// derived from `hview.1 < 1.0`: a window widened to the whole record is
+    /// still zoom mode at 1x, and inferring it turned the mode off under the
+    /// user's cursor as they dragged the slider to its end.
+    pub zoom_on: bool,
     /// When present, the display shows this reduced timeline instead of a
     /// single record. Arc'd because the whole resource is cloned into the
     /// render world every frame.
@@ -128,6 +133,7 @@ impl Default for Phosphor {
             palette: Palette::Phosphor,
             new_frame: false,
             hview: (0.5, 1.0),
+            zoom_on: false,
             deep: None,
         }
     }

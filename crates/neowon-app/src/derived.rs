@@ -4,9 +4,8 @@
 use bevy::prelude::*;
 use neowon_backend::Command;
 use neowon_core::ChannelCapture;
-use neowon_dsp::{
-    MathOp, Measurements, Spectrum, StatTrack, Window, math_trace, measure, spectrum,
-};
+pub use neowon_dsp::Measurements;
+use neowon_dsp::{MathOp, Spectrum, StatTrack, Window, math_trace, measure, spectrum};
 
 use crate::Link;
 
@@ -119,14 +118,49 @@ pub struct MeasureState {
     pub bands: Vec<[Band; N_METRICS]>,
     /// Which slot the statistics columns show.
     pub stats_slot: usize,
+    /// Recent values per slot x metric, for the trend sparklines. A short
+    /// ring: enough to see drift and jitter, not a logging facility.
+    pub history: Vec<[std::collections::VecDeque<f64>; N_METRICS]>,
+    /// Show the measurements in their own window rather than in the dock
+    /// rail, where only a few fit at a time.
+    pub window: bool,
+    /// Show mean/min/max/sigma columns beside each value.
+    pub show_stats: bool,
+    /// Which slots the table shows.
+    pub show_slot: [bool; SLOTS],
     /// Draw measurement guide lines on the plot while the Measure dialog is
     /// open.
     pub guides: bool,
     pub sample_rate: f64,
 }
 
+/// Values kept per metric for the trend sparkline.
+pub const HISTORY_LEN: usize = 240;
+
 impl MeasureState {
+    /// Record this acquisition's values for the trend display.
+    pub fn push_history(&mut self, slot: usize, m: &Measurements) {
+        if self.history.len() != SLOTS {
+            self.history = (0..SLOTS)
+                .map(|_| std::array::from_fn(|_| Default::default()))
+                .collect();
+        }
+        for (i, (_, get, _)) in METRICS.iter().enumerate() {
+            let Some(v) = get(m) else { continue };
+            let ring = &mut self.history[slot][i];
+            if ring.len() >= HISTORY_LEN {
+                ring.pop_front();
+            }
+            ring.push_back(v);
+        }
+    }
+
     pub fn reset_stats(&mut self) {
+        for h in &mut self.history {
+            for r in h.iter_mut() {
+                r.clear();
+            }
+        }
         for s in &mut self.stats {
             for t in s.iter_mut() {
                 t.reset();
@@ -259,6 +293,7 @@ pub fn compute_derived(
         });
         meas.latest[slot] = m;
         if let Some(m) = m {
+            meas.push_history(slot, &m);
             for (i, (_, get, _)) in METRICS.iter().enumerate() {
                 if let Some(v) = get(&m) {
                     meas.stats[slot][i].update(v);

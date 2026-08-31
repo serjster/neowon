@@ -64,7 +64,11 @@ pub fn show(
                 // Horizontal (manual 8.3).
                 group(ui, "HORIZONTAL", |ui| {
                     if key(ui, "H", menus.is_open(Menu::Horizontal)) {
-                        menus.toggle(Menu::Horizontal);
+                        if menus.is_open(Menu::Horizontal) {
+                            menus.toggle(Menu::Horizontal);
+                        } else {
+                            menus.reveal(Menu::Horizontal);
+                        }
                     }
                     if key(ui, "Pos 50%", false) {
                         link.config.position = 0.5;
@@ -114,8 +118,12 @@ pub fn show(
                     }
                 });
 
-                // Common functions (manual 8.10, minus features we lack).
-                group(ui, "FUNCTION", |ui| {
+                // Shortcuts to dock sections. Unlike the CH keys above,
+                // which actually switch the channel on and off, these only
+                // open a panel — so they scroll it into view, otherwise a
+                // click on a section already open but scrolled away looks
+                // like nothing happened.
+                group(ui, "PANELS", |ui| {
                     for (label, m) in [
                         ("Measure", Menu::Measure),
                         ("Cursor", Menu::Cursor),
@@ -124,7 +132,11 @@ pub fn show(
                         ("Utility", Menu::Utility),
                     ] {
                         if key(ui, label, menus.is_open(m)) {
-                            menus.toggle(m);
+                            if menus.is_open(m) {
+                                menus.toggle(m);
+                            } else {
+                                menus.reveal(m);
+                            }
                         }
                     }
                     // Display key second function (manual 8.10): persistence.

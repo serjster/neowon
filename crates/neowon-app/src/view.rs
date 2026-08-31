@@ -114,13 +114,14 @@ pub fn is_roll(rate: f64) -> bool {
 /// Is the zoom (delayed-sweep) window active? Off = the window is the whole
 /// record, which is the plain main time base.
 pub fn zoom_active(p: &Phosphor) -> bool {
-    p.hview.1 < 0.999
+    p.zoom_on
 }
 
 /// Turn the zoom window on (half the record) or off (whole record).
 pub fn set_zoom(p: &mut Phosphor, on: bool) {
+    p.zoom_on = on;
     p.hview = if on {
-        hview_clamp(p.hview.0, 0.5)
+        hview_clamp(p.hview.0, p.hview.1.min(0.5))
     } else {
         (0.5, 1.0)
     };
@@ -427,7 +428,12 @@ mod tests {
         // While zoomed the time base is untouched — the window narrows.
         assert_eq!(link.config.sample_rate, rate);
         assert!((p.hview.1 - 0.25).abs() < 1e-9);
+        // Widening the window back to the whole record must not switch the
+        // mode off under the user — that unchecked the box mid-drag.
+        p.hview = hview_clamp(0.5, 1.0);
+        assert!(zoom_active(&p), "zoom at 1x is still zoom mode");
         set_zoom(&mut p, false);
+        assert!(!zoom_active(&p));
         assert_eq!(p.hview, (0.5, 1.0));
     }
 
@@ -494,8 +500,10 @@ mod tests {
     fn pan_moves_window_and_offset() {
         let mut link = link();
         // Zoomed to the middle half: pans slide the window, clamped inside.
+        // Zoom is an explicit mode, so the flag is part of that state.
         let mut p = Phosphor {
             hview: (0.5, 0.5),
+            zoom_on: true,
             ..Default::default()
         };
         pan(&mut link, &mut p, Pan::Left);

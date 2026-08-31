@@ -5,10 +5,18 @@ use bevy_egui::egui;
 use crate::derived::{Band, METRICS, MeasureState, SLOT_NAMES, SLOTS, fmt, fmt_opt_sticky};
 
 pub fn show(ui: &mut egui::Ui, meas: &mut MeasureState) {
-    // Two rows: the header line used to be one horizontal strip wider than
-    // the dock rail, which is exactly the kind of overflow the geometry test
-    // now fails on.
     ui.strong("Measurements");
+    if ui
+        .button("Open measurements window")
+        .on_hover_text(
+            "The full table with statistics and trends. Eighteen metrics do \
+             not fit in the rail, so they get a window that can be sized and \
+             placed.",
+        )
+        .clicked()
+    {
+        meas.window = true;
+    }
     ui.horizontal(|ui| {
         ui.label("stats");
         for (slot, name) in SLOT_NAMES.iter().enumerate() {

@@ -27,7 +27,16 @@ pub fn show(
         } else {
             crate::view::record_len(link) as f64 / meas.sample_rate.max(1.0)
         };
-        if cur.time_on {
+        if deep.on && deep.collapse && cur.time_on {
+            ui.label(
+                egui::RichText::new(
+                    "Δt hidden: the timeline's gaps are closed up, so screen \
+                     distance is not elapsed time",
+                )
+                .small()
+                .color(egui::Color32::from_rgb(230, 150, 90)),
+            );
+        } else if cur.time_on {
             let dt = ((cur.pos[1] - cur.pos[0]).abs() as f64) * record_s;
             let dt_s = fmt_si_sticky(dt, "s", &mut cur.bands[0]);
             let dt_hz = fmt_si_sticky(1.0 / dt.max(1e-12), "Hz", &mut cur.bands[1]);

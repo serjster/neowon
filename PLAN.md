@@ -256,6 +256,25 @@ Each phase ends with something runnable and testable — most against the real s
 >   record-fraction space, so they are meaningless while the timeline is on
 >   and are simply left drawn.
 > - The sim's UART stimulus is capped at 8 bytes (`Component` is `Copy`).
+>
+> **Phase 7.11 — UX pass** (from a round of hands-on feedback): zoom is an
+> explicit mode rather than inferred from the window width, which was
+> unchecking itself under the cursor; the timeline releases the zoom window
+> instead of drawing both axes at once; the timeline window snaps to a whole
+> column so the gap markers stop shimmering; the span ladder reaches into
+> microseconds so engaging the timeline at a fast time base no longer jumps
+> to a window thousands of times the record; "gaps" reports discontinuities
+> rather than blank columns (widening the window showed *more* dead time but
+> *fewer* blank columns, which read backwards); an optional gap-collapsing
+> mode lays segments end to end, with time readouts suppressed because the
+> axis is then not time; the phosphor decays once per record rather than per
+> rendered frame, which is what made the trace flash at slow time bases;
+> knobs ignore the wheel, since the dock is a scrolling rail; disclosure
+> carets are painted, not glyphs; front-panel and descriptor shortcuts now
+> reveal their section (open *and* scroll into view); and the measurements
+> moved into a sizeable window with optional statistics columns and a trend
+> sparkline per metric. Screen vocabulary is written down in
+> docs/ui-anatomy.md.
 
 ### Phase 0 — Scaffold + simulated trace (½ day)
 

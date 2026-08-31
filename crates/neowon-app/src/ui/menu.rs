@@ -62,12 +62,17 @@ impl Menu {
 #[derive(Resource)]
 pub struct MenuState {
     open: Vec<Menu>,
+    /// Section to scroll into view on the next frame. Opening a section from
+    /// the front panel or the View menu is useless if it lands off-screen in
+    /// the scrolled rail.
+    focus: Option<Menu>,
 }
 
 impl Default for MenuState {
     fn default() -> Self {
         Self {
             open: vec![Menu::Trigger],
+            focus: None,
         }
     }
 }
@@ -82,13 +87,29 @@ impl MenuState {
             self.open.remove(i);
         } else {
             self.open.push(m);
+            self.focus = Some(m);
         }
+    }
+
+    /// Ask for this section to be scrolled into view.
+    pub fn reveal(&mut self, m: Menu) {
+        self.open(m);
+        self.focus = Some(m);
     }
 
     /// Expand a section (keeping others as they are).
     pub fn open(&mut self, m: Menu) {
         if !self.is_open(m) {
             self.open.push(m);
+        }
+    }
+
+    fn take_focus(&mut self, m: Menu) -> bool {
+        if self.focus == Some(m) {
+            self.focus = None;
+            true
+        } else {
+            false
         }
     }
 
@@ -309,9 +330,11 @@ fn section(
     body: impl FnOnce(&mut egui::Ui, &mut MenuState),
 ) {
     let open = menus.is_open(m);
-    let arrow = if open { "▼" } else { "▶" };
+    // The caret is painted, not a glyph: egui's bundled fonts are subset per
+    // platform and the triangles rendered as tofu on some of them, the same
+    // failure the toolbar icons were replaced for.
     let header = egui::Button::new(
-        egui::RichText::new(format!("{arrow} {}", m.title()))
+        egui::RichText::new(format!("    {}", m.title()))
             .strong()
             .size(12.0),
     )
@@ -322,12 +345,43 @@ fn section(
     })
     .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(55)))
     .min_size(egui::vec2(ui.available_width(), 24.0));
-    if ui.add(header).clicked() {
+    let resp = ui.add(header);
+    caret(ui, resp.rect, open);
+    if resp.clicked() {
         menus.toggle(m);
+    }
+    // Opened from somewhere else (a front-panel key, the View menu): bring
+    // it into view, or the click looks like it did nothing.
+    if menus.take_focus(m) {
+        ui.scroll_to_rect(resp.rect, Some(egui::Align::TOP));
     }
     if menus.is_open(m) {
         ui.add_space(4.0);
         body(ui, menus);
         ui.add_space(6.0);
     }
+}
+
+/// Disclosure triangle, painted so it cannot fall back to tofu.
+fn caret(ui: &egui::Ui, rect: egui::Rect, open: bool) {
+    let c = egui::pos2(rect.left() + 12.0, rect.center().y);
+    let r = 4.0;
+    let pts = if open {
+        vec![
+            egui::pos2(c.x - r, c.y - r * 0.6),
+            egui::pos2(c.x + r, c.y - r * 0.6),
+            egui::pos2(c.x, c.y + r * 0.8),
+        ]
+    } else {
+        vec![
+            egui::pos2(c.x - r * 0.6, c.y - r),
+            egui::pos2(c.x - r * 0.6, c.y + r),
+            egui::pos2(c.x + r * 0.8, c.y),
+        ]
+    };
+    ui.painter().add(egui::Shape::convex_polygon(
+        pts,
+        egui::Color32::from_gray(190),
+        egui::Stroke::NONE,
+    ));
 }

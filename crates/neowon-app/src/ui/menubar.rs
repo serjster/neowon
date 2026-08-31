@@ -129,7 +129,12 @@ pub fn show(
                     // Fixed 8-char field: the counter widening a digit must
                     // not nudge the device label beside it.
                     let n = format!("#{}", link.frames_seen);
-                    ui.label(egui::RichText::new(format!("{n:>8}")).monospace());
+                    ui.label(egui::RichText::new(format!("{n:>8}")).monospace())
+                        .on_hover_text(
+                            "Acquisitions since the app started. It should climb \
+                             steadily; a stalled counter means the trigger is \
+                             starving or the instrument stopped.",
+                        );
                     if let Some(caps) = &link.caps {
                         ui.label(
                             egui::RichText::new(format!("{} · {}", caps.name, caps.serial)).small(),

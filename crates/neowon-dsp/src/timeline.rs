@@ -71,8 +71,20 @@ pub struct Reduced {
     pub pairs: Vec<i8>,
     /// Fraction of the window actually covered by acquisition, 0..=1.
     pub coverage: f64,
-    /// Columns with no data, ascending — the discontinuities to mark.
+    /// Columns with no data, ascending — the mask the renderer marks.
     pub gaps: Vec<u32>,
+}
+
+impl Reduced {
+    /// Number of *discontinuities* — runs of adjacent empty columns — not
+    /// the number of empty columns. The distinction matters when reporting:
+    /// widening the window puts more dead time on screen but gives each
+    /// interval fewer columns, so a column count falls while the number of
+    /// breaks in the signal rises.
+    pub fn discontinuities(&self) -> usize {
+        self.gaps.windows(2).filter(|w| w[1] != w[0] + 1).count()
+            + usize::from(!self.gaps.is_empty())
+    }
 }
 
 /// Measure of the union of `spans` intersected with `window`, as a fraction
@@ -108,6 +120,60 @@ pub fn coverage(spans: &mut [(f64, f64)], window: (f64, f64)) -> f64 {
         total += ce - cs;
     }
     (total / width).clamp(0.0, 1.0)
+}
+
+/// Reduce with the dead time removed: segments are laid end to end and each
+/// join is marked with a single column, so the signal gets the whole width.
+///
+/// The cost is that the x axis is no longer time — a Δt spanning a join is
+/// short by however long the instrument was not acquiring — so callers must
+/// label the axis as non-linear and suppress time readouts across joins.
+pub fn reduce_collapsed(segments: &[Segment<'_>], window: (f64, f64), columns: usize) -> Reduced {
+    let columns = columns.max(1);
+    let mut inside: Vec<&Segment<'_>> = segments
+        .iter()
+        .filter(|s| !s.raw.is_empty() && s.t_end() > window.0 && s.t0 < window.1)
+        .collect();
+    inside.sort_by(|a, b| a.t0.total_cmp(&b.t0));
+    if inside.is_empty() {
+        return Reduced {
+            columns,
+            pairs: vec![NO_DATA; columns * 2],
+            coverage: 0.0,
+            gaps: (0..columns as u32).collect(),
+        };
+    }
+    // One column per join, the rest shared out by each segment's duration.
+    let joins = inside.len().saturating_sub(1);
+    let usable = columns.saturating_sub(joins).max(1);
+    let total: f64 = inside
+        .iter()
+        .map(|s| s.t_end().min(window.1) - s.t0.max(window.0))
+        .sum();
+    let mut pairs = vec![NO_DATA; columns * 2];
+    let mut gaps = Vec::new();
+    let mut col = 0usize;
+    for (i, seg) in inside.iter().enumerate() {
+        let (a, b) = (seg.t0.max(window.0), seg.t_end().min(window.1));
+        let width = (((b - a) / total.max(1e-12)) * usable as f64).round() as usize;
+        let width = width.max(1).min(columns.saturating_sub(col));
+        if width == 0 {
+            break;
+        }
+        let one = reduce(std::slice::from_ref(*seg), (a, b), width);
+        pairs[col * 2..(col + width) * 2].copy_from_slice(&one.pairs);
+        col += width;
+        if i < joins && col < columns {
+            gaps.push(col as u32);
+            col += 1;
+        }
+    }
+    Reduced {
+        columns,
+        pairs,
+        coverage: 1.0,
+        gaps,
+    }
 }
 
 /// Reduce `segments` over `window` into `columns` min/max pairs.
@@ -332,5 +398,27 @@ mod tests {
         assert!((coverage(&mut spans, (0.0, 1.0)) - 0.85).abs() < 1e-9);
         let mut none: Vec<(f64, f64)> = vec![];
         assert_eq!(coverage(&mut none, (0.0, 1.0)), 0.0);
+    }
+
+    #[test]
+    fn discontinuities_count_breaks_not_blank_columns() {
+        let raw = [50i8; 100];
+        // Three separate 0.1 s records in a 1 s window: two dead intervals
+        // between them and one trailing, however many columns those happen
+        // to occupy.
+        let segs = [
+            seg(0.0, 1000.0, &raw),
+            seg(0.4, 1000.0, &raw),
+            seg(0.8, 1000.0, &raw),
+        ];
+        for cols in [200usize, 1000] {
+            let r = reduce(&segs, (0.0, 1.0), cols);
+            assert_eq!(
+                r.discontinuities(),
+                3,
+                "{cols} columns: {} gap columns",
+                r.gaps.len()
+            );
+        }
     }
 }

@@ -186,6 +186,7 @@ fn main() {
         .init_resource::<derived::MathState>()
         .insert_resource(derived::MeasureState {
             guides: true,
+            show_slot: [true; derived::SLOTS],
             ..Default::default()
         })
         .init_resource::<derived::FftState>()
@@ -418,6 +419,7 @@ fn update_phosphor(
     link: Res<Link>,
     math: Res<derived::MathState>,
     mut phosphor: ResMut<Phosphor>,
+    mut last_record_at: Local<f64>,
 ) {
     if let Some(frame) = &link.latest
         && phosphor.frame.as_ref().map(|f| f.seq) != Some(frame.seq)
@@ -433,9 +435,23 @@ fn update_phosphor(
         });
         phosphor.new_frame = true;
     }
-    phosphor.decay = match phosphor.persistence {
-        Persistence::Off | Persistence::Infinite => 1.0,
-        Persistence::Seconds(s) => (-time.delta_secs() / s.max(1e-3)).exp(),
+    // Persistence fades one record into the next, so it must advance once
+    // per record — not once per rendered frame. Decaying in wall time meant
+    // that at slow time bases, where a record can take a second to arrive,
+    // the trace faded to black between acquisitions and flashed once a
+    // second; it stopped below 200 ms/div only because the instrument rolls
+    // there and frames stream. Between records there is nothing new to
+    // blend, so the display holds.
+    let now = time.elapsed_secs_f64();
+    phosphor.decay = if phosphor.new_frame {
+        let dt = (now - *last_record_at).clamp(0.0, 10.0) as f32;
+        *last_record_at = now;
+        match phosphor.persistence {
+            Persistence::Off | Persistence::Infinite => 1.0,
+            Persistence::Seconds(s) => (-dt / s.max(1e-3)).exp(),
+        }
+    } else {
+        1.0
     };
 }
 

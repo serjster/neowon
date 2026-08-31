@@ -70,14 +70,23 @@ fn timeline_group(
             if button(ui, Icon::ZoomIn, "Shorter window", 24.0).clicked() {
                 crate::deep::span_step(deep, false);
             }
-            if button(ui, Icon::Recenter, "Follow live acquisition", 24.0).clicked() {
+            let anchored = deep.anchor.is_some();
+            if ui
+                .add_enabled(anchored, egui::Button::new("Jump to now"))
+                .on_hover_text(
+                    "Return the window to the newest data and keep it there \
+                     as acquisition continues. Dragging the plot scrolls back \
+                     through history and leaves it parked.",
+                )
+                .clicked()
+            {
                 deep.anchor = None;
             }
         });
         // What the instrument actually saw, and what it missed.
         ui.label(
             egui::RichText::new(format!(
-                "≈{:.0}% of the window not acquired · {} gaps · {} records",
+                "≈{:.0}% not acquired · {} breaks · {} records",
                 deep.lost() * 100.0,
                 deep.gap_count,
                 deep.records,
@@ -90,11 +99,25 @@ fn timeline_group(
                 egui::Color32::GRAY
             }),
         );
+        let mut collapse = deep.collapse;
+        if ui
+            .checkbox(&mut collapse, "Close up the gaps")
+            .on_hover_text(
+                "Lay the acquired stretches end to end and mark each join with \
+                 a single line, so the signal gets the full width. The x axis \
+                 is then not time — a measurement spanning a join is short by \
+                 however long the instrument was not acquiring — so time \
+                 readouts are hidden while this is on.",
+            )
+            .changed()
+        {
+            deep.collapse = collapse;
+        }
         ui.label(
             egui::RichText::new(if deep.anchor.is_some() {
-                "scrolled back — drag the plot, or press Follow"
+                "parked in history — drag the plot to scroll"
             } else {
-                "following live"
+                "following the newest data"
             })
             .weak()
             .small(),
