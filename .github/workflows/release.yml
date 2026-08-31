@@ -90,6 +90,24 @@ jobs:
           for bin in neowon-app neowon neowon-mcp; do
             cp "target/${{ matrix.target }}/release/${bin}${ext}" "dist/$name/"
           done
+          # Cargo does not strip by default, so neowon-app ships its whole
+          # symbol table — 194 MB on Linux, 146 MB on macOS. A release does not
+          # need it. This is done here rather than in [profile.release] so a
+          # local `cargo build --release` stays debuggable and profilable.
+          # MSVC keeps symbols in a separate .pdb, so there is nothing to strip.
+          case "${{ runner.os }}" in
+            Linux)  strip_cmd="strip" ;;
+            macOS)  strip_cmd="strip -x" ;;   # -x: local symbols only, the
+                                              # form Mach-O executables accept
+            *)      strip_cmd="" ;;
+          esac
+          if [ -n "$strip_cmd" ]; then
+            for bin in neowon-app neowon neowon-mcp; do
+              # A failure here should cost size, not the release.
+              $strip_cmd "dist/$name/$bin" \
+                || echo "::warning::strip failed for $bin; it ships unstripped"
+            done
+          fi
           cp -r assets/shaders/user "dist/$name/assets/shaders/user"
           # Named `fwr` because that is the first directory the driver looks in,
           # both beside the binary and in the working directory.
