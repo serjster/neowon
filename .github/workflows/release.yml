@@ -29,7 +29,13 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             archive: tar.gz
-          - os: macos-13
+          # Intel macOS is cross-compiled from the Apple Silicon runner rather
+          # than built natively on macos-13: that label is no longer served, so
+          # the job sat queued with no runner assigned and would have stalled
+          # the publish behind it. The macOS SDK is universal, so targeting
+          # x86_64 from arm64 is an ordinary cross-build; nothing here runs the
+          # binary, and the test gate is on Linux.
+          - os: macos-latest
             target: x86_64-apple-darwin
             archive: tar.gz
           - os: windows-latest
