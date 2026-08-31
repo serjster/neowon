@@ -42,6 +42,29 @@ pub const SPAN_LADDER: [f64; 25] = [
     2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0,
 ];
 
+/// How the window tracks live acquisition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Follow {
+    /// Fill a fixed page, then turn to the next one. The content stays put
+    /// while the page fills, so nothing moves horizontally — a strip chart.
+    #[default]
+    Page,
+    /// The window ends at the newest data and slides as it arrives. Shows
+    /// the most recent data at the right edge always, at the cost of the
+    /// whole trace marching left: at a short time base each record advances
+    /// it by many columns, and the records at the edges come and go.
+    Slide,
+}
+
+impl Follow {
+    pub fn name(self) -> &'static str {
+        match self {
+            Follow::Page => "page",
+            Follow::Slide => "slide",
+        }
+    }
+}
+
 #[derive(Resource)]
 pub struct DeepView {
     /// Is the display showing the timeline rather than a single record?
@@ -63,6 +86,8 @@ pub struct DeepView {
     /// instead of giving dead time the screen width its duration deserves.
     /// The x axis is then not time, so time readouts are suppressed.
     pub collapse: bool,
+    /// How the window tracks live acquisition.
+    pub follow: Follow,
     rev: u64,
 }
 
@@ -76,6 +101,7 @@ impl Default for DeepView {
             gap_count: 0,
             records: 0,
             collapse: false,
+            follow: Follow::Page,
             rev: 0,
         }
     }
@@ -157,13 +183,36 @@ pub fn build(
     let Some(newest) = rec.frames.last().map(|f| f.t_start() + f.duration()) else {
         return;
     };
-    // Snap the window edge to a whole column. Following the newest sample
-    // exactly moved every column by a fraction on each rebuild, which made
-    // the gap markers shimmer even when nothing about the capture changed.
+    // Belt and braces with the greyed-out Zoom group: the reduced trace is
+    // not a record, so a record-space zoom window would re-map x without
+    // re-mapping the gap mask and the markers would part company with the
+    // signal.
+    if phosphor.zoom_on || phosphor.hview != (0.5, 1.0) {
+        crate::view::set_zoom(&mut phosphor, false);
+    }
     let col_dt = deep.span / COLUMNS as f64;
-    let t1 = deep.anchor.unwrap_or(newest);
+    let t1 = match deep.anchor {
+        // Parked in history: exactly where the user left it.
+        Some(a) => a,
+        // Page: the window is a fixed slice of the session clock, so it does
+        // not move at all while it fills and then turns over in one step.
+        // Sliding it to end at the newest sample instead means every record
+        // shifts the whole trace left — by many columns at a short time base
+        // — and the records at either edge come and go, which reads as the
+        // display jittering.
+        None => match deep.follow {
+            Follow::Page => (newest / deep.span).floor() * deep.span + deep.span,
+            Follow::Slide => newest,
+        },
+    };
+    // Snap to a whole column either way: a fractional edge shifts every
+    // column on each rebuild and makes the gap markers shimmer.
     let t1 = (t1 / col_dt).floor() * col_dt;
     let window = (t1 - deep.span, t1);
+    // The part of a page that has not happened yet is not a gap in the
+    // capture, so it must not be marked as one or counted against coverage.
+    let live = newest.min(window.1);
+    let live_col = (((live - window.0) / col_dt).ceil().max(0.0) as usize).min(COLUMNS);
 
     // Only the records overlapping the window; the ring is time-ordered, so
     // this could binary-search, but a linear scan over a few thousand Arc
@@ -203,6 +252,7 @@ pub fn build(
         }
         enabled[ch] = true;
         used = used.max(segs.len());
+        #[allow(clippy::let_and_return)]
         let r = if deep.collapse {
             timeline::reduce_collapsed(&segs, window, COLUMNS)
         } else {
@@ -210,10 +260,26 @@ pub fn build(
         };
         // Gaps and coverage are a property of the acquisition, not of a
         // channel, so take them from whichever channel is on.
-        if r.coverage > coverage || gaps.is_empty() {
-            coverage = r.coverage;
-            breaks = r.discontinuities();
-            gaps = r.gaps.clone();
+        // Coverage is over what has actually elapsed, not over the whole
+        // page: the future is not dead time.
+        let elapsed = (live - window.0).max(0.0);
+        let scale = if elapsed > 0.0 {
+            (window.1 - window.0) / elapsed
+        } else {
+            0.0
+        };
+        let cov = (r.coverage * scale).clamp(0.0, 1.0);
+        let trimmed: Vec<u32> = r
+            .gaps
+            .iter()
+            .copied()
+            .filter(|&c| (c as usize) < live_col)
+            .collect();
+        if cov > coverage || gaps.is_empty() {
+            coverage = cov;
+            breaks = trimmed.windows(2).filter(|w| w[1] != w[0] + 1).count()
+                + usize::from(!trimmed.is_empty());
+            gaps = trimmed;
         }
         pairs[ch] = r.pairs;
     }

@@ -73,6 +73,11 @@ show gets one of these rather than being crammed into a section.
   the VDS1022.
 - **Time base** — s/div. The *acquisition* control: it picks the sample rate.
 - **Zoom window** — a magnified view *inside one record* (delayed sweep).
+- **Follow mode** — how the timeline tracks live data. **Page** fills a fixed
+  slice of the clock and then turns over, so nothing moves while it fills;
+  **slide** keeps the newest data at the right edge and the trace marches
+  left. Page is the default because a sliding window at a short time base
+  shifts the whole trace by many columns per record.
 - **Timeline** — the display spanning recorded *history* rather than one
   record, at the acquisition's own sample rate, with the time the instrument
   was not acquiring drawn as marked gaps.

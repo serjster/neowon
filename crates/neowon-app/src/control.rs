@@ -305,7 +305,7 @@ fn config_json(
             r#""pf":{{"enabled":{},"source":{},"pass":{},"fail":{}}},"#,
             r#""viz":{{"waterfall":{},"mode":"{}","effect":{}}},"#,
             r#""autopeak":{{"on":{},"engaged":{}}},"#,
-            r#""deep":{{"on":{},"span":{},"coverage":{},"gaps":{},"records":{},"anchored":{}}}}}"#
+            r#""deep":{{"on":{},"span":{},"coverage":{},"gaps":{},"records":{},"anchored":{},"follow":"{}"}}}}"#
         ),
         num(c.sample_rate),
         num(c.position),
@@ -344,6 +344,7 @@ fn config_json(
         deep.gap_count,
         deep.records,
         deep.anchor.is_some(),
+        deep.follow.name(),
     )
 }
 

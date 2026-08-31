@@ -274,7 +274,16 @@ Each phase ends with something runnable and testable — most against the real s
 > reveal their section (open *and* scroll into view); and the measurements
 > moved into a sizeable window with optional statistics columns and a trend
 > sparkline per metric. Screen vocabulary is written down in
-> docs/ui-anatomy.md.
+> docs/ui-anatomy.md. Follow-up round: the timeline gained a **page** follow
+> mode (default) that holds still while it fills instead of sliding under the
+> reader — measured 0 columns of drift against 16–26 per frame for slide —
+> with the unfilled part of a page excluded from coverage and gap marking
+> since the future is not dead time; the zoom window is refused outright
+> while the timeline owns the x axis, rather than being merely released on
+> entry; and `--test accuracy` asserts the invariants that catch scaling
+> bugs a visual check cannot (frequency independent of time base, amplitude
+> independent of volts/div, probe factor cancelling between range and
+> scale).
 
 ### Phase 0 — Scaffold + simulated trace (½ day)
 

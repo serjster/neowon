@@ -21,7 +21,7 @@ pub fn show(
     deep: &mut crate::deep::DeepView,
 ) {
     timeline_group(ui, link, phosphor, deep);
-    show_inner(ui, link, phosphor)
+    show_inner(ui, link, phosphor, deep.on)
 }
 
 /// Timeline (deep) view: span more time than one record holds, at the
@@ -63,6 +63,26 @@ fn timeline_group(
             .monospace()
             .size(10.0),
         );
+        ui.horizontal(|ui| {
+            ui.label("Follow");
+            for f in [crate::deep::Follow::Page, crate::deep::Follow::Slide] {
+                let tip = match f {
+                    crate::deep::Follow::Page => {
+                        "Fill a page, then turn to the next. Nothing moves horizontally while it fills."
+                    }
+                    crate::deep::Follow::Slide => {
+                        "Keep the newest data at the right edge. The trace marches left as records arrive."
+                    }
+                };
+                if ui
+                    .selectable_label(deep.follow == f, f.name())
+                    .on_hover_text(tip)
+                    .clicked()
+                {
+                    deep.follow = f;
+                }
+            }
+        });
         ui.horizontal(|ui| {
             if button(ui, Icon::ZoomOut, "Longer window", 24.0).clicked() {
                 crate::deep::span_step(deep, true);
@@ -125,7 +145,7 @@ fn timeline_group(
     });
 }
 
-fn show_inner(ui: &mut egui::Ui, link: &mut Link, phosphor: &mut Phosphor) {
+fn show_inner(ui: &mut egui::Ui, link: &mut Link, phosphor: &mut Phosphor, deep_on: bool) {
     let record_len = view::record_len(link);
     let tb_ladder = view::timebase_ladder(link);
     let record_s = record_len as f64 / link.config.sample_rate;
@@ -199,6 +219,18 @@ fn show_inner(ui: &mut egui::Ui, link: &mut Link, phosphor: &mut Phosphor) {
 
     ui.group(|ui| {
         ui.strong("Zoom");
+        if deep_on {
+            ui.label(
+                egui::RichText::new(
+                    "unavailable while the timeline is on — it magnifies one \
+                     record, and the timeline's x axis is history. Narrow the \
+                     timeline window instead.",
+                )
+                .weak()
+                .small(),
+            );
+            return;
+        }
         let mut on = view::zoom_active(phosphor);
         if ui
             .checkbox(&mut on, "Zoom window (delayed sweep)")

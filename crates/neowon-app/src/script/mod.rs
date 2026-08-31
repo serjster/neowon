@@ -27,6 +27,7 @@
 //! zoomwin <on|off>                    # zoom (delayed sweep) window
 //! deep <on|off>                       # timeline view over the scrollback
 //! deepspan <seconds>                  # timeline window duration
+//! deepfollow <page|slide>             # how the timeline tracks live data
 //! decode <off|uart|i2c|spi|onewire>    # protocol decoder
 //! decodeline <line> <ch>               # assign a decoder input
 //! decodebaud <baud>                    # UART baud rate
@@ -163,6 +164,8 @@ pub enum Action {
     Deep(bool),
     /// Timeline window duration, seconds.
     DeepSpan(f64),
+    /// How the timeline tracks live acquisition.
+    DeepFollow(crate::deep::Follow),
     /// Protocol decoder selection.
     Decode(crate::decode::Protocol),
     /// Decoder line assignment: line index -> channel.
@@ -413,6 +416,7 @@ pub fn run_script(
                 }
             }
             Action::DecodeBaud(b) => dec.uart.baud = b,
+            Action::DeepFollow(f) => deep.follow = f,
             Action::Deep(on) => crate::deep::set_on(deep, &mut phosphor, on),
             Action::DeepSpan(s) => {
                 deep.span = s.max(1e-6);

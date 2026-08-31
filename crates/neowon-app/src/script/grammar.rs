@@ -153,6 +153,11 @@ pub(crate) fn parse(text: &str) -> Result<VecDeque<(f64, Action)>, String> {
             "timebase" => Action::Timebase(rest()?.parse().map_err(|_| err("bad s/div"))?),
             "zoomwin" => Action::ZoomWin(rest()? == "on"),
             "deep" => Action::Deep(rest()? == "on"),
+            "deepfollow" => Action::DeepFollow(match rest()? {
+                "page" => crate::deep::Follow::Page,
+                "slide" => crate::deep::Follow::Slide,
+                _ => return Err(err("bad follow mode")),
+            }),
             "deepspan" => Action::DeepSpan(rest()?.parse().map_err(|_| err("bad seconds"))?),
             "decode" => Action::Decode(
                 crate::decode::Protocol::parse(rest()?).ok_or_else(|| err("bad protocol"))?,
