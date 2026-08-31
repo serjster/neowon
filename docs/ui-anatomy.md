@@ -6,13 +6,13 @@ every bug report costs a round trip.
 
 ```
 ┌──────────────────────────────────────────────────────┬──────────────┐
-│ APP BAR   File View Settings │ RUN │ 2 ms/div 250 kS/s│              │
+│ APP BAR   File View Settings │ RUN │ 2 ms/div 250 kS/s│             │
 ├──────────────────────────────────────────────────────┤              │
 │                                                      │              │
 │                    GRID                              │     DOCK     │
 │              (the waveform area)                     │  ┌────────┐  │
-│   markers: trigger level ▸ right edge                │  │ view    │  │
-│            trigger position ▾ top edge               │  │ toolbar │  │
+│   markers: trigger level ▸ right edge                │  │ view    │ │
+│            trigger position ▾ top edge               │  │ toolbar │ │
 │            channel offsets ▸ left edge               │  └────────┘  │
 │            cursors, decode annotations               │  ▸ Trigger   │
 │                                                      │  ▾ Horizontal│

@@ -110,6 +110,20 @@ jobs:
         shell: pwsh
         run: Compress-Archive -Path "dist/$env:STAGED" -DestinationPath "dist/$env:STAGED.zip"
 
+      # Print what actually went in. A green build says the copies did not
+      # fail; it does not say the archive holds what you think, and the
+      # artifact itself is awkward to fetch just to answer that.
+      - name: Archive contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            unzip -l "dist/${STAGED}.zip"
+          else
+            tar -tzvf "dist/${STAGED}.tar.gz"
+          fi
+          file "dist/$STAGED/neowon-app" || true
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ env.STAGED }}
