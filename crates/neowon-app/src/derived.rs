@@ -18,18 +18,18 @@ pub const N_METRICS: usize = 18;
 /// Per-sample pass/fail envelope, in raw counts.
 #[derive(Debug, Clone)]
 pub struct PfMask {
-    pub lo: Vec<i8>,
-    pub hi: Vec<i8>,
+    pub lo: Vec<f32>,
+    pub hi: Vec<f32>,
 }
 
 /// Build the envelope from a captured reference trace: dilate horizontally by
 /// `h_div` divisions (min/max over the window), then pad vertically by
 /// `v_div` divisions of raw counts (250 counts = 10 divs), saturating.
-pub fn build_pf_mask(reference: &[i8], h_div: f64, v_div: f64) -> PfMask {
+pub fn build_pf_mask(reference: &[f32], h_div: f64, v_div: f64) -> PfMask {
     let len = reference.len();
     let win = ((h_div / 20.0) * len as f64).round().max(1.0) as usize;
     let half = win / 2;
-    let pad = ((v_div / 10.0) * 250.0).round() as i16;
+    let pad = ((v_div / 10.0) * 250.0).round() as f32;
     let mut lo = Vec::with_capacity(len);
     let mut hi = Vec::with_capacity(len);
     for i in 0..len {
@@ -41,14 +41,14 @@ pub fn build_pf_mask(reference: &[i8], h_div: f64, v_div: f64) -> PfMask {
             mn = mn.min(r);
             mx = mx.max(r);
         }
-        lo.push((mn as i16 - pad).clamp(-128, 127) as i8);
-        hi.push((mx as i16 + pad).clamp(-128, 127) as i8);
+        lo.push((mn - pad).clamp(-128.0, 127.0));
+        hi.push((mx + pad).clamp(-128.0, 127.0));
     }
     PfMask { lo, hi }
 }
 
 /// True when every sample of `samples` stays within `[lo, hi]`.
-pub fn evaluate_pf(mask: &PfMask, samples: &[i8]) -> bool {
+pub fn evaluate_pf(mask: &PfMask, samples: &[f32]) -> bool {
     let n = mask.lo.len().min(samples.len());
     (0..n).all(|i| samples[i] >= mask.lo[i] && samples[i] <= mask.hi[i])
 }
@@ -305,7 +305,7 @@ pub fn compute_derived(
     // Spectrum.
     fft.spectrum = if fft.enabled {
         slot_caps[fft.source.min(SLOTS - 1)]
-            .and_then(|c| spectrum(&c.raw, c.volts_per_lsb, frame.sample_rate, fft.window, 4096))
+            .and_then(|c| spectrum(&c.data, c.cal.scale_i, frame.sample_rate, fft.window, 4096))
     } else {
         None
     };
@@ -314,7 +314,7 @@ pub fn compute_derived(
     let pf_result = if pf.enabled {
         slot_caps[pf.source_slot.min(SLOTS - 1)]
             .zip(pf.mask.as_ref())
-            .map(|(cap, mask)| evaluate_pf(mask, &cap.raw))
+            .map(|(cap, mask)| evaluate_pf(mask, &cap.data))
     } else {
         None
     };
@@ -545,28 +545,28 @@ mod tests {
     fn pf_mask_vertical_pad() {
         // Zero horizontal tolerance, one division of vertical pad
         // (1 div = 25 counts).
-        let m = build_pf_mask(&[10, -10], 0.0, 1.0);
-        assert_eq!(m.lo, vec![-15, -35]);
-        assert_eq!(m.hi, vec![35, 15]);
+        let m = build_pf_mask(&[10.0, -10.0], 0.0, 1.0);
+        assert_eq!(m.lo, vec![-15.0, -35.0]);
+        assert_eq!(m.hi, vec![35.0, 15.0]);
     }
 
     #[test]
     fn pf_mask_saturates() {
-        let m = build_pf_mask(&[120, -120], 0.0, 2.0);
-        assert_eq!(m.hi[0], 127);
-        assert_eq!(m.lo[1], -128);
+        let m = build_pf_mask(&[120.0, -120.0], 0.0, 2.0);
+        assert_eq!(m.hi[0], 127.0);
+        assert_eq!(m.lo[1], -128.0);
     }
 
     #[test]
     fn pf_mask_horizontal_dilation() {
         // 20-sample record; h_div = 20 divs -> window of the full record, so
         // every position sees the central min/max spikes.
-        let mut reference = vec![0i8; 20];
-        reference[9] = -40;
-        reference[10] = 50;
+        let mut reference = vec![0f32; 20];
+        reference[9] = -40.0;
+        reference[10] = 50.0;
         let m = build_pf_mask(&reference, 20.0, 0.0);
-        assert!(m.lo.iter().all(|&l| l == -40));
-        assert!(m.hi.iter().all(|&h| h == 50));
+        assert!(m.lo.iter().all(|&l| l == -40.0));
+        assert!(m.hi.iter().all(|&h| h == 50.0));
 
         // No horizontal tolerance: the envelope follows the reference.
         let m = build_pf_mask(&reference, 0.0, 0.0);
@@ -576,9 +576,9 @@ mod tests {
 
     #[test]
     fn pf_evaluate() {
-        let m = build_pf_mask(&[0, 10, -10], 0.0, 1.0);
-        assert!(evaluate_pf(&m, &[0, 10, -10]));
-        assert!(evaluate_pf(&m, &[20, 10, -10])); // within +25 pad
-        assert!(!evaluate_pf(&m, &[0, 10, 50])); // outside envelope
+        let m = build_pf_mask(&[0.0, 10.0, -10.0], 0.0, 1.0);
+        assert!(evaluate_pf(&m, &[0.0, 10.0, -10.0]));
+        assert!(evaluate_pf(&m, &[20.0, 10.0, -10.0])); // within +25 pad
+        assert!(!evaluate_pf(&m, &[0.0, 10.0, 50.0])); // outside envelope
     }
 }

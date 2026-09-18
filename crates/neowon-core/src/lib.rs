@@ -6,7 +6,7 @@ pub mod nwc;
 pub mod owon_cap;
 pub mod wav;
 
-pub use frame::{CaptureFrame, ChannelCapture, SharedFrame};
+pub use frame::{CaptureFrame, ChannelCapture, FrameError, IqCal, SampleLayout, SharedFrame};
 
 /// Input coupling. Hardware encodings are backend-specific.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

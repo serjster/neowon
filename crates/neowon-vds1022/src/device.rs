@@ -10,7 +10,9 @@ use nusb::{Device, Endpoint, Interface, MaybeFuture};
 use tracing::{debug, info};
 
 use neowon_backend::MultiMode;
-use neowon_core::{AcqMode, CaptureFrame, ChannelCapture, Coupling, Slope, Sweep, TriggerKind};
+use neowon_core::{
+    AcqMode, CaptureFrame, ChannelCapture, Coupling, IqCal, SampleLayout, Slope, Sweep, TriggerKind,
+};
 
 use crate::consts::{self, ADC_CLIP, FLASH_SIZE, FRAME_SIZE, HTP_ERR, reg, status};
 use crate::error::{Error, Result};
@@ -625,9 +627,8 @@ impl Vds1022 {
                     ch,
                     clipped: f.clipped(),
                     freq_meter: f.freq_meter(),
-                    raw: f.samples().to_vec(),
-                    volts_per_lsb: range / consts::ADC_RANGE,
-                    zero_volts: -setup.offset * range,
+                    data: f.samples().iter().map(|&s| s as f32).collect(),
+                    cal: IqCal::real(range / consts::ADC_RANGE, -setup.offset * range),
                 }
             })
             .collect();
@@ -640,6 +641,7 @@ impl Vds1022 {
             } else {
                 AcqMode::Sample
             },
+            layout: SampleLayout::Real,
             channels,
         }
     }

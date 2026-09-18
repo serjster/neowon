@@ -165,7 +165,7 @@ mod tests {
     use super::*;
 
     /// Render bytes as an idle-high UART waveform at `per_bit` samples.
-    fn wave(bytes: &[u8], per_bit: usize, idle: usize) -> Vec<i8> {
+    fn wave(bytes: &[u8], per_bit: usize, idle: usize) -> Vec<f32> {
         let mut bits = vec![true; idle];
         for &b in bytes {
             bits.push(false); // start
@@ -177,7 +177,7 @@ mod tests {
         }
         bits.extend(std::iter::repeat_n(true, idle));
         bits.iter()
-            .flat_map(|&b| std::iter::repeat_n(if b { 100i8 } else { -100 }, per_bit))
+            .flat_map(|&b| std::iter::repeat_n(if b { 100.0 } else { -100.0 }, per_bit))
             .collect()
     }
 
@@ -284,10 +284,10 @@ mod tests {
 
         // Sample it at a rate that does not divide the bit period.
         let n = (bits.len() as f64 * per_bit) as usize;
-        let raw: Vec<i8> = (0..n)
+        let raw: Vec<f32> = (0..n)
             .map(|i| {
                 let k = ((i as f64 / per_bit) as usize).min(bits.len() - 1);
-                if bits[k] { 100 } else { -100 }
+                if bits[k] { 100.0 } else { -100.0 }
             })
             .collect();
 

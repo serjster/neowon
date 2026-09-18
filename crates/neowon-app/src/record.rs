@@ -125,7 +125,7 @@ impl Recorder {
             frame
                 .channels
                 .iter()
-                .map(|c| neowon_dsp::timeline::summarize(&c.raw, TILE))
+                .map(|c| neowon_dsp::timeline::summarize(&c.data, TILE))
                 .collect(),
         );
         self.frames.push(frame);
@@ -179,7 +179,7 @@ impl Recorder {
     pub fn samples_per_channel(&self) -> usize {
         self.frames
             .iter()
-            .map(|f| f.channels.first().map_or(0, |c| c.raw.len()))
+            .map(|f| f.channels.first().map_or(0, |c| c.data.len()))
             .sum()
     }
 
@@ -198,7 +198,7 @@ impl Recorder {
         let mut out = Vec::with_capacity(self.samples_per_channel());
         for f in &self.frames {
             if let Some(cap) = f.channels.iter().find(|c| c.ch == ch) {
-                out.extend(cap.raw.iter().map(|&r| (r as i16) << 8));
+                out.extend(cap.data.iter().map(|&r| (r as i16) << 8));
             }
         }
         out
@@ -225,7 +225,7 @@ impl Recorder {
         }
     }
 
-    /// Export raw i8 samples, one `<stem>_chN.raw` file per recorded channel.
+    /// Export raw samples, one `<stem>_chN.raw` file per recorded channel.
     pub fn export_raw(&self, base: &std::path::Path) -> std::io::Result<Vec<String>> {
         let mut written = Vec::new();
         for ch in 0..3 {
@@ -233,7 +233,7 @@ impl Recorder {
                 .frames
                 .iter()
                 .filter_map(|f| f.channels.iter().find(|c| c.ch == ch))
-                .flat_map(|c| c.raw.iter().map(|&r| r as u8))
+                .flat_map(|c| c.data.iter().map(|&r| r as u8))
                 .collect();
             if data.is_empty() {
                 continue;
@@ -259,15 +259,11 @@ impl Recorder {
         for frame in &self.frames {
             let c0 = frame.channels.iter().find(|c| c.ch == 0);
             let c1 = frame.channels.iter().find(|c| c.ch == 1);
-            let n = c0.or(c1).map_or(0, |c| c.raw.len());
+            let n = c0.or(c1).map_or(0, |c| c.data.len());
             for k in 0..n {
                 let v = |c: Option<&neowon_core::ChannelCapture>| {
-                    c.and_then(|c| {
-                        c.raw
-                            .get(k)
-                            .map(|&r| r as f64 * c.volts_per_lsb + c.zero_volts)
-                    })
-                    .map_or(String::new(), |v| format!("{v:.6}"))
+                    c.and_then(|c| c.data.get(k).map(|&r| c.cal.volts_i(r)))
+                        .map_or(String::new(), |v| format!("{v:.6}"))
                 };
                 writeln!(f, "{:.9},{},{}", i as f64 / rate, v(c0), v(c1))?;
                 i += 1;
@@ -279,7 +275,7 @@ impl Recorder {
 
 /// Sample bytes a frame holds.
 fn frame_bytes(f: &SharedFrame) -> usize {
-    f.channels.iter().map(|c| c.raw.len()).sum()
+    f.channels.iter().map(|c| c.data.len()).sum()
 }
 
 /// Default export directory: `~/neowon-captures`.
@@ -330,11 +326,11 @@ mod tests {
             seq,
             sample_rate: 1000.0,
             acq: AcqMode::Sample,
+            layout: neowon_core::SampleLayout::Real,
             channels: vec![ChannelCapture {
                 ch: 0,
-                raw: vals.to_vec(),
-                volts_per_lsb: 0.01,
-                zero_volts: 0.0,
+                data: vals.iter().map(|&v| v as f32).collect(),
+                cal: neowon_core::IqCal::real(0.01, 0.0),
                 clipped: false,
                 freq_meter: None,
             }],

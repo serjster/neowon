@@ -677,7 +677,7 @@ fn draw_pf_mask(pf: Res<derived::PfState>, layout: Res<Layout>, mut gizmos: Gizm
     let step = (n / 500).max(1);
     let x_at = |i: usize| o.x - w / 2.0 + i as f32 / (n - 1).max(1) as f32 * w;
     // The display window is +-100 counts (+-4 div); pin beyond that.
-    let y_at = |raw: i8| layout.frac_to_world_y(raw.clamp(-100, 100) as f32 / 250.0);
+    let y_at = |raw: f32| layout.frac_to_world_y(raw.clamp(-100.0, 100.0) / 250.0);
     let color = Color::srgba(0.2, 0.6, 0.3, 0.6);
     for bounds in [&mask.lo, &mask.hi] {
         let points: Vec<Vec2> = (0..n)
@@ -705,12 +705,12 @@ fn draw_guides(
     let slot = meas.stats_slot;
     let Some(m) = &meas.latest[slot] else { return };
     let scale = match slot {
-        2 => math.trace.as_ref().map(|t| (t.volts_per_lsb, t.zero_volts)),
+        2 => math.trace.as_ref().map(|t| (t.cal.scale_i, t.cal.offset_i)),
         s => link
             .latest
             .as_ref()
             .and_then(|f| f.channels.iter().find(|c| c.ch == s))
-            .map(|c| (c.volts_per_lsb, c.zero_volts)),
+            .map(|c| (c.cal.scale_i, c.cal.offset_i)),
     };
     let Some((lsb, zero)) = scale else { return };
     let base = match slot {
@@ -863,9 +863,9 @@ fn draw_clip_warnings(link: Res<Link>, layout: Res<Layout>, mut gizmos: Gizmos) 
             continue;
         }
         let (mut top, mut bottom) = (false, false);
-        for &r in &cap.raw {
-            top |= r >= 125;
-            bottom |= r <= -125;
+        for &r in &cap.data {
+            top |= r >= 125.0;
+            bottom |= r <= -125.0;
         }
         let x = o.x + w / 2.0 - 26.0 - cap.ch as f32 * 22.0;
         let mut arrow = |y: f32, dir: f32| {

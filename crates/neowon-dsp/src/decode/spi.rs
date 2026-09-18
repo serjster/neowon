@@ -152,13 +152,13 @@ mod tests {
     use super::*;
 
     /// Mode-0 SPI: idle low, data set on the falling edge, sampled rising.
-    fn frames(words: &[u8], per_bit: usize) -> (Vec<i8>, Vec<i8>, Vec<i8>) {
+    fn frames(words: &[u8], per_bit: usize) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
         let (mut sck, mut mosi, mut cs) = (Vec::new(), Vec::new(), Vec::new());
         let mut push = |c: bool, d: bool, s: bool, n: usize| {
             for _ in 0..n {
-                sck.push(if c { 100i8 } else { -100 });
-                mosi.push(if d { 100i8 } else { -100 });
-                cs.push(if s { 100i8 } else { -100 });
+                sck.push(if c { 100.0 } else { -100.0 });
+                mosi.push(if d { 100.0 } else { -100.0 });
+                cs.push(if s { 100.0 } else { -100.0 });
             }
         };
         push(false, false, true, per_bit * 2); // idle, deselected
@@ -178,7 +178,7 @@ mod tests {
         let per_bit = 40;
         let rate = 1e6;
         let (sck, mosi, cs) = frames(&[0xA5, 0x0F], per_bit);
-        let d = |v: &[i8]| digitize(v, rate, Threshold::default()).unwrap();
+        let d = |v: &[f32]| digitize(v, rate, Threshold::default()).unwrap();
         let ev = decode(&d(&sck), &d(&mosi), Some(&d(&cs)), Config::default()).unwrap();
         let words: Vec<u64> = ev
             .iter()
@@ -198,7 +198,7 @@ mod tests {
         let per_bit = 40;
         let rate = 1e6;
         let (sck, mosi, cs) = frames(&[0xAB, 0xCD, 0xEF], per_bit);
-        let d = |v: &[i8]| digitize(v, rate, Threshold::default()).unwrap();
+        let d = |v: &[f32]| digitize(v, rate, Threshold::default()).unwrap();
         let ev = decode(
             &d(&sck),
             &d(&mosi),
@@ -228,7 +228,7 @@ mod tests {
         let per_bit = 40;
         let rate = 1e6;
         let (sck, mosi, cs) = frames(&[0xA5], per_bit);
-        let d = |v: &[i8]| digitize(v, rate, Threshold::default()).unwrap();
+        let d = |v: &[f32]| digitize(v, rate, Threshold::default()).unwrap();
         // Ask for 12 bits when only 8 arrive before deselect.
         let ev = decode(
             &d(&sck),

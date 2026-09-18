@@ -3,7 +3,7 @@
 //! i8 encoding as real hardware so every downstream consumer is exercised
 //! identically. Also the golden-signal source for DSP tests.
 
-use neowon_core::{AcqMode, CaptureFrame, ChannelCapture};
+use neowon_core::{AcqMode, CaptureFrame, ChannelCapture, IqCal, SampleLayout};
 
 pub mod backend;
 pub mod figures;
@@ -115,7 +115,7 @@ impl SimSource {
 
     /// Vertical offset of `ch` as a fraction of full scale (-0.5..=0.5).
     /// Shifts the raw codes like the hardware zero DAC; consumers recover
-    /// true volts via `zero_volts`.
+    /// true volts via `cal`.
     pub fn set_offset(&mut self, ch: usize, offset: f64) {
         if ch < 2 {
             self.offsets[ch] = offset.clamp(-0.5, 0.5);
@@ -148,9 +148,9 @@ impl SimSource {
         self.scenario.sample_quiet(t)
     }
 
-    /// Quantize one volt reading into the scope's i8 code, applying the
+    /// Quantize one volt reading into the scope's raw code, applying the
     /// zero-DAC offset exactly as `device.rs::configure_channel` does.
-    fn quantize(&self, ch: usize, volts: f64, out: &mut Vec<i8>, clipped: &mut bool) {
+    fn quantize(&self, ch: usize, volts: f64, out: &mut Vec<f32>, clipped: &mut bool) {
         let lsb = self.ranges[ch] / 250.0;
         let pos0 = (250.0 * self.offsets[ch]).round();
         let q = (volts / lsb).round() + pos0;
@@ -158,14 +158,14 @@ impl SimSource {
         if r != q {
             *clipped = true;
         }
-        out.push(r as i8);
+        out.push(r as f32);
     }
 
     /// Peak detect: the instrument's ADC runs far faster than the storage
     /// rate and each stored *pair* keeps the extremes seen over its
     /// interval, which is what stops a fast signal aliasing away at slow
     /// time bases. Even index = min, odd = max (the VDS1022 convention).
-    fn fill_peak(&mut self, n: usize, raws: &mut [Vec<i8>; 2], clipped: &mut [bool; 2]) {
+    fn fill_peak(&mut self, n: usize, raws: &mut [Vec<f32>; 2], clipped: &mut [bool; 2]) {
         /// Sub-samples per output pair — the emulated ADC oversampling.
         const OVER: usize = 16;
         let dt = 1.0 / self.sample_rate;
@@ -217,9 +217,8 @@ impl SimSource {
             .filter(|&ch| self.enabled[ch])
             .map(|ch| ChannelCapture {
                 ch,
-                raw: std::mem::take(&mut raws[ch]),
-                volts_per_lsb: self.ranges[ch] / 250.0,
-                zero_volts: -self.offsets[ch] * self.ranges[ch],
+                data: std::mem::take(&mut raws[ch]),
+                cal: IqCal::real(self.ranges[ch] / 250.0, -self.offsets[ch] * self.ranges[ch]),
                 clipped: clipped[ch],
                 freq_meter: self.scenario.fundamental(ch),
             })
@@ -233,6 +232,7 @@ impl SimSource {
             } else {
                 AcqMode::Sample
             },
+            layout: SampleLayout::Real,
             channels,
         }
     }
@@ -248,13 +248,13 @@ mod tests {
         let mut src = SimSource::default();
         let frame = src.next_frame();
         let cap = &frame.channels[0];
-        assert_eq!(cap.raw.len(), SAMPLES);
+        assert_eq!(cap.data.len(), SAMPLES);
 
         let stats = basic_stats(cap).unwrap();
         assert!((stats.vpp - 5.0).abs() < 0.3, "vpp {}", stats.vpp);
         assert!((stats.vavg - 2.5).abs() < 0.1, "vavg {}", stats.vavg);
 
-        let f = estimate_frequency(&cap.raw, frame.sample_rate).unwrap();
+        let f = estimate_frequency(&cap.data, frame.sample_rate).unwrap();
         assert!((f - 1000.0).abs() < 10.0, "freq {f}");
     }
 
@@ -279,7 +279,7 @@ mod tests {
         let b = src.next_frame();
         // 250 kS/s, 1 kHz -> 250 samples/period; 5000 % 250 == 0, so frame b
         // must start exactly where a started (same phase).
-        assert_eq!(a.channels[0].raw[0], b.channels[0].raw[0]);
+        assert_eq!(a.channels[0].data[0], b.channels[0].data[0]);
         assert_eq!(a.seq + 1, b.seq);
     }
 
@@ -288,8 +288,8 @@ mod tests {
         let mut a = SimSource::default();
         let mut b = SimSource::default();
         assert_eq!(
-            a.next_frame().channels[0].raw,
-            b.next_frame().channels[0].raw
+            a.next_frame().channels[0].data,
+            b.next_frame().channels[0].data
         );
     }
 
@@ -312,8 +312,9 @@ mod tests {
         peak.set_peak(true);
 
         let span = |f: &CaptureFrame| {
-            let r = &f.channels[0].raw;
-            (*r.iter().max().unwrap() as i32) - (*r.iter().min().unwrap() as i32)
+            let r = &f.channels[0].data;
+            r.iter().copied().reduce(f32::max).unwrap()
+                - r.iter().copied().reduce(f32::min).unwrap()
         };
         let plain_span = span(&plain.next_frame());
         let peak_frame = peak.next_frame();
@@ -322,11 +323,11 @@ mod tests {
 
         // The true amplitude is +-1 V on a +-1 V range = +-125 counts.
         assert!(
-            peak_span > 200,
+            peak_span > 200.0,
             "peak detect lost the envelope: span {peak_span}"
         );
         assert!(
-            peak_span > plain_span * 2,
+            peak_span > plain_span * 2.0,
             "peak {peak_span} should dwarf aliased {plain_span}"
         );
     }
@@ -340,7 +341,7 @@ mod tests {
         src.sample_rate = 500.0;
         src.set_peak(true);
         let f = src.next_frame();
-        let raw = &f.channels[0].raw;
+        let raw = &f.channels[0].data;
         assert_eq!(raw.len(), SAMPLES);
         for k in 0..raw.len() / 2 {
             assert!(

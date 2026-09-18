@@ -218,7 +218,7 @@ pub fn build(
     // this could binary-search, but a linear scan over a few thousand Arc
     // headers is not what costs here.
     let mut used = 0usize;
-    let mut pairs: [Vec<i8>; CHANNELS] = Default::default();
+    let mut pairs: [Vec<f32>; CHANNELS] = Default::default();
     let mut enabled = [false; CHANNELS];
     let mut gaps: Vec<u32> = Vec::new();
     let mut breaks = 0usize;
@@ -238,7 +238,7 @@ pub fn build(
                 segs.push(Segment {
                     t0,
                     sample_rate: f.sample_rate,
-                    raw: &cap.raw,
+                    raw: &cap.data,
                     // Summaries make a wide window affordable: a column
                     // spanning thousands of samples reads a handful of
                     // tiles instead of every one of them.

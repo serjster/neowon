@@ -105,12 +105,12 @@ mod tests {
     use super::*;
 
     /// Build SCL/SDA waveforms for a write transaction.
-    fn transaction(addr: u8, data: &[u8], per_bit: usize) -> (Vec<i8>, Vec<i8>) {
+    fn transaction(addr: u8, data: &[u8], per_bit: usize) -> (Vec<f32>, Vec<f32>) {
         let (mut scl, mut sda) = (Vec::new(), Vec::new());
         let mut push = |c: bool, d: bool, n: usize| {
             for _ in 0..n {
-                scl.push(if c { 100i8 } else { -100 });
-                sda.push(if d { 100i8 } else { -100 });
+                scl.push(if c { 100.0 } else { -100.0 });
+                sda.push(if d { 100.0 } else { -100.0 });
             }
         };
         // Idle high, then START: SDA falls while SCL is high.

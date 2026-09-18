@@ -83,7 +83,7 @@ impl Spectrum {
 /// Windowed amplitude spectrum of up to `size` samples (power of two).
 /// Coherent-gain corrected so a sine of amplitude A reads A at its bin.
 pub fn spectrum(
-    raw: &[i8],
+    raw: &[f32],
     volts_per_lsb: f64,
     sample_rate: f64,
     window: Window,
@@ -123,9 +123,9 @@ pub fn spectrum(
 mod tests {
     use super::*;
 
-    fn sine(n: usize, cycles: f64, amp: f64) -> Vec<i8> {
+    fn sine(n: usize, cycles: f64, amp: f64) -> Vec<f32> {
         (0..n)
-            .map(|i| (amp * (i as f64 / n as f64 * cycles * std::f64::consts::TAU).sin()) as i8)
+            .map(|i| (amp * (i as f64 / n as f64 * cycles * std::f64::consts::TAU).sin()) as f32)
             .collect()
     }
 
@@ -144,7 +144,7 @@ mod tests {
 
     #[test]
     fn dc_reads_correctly() {
-        let raw = vec![50i8; 4096];
+        let raw = vec![50f32; 4096];
         let s = spectrum(&raw, 0.01, 4096.0, Window::Rectangle, 4096).unwrap();
         assert!((s.amplitude[0] - 0.5).abs() < 0.01, "dc {}", s.amplitude[0]);
     }

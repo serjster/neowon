@@ -31,7 +31,7 @@ struct Params {
 }
 
 @group(0) @binding(0) var<uniform> params: Params;
-@group(0) @binding(1) var<storage, read> wave: array<i32>;
+@group(0) @binding(1) var<storage, read> wave: array<f32>;
 @group(0) @binding(2) var<storage, read_write> accum: array<atomic<u32>>;
 @group(0) @binding(3) var display: texture_storage_2d<rgba8unorm, write>;
 
@@ -55,7 +55,7 @@ fn decay(@builtin(global_invocation_id) id: vec3<u32>) {
 // (+-4 divisions of the 8x10 graticule); +-125 (the ADC rails) pin at the
 // plot edge, like a real scope overdriving the graticule.
 fn sample_row(ch: u32, i: u32) -> f32 {
-    let raw = f32(wave[ch * params.samples + i]);
+    let raw = wave[ch * params.samples + i];
     let frac = clamp(0.5 - raw / 200.0, 0.0, 1.0);
     return frac * f32(params.height - 1u);
 }
@@ -67,13 +67,15 @@ fn enabled_for(ch: u32) -> u32 {
 }
 
 // The visible window is +-100 counts; beyond it the beam is off the plot.
-fn off_screen(raw: i32) -> bool {
-    return raw > 100 || raw < -100;
+fn off_screen(raw: f32) -> bool {
+    return raw > 100.0 || raw < -100.0;
 }
 
 // No acquired data in this column (see neowon_dsp::timeline::NO_DATA).
-// Real samples are within +-127, so the code is unambiguous.
-const NO_DATA: i32 = -128;
+// Real reduced values are >= -127, so NaN is unambiguous.
+fn is_no_data(raw: f32) -> bool {
+    return raw != raw;
+}
 
 // Horizontal zoom window: sample index -> fraction of the visible plot
 // (0..1). Samples outside the window map outside [0, 1] and are skipped.
@@ -112,8 +114,8 @@ fn raster(@builtin(global_invocation_id) id: vec3<u32>) {
         let out1 = off_screen(wave[i]) || off_screen(wave[params.samples + i]);
         if (out0 && out1) { return; }
         // Same +-4-division window as the vertical axis.
-        let fx0 = clamp(0.5 + f32(wave[i - 1u]) / 200.0, 0.0, 1.0);
-        let fx1 = clamp(0.5 + f32(wave[i]) / 200.0, 0.0, 1.0);
+        let fx0 = clamp(0.5 + wave[i - 1u] / 200.0, 0.0, 1.0);
+        let fx1 = clamp(0.5 + wave[i] / 200.0, 0.0, 1.0);
         let x0 = f32(u32(fx0 * f32(params.width - 1u)));
         let x1 = f32(u32(fx1 * f32(params.width - 1u)));
         let y0 = sample_row(1u, i - 1u);
@@ -147,8 +149,8 @@ fn raster(@builtin(global_invocation_id) id: vec3<u32>) {
     // A gap is a hole, not a value: either endpoint missing means no beam.
     // (Testing both would draw a spike to the plot edge at every gap edge,
     // because sample_row clamps rather than culling.)
-    if (r0 == NO_DATA || r1 == NO_DATA) { return; }
-    if ((r0 > 100 && r1 > 100) || (r0 < -100 && r1 < -100)) { return; }
+    if (is_no_data(r0) || is_no_data(r1)) { return; }
+    if ((r0 > 100.0 && r1 > 100.0) || (r0 < -100.0 && r1 < -100.0)) { return; }
 
     // Zoom window: cull samples outside; segments crossing the edge clamp
     // to the boundary column.
@@ -239,14 +241,14 @@ fn compose(@builtin(global_invocation_id) id: vec3<u32>) {
         // mark reads as a tear rather than as signal.
         let wob = i32(round(2.0 * sin(f32(id.y) * 0.35)));
         let c = x - wob;
-        if (c >= 0 && c < i32(cols) && wave[3u * params.samples + u32(c)] != 0) {
+        if (c >= 0 && c < i32(cols) && wave[3u * params.samples + u32(c)] != 0.0) {
             // A wide gap gets a squiggly line down each edge and only a
             // faint wash between them: the empty width already carries the
             // duration, and flooding it red would shout over the signal
             // either side.
-            let prev = select(0, wave[3u * params.samples + u32(c - 1)], c > 0);
-            let next = select(0, wave[3u * params.samples + u32(c + 1)], c < i32(cols) - 1);
-            let edge = c == 0 || c == i32(cols) - 1 || prev == 0 || next == 0;
+            let prev = select(0.0, wave[3u * params.samples + u32(c - 1)], c > 0);
+            let next = select(0.0, wave[3u * params.samples + u32(c + 1)], c < i32(cols) - 1);
+            let edge = c == 0 || c == i32(cols) - 1 || prev == 0.0 || next == 0.0;
             let strength = select(0.10, 0.85, edge);
             rgb = mix(rgb, vec3f(0.85, 0.10, 0.10), strength);
         }

@@ -424,15 +424,20 @@ Auto-cal port (compensation pass descending ranges @ DC, amplitude pass ascendin
 
 ### Phase 10 — SDR backend & signal intelligence (the 2-in-1 program)
 
-> **Status 2026-09-18:** planned, not started. The decisions D0–D9, the feature
-> pointers, the D1b spike and the mechanical criteria live in
+> **Status 2026-09-18:** in progress. **10.0 item 1 (D1b spike) DONE:** core
+> frames now carry `f32` + a frame-level `SampleLayout` (`Real`/`Complex`) with
+> per-component `IqCal`; scope backends convert their i8 wire encoding at frame
+> construction; `.nwc` is v3 (writes layout + `IqCal`, still reads v1/v2). 33
+> files / net 362 lines against a revised cap of 35/1500. All tests, WGSL
+> validation, and the windowed pixel/geometry/flow tests pass. The decisions
+> D0–D9, the feature pointers and the mechanical criteria live in
 > `docs/tasks/phase10-sdr-spec.md`; the research home is
-> `docs/sdr-feature-catalog.md`. neowon becomes one instrument in two modes —
+> `docs/sdr-feature-catalog.md`. Next: 10.0 item 2 (D6 types) and item 3 (D8
+> determinism). neowon becomes one instrument in two modes —
 > **Scope** and **SDR** — riding `Acquisition::Stream` and the shared engine
 > (recorder/timeline, phosphor, decode, control socket, MCP). RTL-SDR drives
 > through librtlsdr bindings *presumed* for V3 compatibility; the exact crate is
-> settled by the P0.1 spike on the on-hand V3 dongle. Core frames generalise to
-> `f32` + a real/complex layout tag (D1b, spike-guarded, budget named). A new
+> settled by the P0.1 spike on the on-hand V3 dongle. A new
 > engine-free `neowon-catalog` holds the persistent signal/source/emitter catalog
 > with full management.
 >

@@ -25,7 +25,10 @@ use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use neowon_backend::{Acquisition, Backend, BackendError, Capabilities, ScopeConfig};
-use neowon_core::{AcqMode, CaptureFrame, ChannelCapture, SharedFrame, Slope, Sweep, TriggerKind};
+use neowon_core::{
+    AcqMode, CaptureFrame, ChannelCapture, IqCal, SampleLayout, SharedFrame, Slope, Sweep,
+    TriggerKind,
+};
 
 /// Samples per delivered frame. Not a hardware record — the stream is
 /// continuous — just the granularity the display and the timeline see.
@@ -162,11 +165,11 @@ impl AudioBackend {
         (range / 250.0, -c.offset * range)
     }
 
-    fn quantize(&self, ch: usize, v: f32) -> i8 {
+    fn quantize(&self, ch: usize, v: f32) -> f32 {
         let (lsb, _) = self.scale(ch);
         let c = self.cfg.channels.get(ch).copied().unwrap_or_default();
         let pos0 = (250.0 * c.offset).round();
-        ((v as f64 / lsb.max(1e-12)).round() + pos0).clamp(-125.0, 125.0) as i8
+        ((v as f64 / lsb.max(1e-12)).round() + pos0).clamp(-125.0, 125.0) as f32
     }
 
     /// Host-side edge trigger: the index in `pending[src]` where the level
@@ -192,18 +195,17 @@ impl AudioBackend {
         let channels = (0..self.channels)
             .filter(|&ch| self.cfg.channels.get(ch).is_some_and(|c| c.enabled))
             .map(|ch| {
-                let raw: Vec<i8> = self.pending[ch][from..from + CHUNK]
+                let data: Vec<f32> = self.pending[ch][from..from + CHUNK]
                     .iter()
                     .map(|&v| self.quantize(ch, v))
                     .collect();
                 let (lsb, zero) = self.scale(ch);
                 ChannelCapture {
                     ch,
-                    clipped: raw.iter().any(|&r| r.abs() >= 125),
+                    clipped: data.iter().any(|&r| r.abs() >= 125.0),
                     freq_meter: None,
-                    raw,
-                    volts_per_lsb: lsb,
-                    zero_volts: zero,
+                    data,
+                    cal: IqCal::real(lsb, zero),
                 }
             })
             .collect();
@@ -221,6 +223,7 @@ impl AudioBackend {
             t_capture: Some(t_capture),
             sample_rate: self.rate,
             acq: AcqMode::Sample,
+            layout: SampleLayout::Real,
             channels,
         }
     }

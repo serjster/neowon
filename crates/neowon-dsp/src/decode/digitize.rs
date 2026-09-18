@@ -63,15 +63,15 @@ impl Default for Threshold {
 ///
 /// Returns `None` when the signal has no usable swing — better than
 /// reporting a flat line as an idle bus and letting a decoder run on it.
-pub fn digitize(raw: &[i8], sample_rate: f64, threshold: Threshold) -> Option<Digital> {
+pub fn digitize(raw: &[f32], sample_rate: f64, threshold: Threshold) -> Option<Digital> {
     if raw.len() < 2 {
         return None;
     }
     let (lo, hi) = match threshold {
         Threshold::Absolute { low, high } => (low as f64, high as f64),
         Threshold::Relative { hysteresis } => {
-            let min = *raw.iter().min()? as f64;
-            let max = *raw.iter().max()? as f64;
+            let min = raw.iter().copied().reduce(f32::min)? as f64;
+            let max = raw.iter().copied().reduce(f32::max)? as f64;
             let span = max - min;
             // Under a few counts of swing there is nothing to threshold;
             // a real logic signal on any sensible vertical setting is far
@@ -109,13 +109,13 @@ mod tests {
     use super::*;
 
     /// A square wave of `period` samples, amplitude ±100.
-    fn square(n: usize, period: usize) -> Vec<i8> {
+    fn square(n: usize, period: usize) -> Vec<f32> {
         (0..n)
             .map(|i| {
                 if (i / (period / 2)).is_multiple_of(2) {
-                    -100
+                    -100.0
                 } else {
-                    100
+                    100.0
                 }
             })
             .collect()
@@ -139,7 +139,7 @@ mod tests {
         // threshold fires repeatedly while it crosses.
         let period = 20usize;
         let slew = 5usize;
-        let raw: Vec<i8> = (0..200)
+        let raw: Vec<f32> = (0..200)
             .map(|i| {
                 let phase = i % period;
                 let high = phase >= period / 2;
@@ -159,7 +159,7 @@ mod tests {
                     -100.0
                 };
                 let noise = if i % 2 == 0 { 25.0 } else { -25.0 };
-                (base + noise).clamp(-127.0, 127.0) as i8
+                (base + noise).clamp(-127.0, 127.0) as f32
             })
             .collect();
 
@@ -182,8 +182,8 @@ mod tests {
 
     #[test]
     fn a_flat_line_is_not_an_idle_bus() {
-        assert!(digitize(&[0i8; 100], 1e6, Threshold::default()).is_none());
-        assert!(digitize(&[125i8; 100], 1e6, Threshold::default()).is_none());
+        assert!(digitize(&[0.0f32; 100], 1e6, Threshold::default()).is_none());
+        assert!(digitize(&[125.0f32; 100], 1e6, Threshold::default()).is_none());
     }
 
     #[test]

@@ -1,8 +1,8 @@
 //! Math channels: derived traces computed in volts, re-quantized to the
-//! shared i8 screen encoding so every consumer (renderer, measurements,
-//! cursors, FFT) treats them like any other channel.
+//! shared raw-count encoding (as `f32`) so every consumer (renderer,
+//! measurements, cursors, FFT) treats them like any other channel.
 
-use neowon_core::ChannelCapture;
+use neowon_core::{ChannelCapture, IqCal};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MathOp {
@@ -54,12 +54,12 @@ impl MathOp {
 
 /// Compute the math trace in result units (volts etc.).
 fn compute(a: &ChannelCapture, b: Option<&ChannelCapture>, op: MathOp, rate: f64) -> Vec<f64> {
-    let n = a.raw.len();
+    let n = a.data.len();
     let av = |i: usize| a.volts_at(i);
     match op {
         MathOp::Add | MathOp::Sub | MathOp::Mul | MathOp::Div => {
             let Some(b) = b else { return vec![0.0; n] };
-            let n = n.min(b.raw.len());
+            let n = n.min(b.data.len());
             (0..n)
                 .map(|i| {
                     let (x, y) = (av(i), b.volts_at(i));
@@ -126,7 +126,7 @@ pub fn math_trace(
     });
     let lsb = fs / 250.0;
     let mut clipped = false;
-    let raw = values
+    let data = values
         .iter()
         .map(|&v| {
             let q = (v / lsb).round();
@@ -134,15 +134,14 @@ pub fn math_trace(
             if c != q {
                 clipped = true;
             }
-            c as i8
+            c as f32
         })
         .collect();
     (
         ChannelCapture {
             ch: 2,
-            raw,
-            volts_per_lsb: lsb,
-            zero_volts: 0.0,
+            data,
+            cal: IqCal::real(lsb, 0.0),
             clipped,
             freq_meter: None,
         },
@@ -154,12 +153,11 @@ pub fn math_trace(
 mod tests {
     use super::*;
 
-    fn cap(raw: Vec<i8>, lsb: f64) -> ChannelCapture {
+    fn cap(raw: Vec<f32>, lsb: f64) -> ChannelCapture {
         ChannelCapture {
             ch: 0,
-            raw,
-            volts_per_lsb: lsb,
-            zero_volts: 0.0,
+            data: raw,
+            cal: neowon_core::IqCal::real(lsb, 0.0),
             clipped: false,
             freq_meter: None,
         }
@@ -167,8 +165,8 @@ mod tests {
 
     #[test]
     fn add_and_autoscale() {
-        let a = cap(vec![50; 100], 0.01); // 0.5 V
-        let b = cap(vec![100; 100], 0.01); // 1.0 V
+        let a = cap(vec![50.0; 100], 0.01); // 0.5 V
+        let b = cap(vec![100.0; 100], 0.01); // 1.0 V
         let (m, fs) = math_trace(&a, Some(&b), MathOp::Add, 1000.0, None);
         // 1.5 V on the chosen scale.
         let v = m.volts_at(0);
@@ -180,7 +178,7 @@ mod tests {
     #[test]
     fn diff_of_ramp_is_constant() {
         // Ramp 1 LSB/sample at 0.01 V/LSB and 1 kS/s -> 10 V/s.
-        let a = cap((0..100).map(|i| i as i8).collect(), 0.01);
+        let a = cap((0..100).map(|i| i as f32).collect(), 0.01);
         let (m, _fs) = math_trace(&a, None, MathOp::Diff, 1000.0, Some(50.0));
         let mid = m.volts_at(50);
         assert!((mid - 10.0).abs() < 0.5, "d/dt {mid}");
@@ -188,7 +186,7 @@ mod tests {
 
     #[test]
     fn integral_of_constant_is_ramp() {
-        let a = cap(vec![100; 1000], 0.01); // 1 V constant, 1 kS/s
+        let a = cap(vec![100.0; 1000], 0.01); // 1 V constant, 1 kS/s
         let (m, _) = math_trace(&a, None, MathOp::Integ, 1000.0, Some(4.0));
         let end = m.volts_at(999);
         assert!((end - 1.0).abs() < 0.05, "integral end {end}");

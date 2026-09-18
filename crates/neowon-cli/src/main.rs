@@ -225,7 +225,7 @@ fn report(frame: &neowon_core::CaptureFrame) -> String {
     let mut out = String::new();
     for cap in &frame.channels {
         let stats = basic_stats(cap);
-        let freq = estimate_frequency(&cap.raw, frame.sample_rate);
+        let freq = estimate_frequency(&cap.data, frame.sample_rate);
         out.push_str(&format!(
             "seq {:>5} ch{}  vpp {:>8}  vavg {:>8}  freq(sw) {:>10}  freq(hw) {:>10}{}",
             frame.seq,
@@ -328,7 +328,7 @@ fn smoke(cli: &Cli, mut acq: AcqArgs) -> Result<()> {
     } else {
         (stats.vpp, 1.0)
     };
-    let freq = estimate_frequency(&cap.raw, frame.sample_rate).context("no frequency")?;
+    let freq = estimate_frequency(&cap.data, frame.sample_rate).context("no frequency")?;
     dev.stop()?;
 
     let mut failures = vec![];

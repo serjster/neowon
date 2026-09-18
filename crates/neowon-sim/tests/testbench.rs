@@ -112,7 +112,7 @@ fn square_vrms() {
 fn frequency_accuracy_across_decades() {
     for (freq, rate) in [(50.0, 12.5e3), (1000.0, 250e3), (25e3, 2.5e6)] {
         let c = cap(sine(freq, 1.0), rate, 2.5);
-        let f = estimate_frequency(&c.raw, rate).expect("freq found");
+        let f = estimate_frequency(&c.data, rate).expect("freq found");
         let err = (f - freq).abs() / freq;
         assert!(err < 0.002, "{freq} Hz: measured {f} (err {err})");
     }
@@ -157,7 +157,7 @@ fn fft_two_tone() {
     // land exactly on bins (10 and 35) so there is no leakage.
     let rate = 409_600.0;
     let c = preset_cap("two-tone", rate, 5.0);
-    let s = spectrum(&c.raw, c.volts_per_lsb, rate, Window::Hann, SAMPLES).unwrap();
+    let s = spectrum(&c.data, c.cal.scale_i, rate, Window::Hann, SAMPLES).unwrap();
     assert!((s.bin_hz - 100.0).abs() < 1e-6, "bin {}", s.bin_hz);
 
     let p1 = index_of_peak(&s.amplitude, None);
@@ -182,7 +182,7 @@ fn fft_am_sidebands() {
     // Same 100 Hz/bin grid: carrier at bin 100, sidebands at bins 95/105.
     let rate = 409_600.0;
     let c = preset_cap("am", rate, 5.0);
-    let s = spectrum(&c.raw, c.volts_per_lsb, rate, Window::Hann, SAMPLES).unwrap();
+    let s = spectrum(&c.data, c.cal.scale_i, rate, Window::Hann, SAMPLES).unwrap();
     let pc = index_of_peak(&s.amplitude, None);
     let fc = pc as f64 * s.bin_hz;
     assert!((fc - 10_000.0).abs() <= 2.0 * s.bin_hz, "carrier at {fc}");
@@ -256,8 +256,8 @@ fn math_integral_of_square_is_triangle() {
 fn chirp_frequency_increases() {
     let c = preset_cap("chirp", 250e3, 2.5);
     let half = SAMPLES / 2;
-    let f1 = estimate_frequency(&c.raw[..half], 250e3).expect("first half");
-    let f2 = estimate_frequency(&c.raw[half..], 250e3).expect("second half");
+    let f1 = estimate_frequency(&c.data[..half], 250e3).expect("first half");
+    let f2 = estimate_frequency(&c.data[half..], 250e3).expect("second half");
     assert!(f2 > 2.0 * f1, "first {f1}, second {f2}");
 }
 
@@ -271,8 +271,8 @@ fn lissajous_frequency_ratio() {
     src.set_range(1, 5.0);
     let frame = src.next_frame();
     assert_eq!(frame.channels.len(), 2, "XY needs both channels enabled");
-    let f1 = estimate_frequency(&frame.channels[0].raw, 250e3).expect("ch1");
-    let f2 = estimate_frequency(&frame.channels[1].raw, 250e3).expect("ch2");
+    let f1 = estimate_frequency(&frame.channels[0].data, 250e3).expect("ch1");
+    let f2 = estimate_frequency(&frame.channels[1].data, 250e3).expect("ch2");
     let ratio = f1 / f2;
     assert!((ratio - 1.5).abs() < 0.03, "ratio {ratio}");
 }
@@ -339,13 +339,9 @@ fn normal_sweep_aligns_five_frames() {
             .poll_frame(Duration::from_millis(500))
             .unwrap()
             .expect("triggered");
-        let raw = &frame.channels[0].raw;
+        let raw = &frame.channels[0].data;
         // Crossing placed at index 2500; 0 V = 0 counts on a 10 V range.
-        assert!(
-            raw[2500].unsigned_abs() <= 4,
-            "frame {n}: raw[2500]={}",
-            raw[2500]
-        );
+        assert!(raw[2500].abs() <= 4.0, "frame {n}: raw[2500]={}", raw[2500]);
         assert!(raw[2510] > raw[2490], "frame {n}: not rising");
     }
 }
@@ -371,7 +367,7 @@ fn identical_sources_produce_identical_frames() {
         let fb = b.next_frame();
         assert_eq!(fa.channels.len(), fb.channels.len(), "{name}");
         for (ca, cb) in fa.channels.iter().zip(&fb.channels) {
-            assert_eq!(ca.raw, cb.raw, "{name} ch{}", ca.ch);
+            assert_eq!(ca.data, cb.data, "{name} ch{}", ca.ch);
         }
     }
 }
