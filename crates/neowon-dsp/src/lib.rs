@@ -5,6 +5,7 @@
 pub mod acq;
 pub mod decode;
 pub mod fft;
+pub mod iq;
 pub mod math;
 pub mod measure;
 pub mod stats;
@@ -13,6 +14,7 @@ pub mod timeline;
 pub use acq::peak_advised;
 pub use decode::{DecodeError, Digital, Event, EventKind, Threshold, digitize};
 pub use fft::{Spectrum, Window, spectrum};
+pub use iq::{IqSpectrum, iq_spectrum};
 pub use math::{MathOp, math_trace};
 pub use measure::{
     BasicStats, Measurements, basic_stats, estimate_frequency, measure, measure_envelope,

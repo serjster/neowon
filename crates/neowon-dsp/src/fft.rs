@@ -36,7 +36,7 @@ impl Window {
         }
     }
 
-    fn coeff(&self, i: usize, n: usize) -> f64 {
+    pub(crate) fn coeff(&self, i: usize, n: usize) -> f64 {
         let x = i as f64 / (n - 1) as f64;
         let tau = std::f64::consts::TAU;
         match self {
