@@ -7,7 +7,9 @@
 //! `cargo test -p neowon-dsp --test detect_golden -- --nocapture`
 
 use neowon_core::SignalObservation;
-use neowon_dsp::{DetectConfig, Tracker, TrackerConfig, detect};
+use neowon_dsp::iq::iq_spectrum;
+use neowon_dsp::modmeas::occupied_band;
+use neowon_dsp::{DetectConfig, Tracker, TrackerConfig, Window, detect};
 use neowon_sim::{IqComponent, IqScene};
 
 const RATE: f64 = 8192.0;
@@ -102,26 +104,51 @@ fn tone_1khz_clean_is_one_peak_at_its_frequency() {
 }
 
 #[test]
-fn burst_10ms_at_half_time_is_present_with_its_clean_bandwidth() {
-    // "10 ms burst at 0.5": centred on the capture's midpoint.
+fn burst_10ms_at_half_time_is_present_with_its_own_bandwidth() {
+    // "10 ms burst at 0.5": centred on the capture's midpoint, with
+    // raised-cosine edges across its whole length (a Hann envelope): a
+    // rectangular gate's occupied bandwidth would be set by the noise.
     let burst = IqComponent::Burst {
         offset_hz: 1000.0,
         amplitude: AMP,
         start_s: 0.495,
         duration_s: 0.010,
+        rise_s: 0.005,
     };
     let (obs, tr, _) = run(vec![burst], Some(30.0));
-    let (clean, _, _) = run(vec![burst], None);
     readout("burst", &obs, &tr);
-    assert!(!obs.is_empty(), "burst not detected");
-    // A gated tone is wider than the tone: its bandwidth is derived from
-    // the same burst without noise, and noise may move it by one bin.
-    let widest = |v: &[SignalObservation]| v.iter().map(|o| o.bandwidth_hz()).fold(0.0, f64::max);
-    let (noisy, reference) = (widest(&obs), widest(&clean));
-    assert!((noisy - reference).abs() <= BIN, "{noisy} vs {reference}");
-    for o in &obs {
-        assert!(o.lo_hz <= 1000.0 && o.hi_hz >= 1000.0, "{o:?}");
-    }
+    // The truth is the burst's own 99% bandwidth, from its exact energy
+    // spectrum (the isolated, noise-free burst over the whole second,
+    // 1 Hz bins) — not from the detector.
+    let alone = IqScene {
+        sample_rate: RATE,
+        components: vec![burst],
+        noise_rms: 0.0,
+    };
+    let exact = iq_spectrum(&alone.samples(SEED, 0, N), RATE, Window::Rectangle, N).unwrap();
+    let lin: Vec<f64> = exact
+        .power_db
+        .iter()
+        .map(|d| 10f64.powf(d / 10.0))
+        .collect();
+    let (lo, hi) = occupied_band(&lin, 0.99);
+    let truth = (hi - lo) * exact.bin_hz;
+    // The observation carrying the burst is the strongest one; others are
+    // its edge leaking into the next frame, tens of dB down.
+    let o = obs
+        .iter()
+        .max_by(|a, b| a.power_dbfs.total_cmp(&b.power_dbfs))
+        .expect("burst not detected");
+    println!(
+        r#"{{"row":"burst","truth_obw99_hz":{truth:.1},"measured_hz":{:.1}}}"#,
+        o.bandwidth_hz()
+    );
+    assert!(
+        (o.bandwidth_hz() - truth).abs() <= BIN,
+        "{} vs {truth}",
+        o.bandwidth_hz()
+    );
+    assert!(o.lo_hz <= 1000.0 && o.hi_hz >= 1000.0, "{o:?}");
 }
 
 #[test]
@@ -159,6 +186,7 @@ fn transient_shorter_than_min_duration_never_becomes_active() {
         amplitude: AMP,
         start_s: 0.25,
         duration_s: 0.125,
+        rise_s: 0.0,
     };
     let (obs, tr, most_active) = run(vec![transient], Some(30.0));
     readout("transient", &obs, &tr);

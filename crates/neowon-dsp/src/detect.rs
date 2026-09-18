@@ -25,8 +25,15 @@ pub struct DetectConfig {
     /// hide an event shorter than a block.
     pub blocks: usize,
     pub window: Window,
-    /// Rolling-median width for the floor, bins (made odd).
-    pub floor_bins: usize,
+    /// Width of the floor window as a fraction of the band. The floor is
+    /// the window's lower quartile, so a signal must fill three quarters
+    /// of it to lift the floor: 1/4 of the band lets a signal up to ~1/5
+    /// of the band wide (a 200 kHz FM channel at 1 MS/s) stand out.
+    pub floor_span: f64,
+    /// The floor is never taken below this, dBFS per bin: every real
+    /// receiver has noise, and without a limit a noise-free input would
+    /// report window leakage 150 dB down as signals.
+    pub floor_min_dbfs: f64,
     /// A bin counts when it is this far above the floor, dB.
     pub threshold_db: f64,
     /// Clusters separated by at most this many quiet bins merge.
@@ -42,7 +49,8 @@ impl Default for DetectConfig {
             nfft: 256,
             blocks: 4,
             window: Window::Hann,
-            floor_bins: 31,
+            floor_span: 0.25,
+            floor_min_dbfs: -120.0,
             threshold_db: 12.0,
             gap_bins: 2,
             dc_guard: 0,
@@ -56,17 +64,57 @@ impl DetectConfig {
     }
 }
 
-/// Rolling median of `db` over `width` bins (clamped at the edges).
-pub fn floor(db: &[f64], width: usize) -> Vec<f64> {
-    let half = width / 2;
-    let mut buf = Vec::with_capacity(width + 1);
-    (0..db.len())
-        .map(|k| {
-            let (a, b) = (k.saturating_sub(half), (k + half).min(db.len() - 1));
+/// The quantile the floor takes of its window.
+pub const FLOOR_QUANTILE: f64 = 0.25;
+/// Standard-normal quantile at `FLOOR_QUANTILE`.
+const FLOOR_Z: f64 = -0.674_489_750;
+
+/// Noise floor per bin, dB: the lower quartile of the bins within
+/// `width / 2` of each bin, corrected to the mean of noise averaged over
+/// `blocks` blocks. A lower quartile ignores signals that fill up to three
+/// quarters of the window (a median would be lifted by any signal wider
+/// than half of it). Averaged noise power is chi-square with `2·blocks`
+/// degrees of freedom, whose quantile the Wilson–Hilferty approximation
+/// gives; dividing it out makes SNRs unbiased.
+///
+/// Computed per segment of `width / 8` bins and interpolated between
+/// segment centres, so it costs a few sorts of `width` values, not one
+/// per bin.
+pub fn floor(db: &[f64], width: usize, blocks: usize) -> Vec<f64> {
+    let n = db.len();
+    let seg = (width / 8).max(1);
+    let half = (width / 2).max(1);
+    let segs = n.div_ceil(seg);
+    let centre = |j: usize| (j * seg + (seg - 1).min(n - 1 - j * seg) / 2) as f64;
+    let mut buf = Vec::with_capacity(width + seg);
+    let level: Vec<f64> = (0..segs)
+        .map(|j| {
+            let c = centre(j) as usize;
+            let (a, b) = (c.saturating_sub(half), (c + half).min(n - 1));
             buf.clear();
             buf.extend_from_slice(&db[a..=b]);
             buf.sort_by(f64::total_cmp);
-            buf[buf.len() / 2]
+            buf[((buf.len() - 1) as f64 * FLOOR_QUANTILE).round() as usize]
+        })
+        .collect();
+    let nu = 2.0 * blocks.max(1) as f64;
+    let h = 2.0 / (9.0 * nu);
+    let ratio = (1.0 - h + FLOOR_Z * h.sqrt()).powi(3).max(1e-3);
+    let correction = -10.0 * ratio.log10();
+    (0..n)
+        .map(|k| {
+            let x = k as f64;
+            let j = ((x - centre(0)) / seg as f64)
+                .floor()
+                .clamp(0.0, (segs - 1) as f64) as usize;
+            let v = if j + 1 < segs {
+                let (x0, x1) = (centre(j), centre(j + 1));
+                let t = ((x - x0) / (x1 - x0)).clamp(0.0, 1.0);
+                level[j] + t * (level[j + 1] - level[j])
+            } else {
+                level[j]
+            };
+            v + correction
         })
         .collect()
 }
@@ -124,7 +172,11 @@ fn detect_timed(
     when: &dyn Fn(usize, usize, f64) -> (f64, f64),
     cfg: &DetectConfig,
 ) -> Vec<SignalObservation> {
-    let fl = floor(&s.power_db, cfg.floor_bins | 1);
+    let width = ((s.len() as f64 * cfg.floor_span) as usize).max(8);
+    let fl: Vec<f64> = floor(&s.power_db, width, s.blocks)
+        .into_iter()
+        .map(|f| f.max(cfg.floor_min_dbfs))
+        .collect();
     let dc = s.len() / 2;
     let hot: Vec<bool> = (0..s.len())
         .map(|k| {
@@ -330,12 +382,51 @@ mod tests {
     use super::*;
 
     #[test]
-    fn floor_ignores_a_narrow_peak() {
-        let mut db = vec![-60.0; 64];
-        db[30] = -10.0;
-        db[31] = -12.0;
-        let f = floor(&db, 31);
-        assert!(f.iter().all(|&v| v == -60.0));
+    fn floor_ignores_a_signal_filling_most_of_its_window() {
+        // A 400-bin plateau 40 dB up in a 4096-bin band: the median over a
+        // narrow window would sit on the plateau; the quartile over a
+        // quarter of the band stays on the noise.
+        let mut db = vec![-70.0; 4096];
+        for v in &mut db[1800..2200] {
+            *v = -30.0;
+        }
+        let f = floor(&db, 1024, 64);
+        assert!(
+            f.iter().all(|&v| (v - -70.0).abs() < 0.5),
+            "{:?}",
+            &f[1990..2010]
+        );
+    }
+
+    #[test]
+    fn floor_reads_the_mean_of_averaged_noise() {
+        // Chi-square(2K)/2K noise with K = 16: the corrected quartile must
+        // land on the mean (0 dB) within a few tenths of a dB.
+        let k = 16;
+        let noise: Vec<f64> = (0..4096)
+            .map(|i| {
+                let s: f64 = (0..k)
+                    .map(|j| {
+                        let u = (neowon_sim_free_unit(i * k + j) + 1e-12).ln();
+                        -u
+                    })
+                    .sum();
+                10.0 * (s / k as f64).log10()
+            })
+            .collect();
+        let f = floor(&noise, 1024, k);
+        let mean = f.iter().sum::<f64>() / f.len() as f64;
+        assert!(mean.abs() < 0.3, "{mean}");
+    }
+
+    /// A deterministic uniform in (0, 1) without pulling in the simulator.
+    fn neowon_sim_free_unit(i: usize) -> f64 {
+        let mut z = (i as u64)
+            .wrapping_add(1)
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64
     }
 
     #[test]

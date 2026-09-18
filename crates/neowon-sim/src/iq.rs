@@ -85,12 +85,16 @@ pub enum IqComponent {
         phase: f64,
     },
     /// A tone switched on for `duration_s` from `start_s` (sample time
-    /// `index / sample_rate`), silent otherwise.
+    /// `index / sample_rate`), silent otherwise. `rise_s` shapes the
+    /// switching with raised-cosine edges (0 = rectangular); real bursts
+    /// have finite edges, and a rectangular gate's sinc² spectrum has no
+    /// occupied bandwidth of its own, only one set by the noise floor.
     Burst {
         offset_hz: f64,
         amplitude: f64,
         start_s: f64,
         duration_s: f64,
+        rise_s: f64,
     },
     /// A linear sweep from `from_hz` to `to_hz` across `duration_s`,
     /// starting at `start_s`; silent outside it. Phase is
@@ -119,7 +123,17 @@ impl IqComponent {
                 amplitude,
                 start_s,
                 duration_s,
-            } => within(start_s, duration_s).then_some((amplitude, offset_hz * t)),
+                rise_s,
+            } => within(start_s, duration_s).then(|| {
+                let tau = (t - start_s).min(start_s + duration_s - t);
+                let env = if rise_s > 0.0 && tau < rise_s {
+                    // 0.5·(1 − cos(π·τ/rise)); cos of π·x is x/2 turns.
+                    0.5 * (1.0 - cos_sin_turns(tau / rise_s / 2.0).0)
+                } else {
+                    1.0
+                };
+                (amplitude * env, offset_hz * t)
+            }),
             IqComponent::Chirp {
                 from_hz,
                 to_hz,
@@ -301,6 +315,7 @@ mod tests {
                     amplitude: 0.5,
                     start_s: 0.25,
                     duration_s: 0.01,
+                    rise_s: 0.0,
                 },
                 IqComponent::Chirp {
                     from_hz: -2000.0,
