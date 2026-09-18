@@ -16,6 +16,7 @@ use neowon_dsp::{DetectConfig, IqSpectrum, Tracker, TrackerConfig, Window, detec
 use crate::Link;
 
 mod actions;
+pub mod analysis;
 mod readout;
 
 use crate::viz::waterfall::thermal;
@@ -66,6 +67,11 @@ pub struct SdrState {
     pub tracker: Tracker,
     /// (centre, rate) the tracker's tracks belong to; a retune clears it.
     tracked: (f64, f64),
+    /// Run the modulation lab on the signal nearest the tuned frequency.
+    pub analyse_on: bool,
+    /// The modulation to assume, or `None` to pick it from cumulants.
+    pub modulation: Option<neowon_core::Modulation>,
+    pub analysis: Option<analysis::Analysis>,
     last_seq: Option<u64>,
 }
 
@@ -101,6 +107,9 @@ impl Default for SdrState {
             threshold_db: DetectConfig::default().threshold_db,
             tracker: tracker(),
             tracked: (0.0, 0.0),
+            analyse_on: false,
+            modulation: None,
+            analysis: None,
             last_seq: None,
         }
     }
@@ -192,6 +201,20 @@ pub fn update(mut sdr: ResMut<SdrState>) {
     sdr.spectrum = Some(spec);
     if sdr.detect_on {
         track(&mut sdr, &frame);
+    }
+    // The lab is costly (a channel filter and two recoveries): every 8th
+    // frame, a few times a second.
+    if sdr.analyse_on && frame.seq % 8 == 0 {
+        let centre = sdr.config.centre_hz;
+        let target = sdr
+            .tracker
+            .active()
+            .min_by(|a, b| {
+                let d = |t: &&neowon_dsp::Track| (t.last.centre_hz - centre).abs();
+                d(a).total_cmp(&d(b))
+            })
+            .cloned();
+        sdr.analysis = target.and_then(|t| analysis::analyse(&frame, centre, &t, sdr.modulation));
     }
 }
 

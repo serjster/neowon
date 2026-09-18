@@ -105,9 +105,11 @@ pub fn detections_json(sdr: &SdrState) -> String {
     )
 }
 
-/// `get modmeas`: measurements of the strongest active track. Fields that
-/// need the 10.3 modulation lab (symbol rate, EVM, cumulants) are null
-/// until it lands.
+/// `get modmeas`: measurements of the strongest active track, plus the
+/// modulation lab's results for the signal it analysed (`sdr analyse on`).
+/// Complex cumulants (C20, C40, C41) are reported as magnitudes: their
+/// phase is the constellation's orientation, not a property of the
+/// modulation. Lab fields are null until the lab has run.
 pub fn modmeas_json(sdr: &SdrState) -> String {
     let (Some(t), Some(s)) = (
         sdr.tracker
@@ -119,11 +121,38 @@ pub fn modmeas_json(sdr: &SdrState) -> String {
     };
     let c = sdr.config.centre_hz;
     let band = Band::of(s, t.last.lo_hz - c, t.last.hi_hz - c);
+    let lab = match &sdr.analysis {
+        None => {
+            r#""lab":null,"symbol_rate_hz":null,"evm_rms_pct":null,"cumulants":null"#.to_string()
+        }
+        Some(a) => {
+            let k = &a.cumulants;
+            format!(
+                concat!(
+                    r#""lab":{{"track":{},"centre_hz":{},"modulation":"{}","auto":{},"mer_db":{}}},"#,
+                    r#""symbol_rate_hz":{},"evm_rms_pct":{},"#,
+                    r#""cumulants":{{"c20":{},"c21":{},"c40":{},"c41":{},"c42":{},"c63":{}}}"#
+                ),
+                a.track,
+                num(a.centre_hz),
+                a.modulation.label(),
+                a.auto,
+                num(a.mer_db),
+                num(a.symbol_rate_hz),
+                num(a.evm_rms_pct),
+                num(k.c20.norm()),
+                num(k.c21),
+                num(k.c40.norm()),
+                num(k.c41.norm()),
+                num(k.c42),
+                num(k.c63),
+            )
+        }
+    };
     format!(
         concat!(
             r#"{{"ok":true,"id":{},"centre_hz":{},"obw99_hz":{},"channel_power_dbfs":{},"#,
-            r#""snr_db":{},"flatness":{},"symbol_rate_hz":null,"evm_rms_pct":null,"#,
-            r#""cumulants":null}}"#
+            r#""snr_db":{},"flatness":{},{}}}"#
         ),
         t.id,
         num(t.last.centre_hz),
@@ -131,5 +160,6 @@ pub fn modmeas_json(sdr: &SdrState) -> String {
         num(t.last.power_dbfs),
         num(t.last.snr_db),
         num(flatness(s, band)),
+        lab,
     )
 }
