@@ -607,3 +607,24 @@ criterion.
   automated runs; `neowon sim …` never opens a device (dispatch opens USB per
   hardware subcommand), so the spec's two-process `cmp` criterion is safe to
   automate. The fixture is a binary file, committed by this spec's D8.
+- **10.8 dataset pipeline (2026-09-19).** `neowon_sim::dataset`,
+  `neowon sim dataset [--recipe r.json] [--seed] [--examples] --out dir`.
+  - *Export:* one SigMF recording (`cf32_le`, examples back to back, one
+    annotation per signal with `core:freq_lower/upper_edge` and
+    `core:label`); the recipe and each example's drawn values ride in
+    `neowon:` fields. torchsig reads SigMF, so there is no separate
+    torchsig writer.
+  - *Occupancy by definition:* RRC signals `Rs·(1+β)`, AM `±tone`, CW a
+    line. FM has no finite band; its rectangle is Carson's `2·(Δf + tone)`
+    (≈98% of the power), and the test holds FM examples to 97%.
+  - *Time:* recipe signals are continuous, so every rectangle spans its
+    whole example. Bursty builders come with a use for them.
+  - *Seeds:* example `i` is `splitmix64(recipe.seed, i)`; signal `j` in it
+    renders from `splitmix64(example, 2³² + j)`, because two digital
+    signals on one seed would share a symbol stream.
+  - *Pinned bytes:* the 16-example test recipe's FNV-1a is asserted, like
+    the D8 fixture, so a platform or code change that moves a dataset
+    fails CI.
+  - *QC panel deferred:* the app has no dataset view. The QC is the
+    `dataset_recipe` test (metadata re-measured from the samples). A panel
+    waits on IQ playback in the app, since there is no IQ recording yet.
