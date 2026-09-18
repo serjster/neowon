@@ -23,6 +23,8 @@ use rmcp::{
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+mod sdr_tools;
+
 /// What the client talks to; kept so a broken link can be re-established
 /// (the app restarting, or a spawned sim dying, must not strand the
 /// long-lived MCP server).
@@ -244,13 +246,13 @@ struct ScreenshotParams {
 }
 
 #[derive(Clone)]
-struct Scope {
+pub(crate) struct Scope {
     client: std::sync::Arc<Mutex<ScopeClient>>,
     tool_router: ToolRouter<Self>,
 }
 
 impl Scope {
-    fn req(&self, line: &str) -> Result<String, ErrorData> {
+    pub(crate) fn req(&self, line: &str) -> Result<String, ErrorData> {
         let mut client = self
             .client
             .lock()
@@ -426,7 +428,10 @@ impl ServerHandler for Scope {
                  configure_channel/configure_trigger → measurements → \
                  screenshot (returns an image of the display). exec_script \
                  reaches every remaining control with the documented neowon \
-                 script grammar.",
+                 script grammar. In SDR mode (app launched with --sdr-sim or \
+                 --rtl): sdr_status → sdr_tune → sdr_detections/sdr_modmeas. \
+                 The signal catalog (catalog, catalog_list, catalog_history) \
+                 works in either mode.",
         )
     }
 }
@@ -448,7 +453,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let scope = Scope {
         client: std::sync::Arc::new(Mutex::new(client)),
-        tool_router: Scope::tool_router(),
+        tool_router: Scope::tool_router() + Scope::sdr_router(),
     };
     let service = scope.serve(stdio()).await?;
     service.waiting().await?;

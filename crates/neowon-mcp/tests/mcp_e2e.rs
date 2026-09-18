@@ -33,6 +33,12 @@ impl Mcp {
         let mut child = Command::new(env!("CARGO_BIN_EXE_neowon-mcp"))
             .arg("--spawn-sim")
             .env("NEOWON_MCP_PORT", port.to_string())
+            // The spawned app inherits this: a throwaway catalog, not the
+            // user's.
+            .env(
+                "NEOWON_CATALOG",
+                std::env::temp_dir().join(format!("neowon-mcp-cat-{}", std::process::id())),
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -95,6 +101,13 @@ fn mcp_tools_drive_the_sim() {
         "configure_trigger",
         "exec_script",
         "screenshot",
+        "sdr_status",
+        "sdr_tune",
+        "sdr_detections",
+        "sdr_modmeas",
+        "catalog_list",
+        "catalog_history",
+        "catalog",
     ] {
         assert!(tools.contains(name), "missing tool {name}: {tools}");
     }
@@ -136,4 +149,23 @@ fn mcp_tools_drive_the_sim() {
     assert!(shot.contains("image/png"), "shot: {shot}");
     // Base64 PNG magic: iVBORw0KGgo.
     assert!(shot.contains("iVBORw0KGgo"), "not a PNG payload");
+
+    // The catalog is instrument-agnostic: file a signal and list it back.
+    let call = |id: u64, name: &str, args: &str| {
+        format!(
+            r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":"{name}","arguments":{args}}}}}"#
+        )
+    };
+    mcp.send(&call(
+        900,
+        "catalog",
+        r#"{"command":"add 99.4M Radio Two"}"#,
+    ));
+    assert!(mcp.recv_id(900).contains("ok"));
+    mcp.send(&call(901, "catalog_list", r#"{"filter":"radio"}"#));
+    let list = mcp.recv_id(901);
+    assert!(
+        list.contains("Radio Two") && list.contains("99400000"),
+        "list: {list}"
+    );
 }
