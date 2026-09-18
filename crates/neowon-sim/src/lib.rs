@@ -9,12 +9,14 @@ pub mod backend;
 pub mod figures;
 pub mod iq;
 pub mod scenario;
+pub mod sdr;
 pub mod signal;
 
 pub use backend::SimBackend;
 pub use figures::XyFigure;
 pub use iq::{IqComponent, IqScene};
 pub use scenario::Scenario;
+pub use sdr::{RfScene, SimSdrBackend};
 pub use signal::{Component, SignalSpec, Xorshift};
 
 /// Samples per record, matching the VDS1022 frame shape.
