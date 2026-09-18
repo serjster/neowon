@@ -56,12 +56,25 @@ pub struct SurveyParams {
     peak_cap: Option<usize>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct InstrumentParams {
+    /// `scope` or `sdr`. Switches within the launch's family: simulator ↔
+    /// simulator, VDS1022 ↔ RTL-SDR. Each instrument keeps its settings.
+    instrument: String,
+}
+
 #[tool_router(router = sdr_router, vis = "pub(crate)")]
 impl Scope {
     #[tool(description = "SDR mode status and settings: backend, tuner, centre, \
         rate, gain, AGC, ppm, span, the strongest displayed peak and the noise floor.")]
     async fn sdr_status(&self) -> Result<String, ErrorData> {
         self.req("get sdr")
+    }
+
+    #[tool(description = "Switch the app between its two instruments, the \
+        oscilloscope (`scope`) and the SDR (`sdr`).")]
+    async fn instrument(&self, p: Parameters<InstrumentParams>) -> Result<String, ErrorData> {
+        self.req(&format!("instrument {}", p.0.instrument.trim()))
     }
 
     #[tool(description = "Tune the SDR (and optionally set rate and gain).")]

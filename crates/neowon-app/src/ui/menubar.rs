@@ -45,18 +45,12 @@ pub fn show(
                 ui.spacing_mut().item_spacing.x = 8.0;
                 menus(ui, bar);
                 ui.separator();
+                if bar.sdr.active {
+                    return sdr_status(ui, bar.sdr, &link.status);
+                }
                 // Run state badge (manual 8.5: Run = yellow, Stop = red).
                 let (label, color) = run_state(link, now);
-                let (r, _) = ui.allocate_exact_size(egui::vec2(64.0, 22.0), egui::Sense::hover());
-                ui.painter()
-                    .rect(r, 4.0, color, egui::Stroke::NONE, egui::StrokeKind::Middle);
-                ui.painter().text(
-                    r.center(),
-                    egui::Align2::CENTER_CENTER,
-                    label,
-                    egui::FontId::proportional(13.0),
-                    egui::Color32::BLACK,
-                );
+                badge(ui, label, color);
                 let record_len = link.caps.as_ref().map(|c| c.record_len()).unwrap_or(5000);
                 let per_div = record_len as f64 / link.config.sample_rate / 10.0;
                 // While the timeline is on, the on-screen time/div is the
@@ -148,6 +142,47 @@ pub fn show(
     l.pixels(resp.response.rect)
 }
 
+fn badge(ui: &mut egui::Ui, label: &str, color: egui::Color32) {
+    let (r, _) = ui.allocate_exact_size(egui::vec2(64.0, 22.0), egui::Sense::hover());
+    ui.painter()
+        .rect(r, 4.0, color, egui::Stroke::NONE, egui::StrokeKind::Middle);
+    ui.painter().text(
+        r.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        egui::FontId::proportional(13.0),
+        egui::Color32::BLACK,
+    );
+}
+
+/// The bar's readouts in SDR mode: run state, tuning, and the instrument.
+fn sdr_status(ui: &mut egui::Ui, sdr: &crate::sdr::SdrState, status: &str) {
+    let c = &sdr.config;
+    if c.running {
+        badge(ui, "RUN", RUN_COLOR);
+    } else {
+        badge(ui, "STOP", STOP_COLOR);
+    }
+    let gain = match c.gain {
+        neowon_backend::SdrGain::Auto => "AGC".to_string(),
+        neowon_backend::SdrGain::Manual(db) => format!("{db:.1} dB"),
+    };
+    ui.label(
+        egui::RichText::new(format!(
+            "{:.4} MHz   {}   {gain}",
+            c.centre_hz / 1e6,
+            fmt_si(c.sample_rate, "S/s")
+        ))
+        .monospace(),
+    );
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        let n = format!("#{}", sdr.frames_seen);
+        ui.label(egui::RichText::new(format!("{n:>8}")).monospace())
+            .on_hover_text("IQ frames since the SDR connected.");
+        ui.label(egui::RichText::new(status).small());
+    });
+}
+
 /// What the menus need to reach. Bundled so the bar keeps one parameter.
 pub struct BarState<'a> {
     pub settings: &'a mut crate::ui::settings::Settings,
@@ -156,6 +191,7 @@ pub struct BarState<'a> {
     pub fft: &'a mut crate::derived::FftState,
     pub wf: &'a mut crate::viz::waterfall::WaterfallState,
     pub viz: &'a mut crate::viz::three_d::Viz3dState,
+    pub sdr: &'a crate::sdr::SdrState,
 }
 
 /// The drop-downs. Every item routes through a script action where one
@@ -220,6 +256,15 @@ fn menus(ui: &mut egui::Ui, bar: &mut BarState<'_>) {
                 let mut on = bar.menus.is_open(m);
                 if ui.checkbox(&mut on, label).changed() {
                     bar.menus.toggle(m);
+                }
+            }
+        });
+        ui.menu_button("Instrument", |ui| {
+            for (label, sdr) in [("Oscilloscope", false), ("SDR", true)] {
+                if ui.radio(bar.sdr.active == sdr, label).clicked() {
+                    bar.script
+                        .inject(Action::Sdr(crate::sdr::SdrAction::Instrument(sdr)));
+                    ui.close();
                 }
             }
         });

@@ -54,14 +54,20 @@ impl Supervisor {
     pub fn apply(&self, cfg: impl Into<InstrumentConfig>) {
         let _ = self.commands.send(Command::Apply(cfg.into()));
     }
-}
 
-impl Drop for Supervisor {
-    fn drop(&mut self) {
+    /// Stop the acquisition thread and wait for it, so the backend has
+    /// released its device before this returns. Idempotent (drop calls it).
+    pub fn shutdown(&mut self) {
         let _ = self.commands.send(Command::Shutdown);
         if let Some(h) = self.handle.take() {
             let _ = h.join();
         }
+    }
+}
+
+impl Drop for Supervisor {
+    fn drop(&mut self) {
+        self.shutdown();
     }
 }
 

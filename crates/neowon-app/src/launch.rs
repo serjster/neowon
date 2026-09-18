@@ -5,9 +5,14 @@
 //! `--audio`: the sound
 //! card as a streaming scope; `--sdr-sim`: the simulated SDR; `--rtl`: an
 //! RTL-SDR dongle; nothing: the VDS1022 (hardware).
+//!
+//! `instrument scope|sdr` switches instrument at run time within the launch's
+//! family: the simulators swap for each other, the hardware for the other
+//! hardware (VDS1022 ↔ RTL-SDR), and `--audio` pairs with the simulated SDR.
 
 use neowon_backend::{Backend, Command, ScopeConfig, SdrConfig, Supervisor};
 
+#[derive(Debug, Clone, Default)]
 pub struct Launch {
     pub demo: bool,
     demo_slow: bool,
@@ -36,32 +41,39 @@ impl Launch {
         self.sdr_sim || self.rtl
     }
 
-    /// Spawn the supervisor and send the first config. That config decides
-    /// what the supervisor replays on every (re)connect, so it must match
-    /// the instrument: an SDR refuses a scope config. Returns the scope
-    /// config the UI starts from either way.
-    pub fn start(&self) -> (Supervisor, ScopeConfig) {
-        let sup = if self.sdr_sim {
-            neowon_backend::spawn(|| {
-                Ok(Box::new(neowon_sim::SimSdrBackend::new()) as Box<dyn Backend>)
-            })
-        } else if self.rtl {
+    /// A supervisor for this launch's scope (`sdr` false) or SDR (`sdr`
+    /// true) instrument. It connects on its own thread; nothing is sent.
+    pub fn supervisor(&self, sdr: bool) -> Supervisor {
+        let hardware = !(self.sim || self.audio || self.sdr_sim);
+        if sdr && (self.rtl || hardware) {
             neowon_backend::spawn(|| {
                 neowon_sdr::RtlBackend::open(None)
                     .map(|b| Box::new(b) as Box<dyn Backend>)
                     .map_err(|e| e.to_string())
             })
+        } else if sdr {
+            neowon_backend::spawn(|| {
+                Ok(Box::new(neowon_sim::SimSdrBackend::new()) as Box<dyn Backend>)
+            })
         } else if self.audio {
             neowon_backend::spawn(|| {
                 neowon_audio::AudioBackend::open().map(|b| Box::new(b) as Box<dyn Backend>)
             })
-        } else if self.sim {
+        } else if self.sim || self.sdr_sim {
             neowon_backend::spawn(
                 || Ok(Box::new(neowon_sim::SimBackend::new()) as Box<dyn Backend>),
             )
         } else {
             neowon_backend::spawn(neowon_vds1022::backend::factory(None))
-        };
+        }
+    }
+
+    /// Spawn the supervisor and send the first config. That config decides
+    /// what the supervisor replays on every (re)connect, so it must match
+    /// the instrument: an SDR refuses a scope config. Returns the scope
+    /// config the UI starts from either way.
+    pub fn start(&self) -> (Supervisor, ScopeConfig) {
+        let sup = self.supervisor(self.sdr());
 
         // Defaults matched to the 1 kHz probe-comp signal through a x10 probe.
         let mut config = crate::view::startup_config();

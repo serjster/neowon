@@ -90,7 +90,7 @@ fn main() {
     // the instrument they select: `launch.rs`.
     let launch = launch::Launch::from_args();
     let (sup, config) = launch.start();
-    let (demo, sdr_mode) = (launch.demo, launch.sdr());
+    let demo = launch.demo;
 
     // NEOWON_WINDOW=WxH overrides the initial size (layout tests).
     let (win_w, win_h) = std::env::var("NEOWON_WINDOW")
@@ -176,7 +176,7 @@ fn main() {
         .init_resource::<effects::Effects>()
         .init_resource::<viz::waterfall::WaterfallState>()
         .init_resource::<viz::three_d::Viz3dState>()
-        .insert_resource(sdr::SdrState::new(sdr_mode))
+        .insert_resource(sdr::SdrState::new(launch))
         .insert_resource(catalog::CatalogState::open_from_env())
         .insert_resource(script::load_from_env())
         .insert_resource(control::start_from_env())

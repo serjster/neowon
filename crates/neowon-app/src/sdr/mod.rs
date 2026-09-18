@@ -17,11 +17,12 @@ use crate::Link;
 
 mod actions;
 pub mod analysis;
+mod instrument;
 mod readout;
 pub mod scan;
 
 use crate::viz::waterfall::thermal;
-pub use actions::{SdrAction, parse, parse_hz, parse_sim, run};
+pub use actions::{SdrAction, parse, parse_hz, parse_instrument, parse_sim, run};
 pub use readout::{classify_json, detections_json, iq_json, modmeas_json, sdr_json};
 pub use scan::{diff_json as survey_diff_json, survey_json};
 
@@ -80,6 +81,8 @@ pub struct SdrState {
     pub survey: Option<neowon_sdr::survey::Survey>,
     pub surveys: Vec<neowon_sdr::survey::SurveyResult>,
     last_seq: Option<u64>,
+    /// The instruments `instrument scope|sdr` switches between.
+    pub launch: crate::launch::Launch,
 }
 
 /// Live tracking: active after 0.25 s, forgotten after 1 s unseen.
@@ -121,15 +124,17 @@ impl Default for SdrState {
             survey: None,
             surveys: Vec::new(),
             last_seq: None,
+            launch: Default::default(),
         }
     }
 }
 
 impl SdrState {
     /// `active` when the app was launched on an SDR backend.
-    pub fn new(active: bool) -> Self {
+    pub fn new(launch: crate::launch::Launch) -> Self {
         Self {
-            active,
+            active: launch.sdr(),
+            launch,
             ..Default::default()
         }
     }

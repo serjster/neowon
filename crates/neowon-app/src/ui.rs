@@ -53,6 +53,7 @@ type VizState<'w> = (
     ResMut<'w, crate::deep::DeepView>,
     ResMut<'w, crate::decode::DecodeState>,
     ResMut<'w, settings::Settings>,
+    Res<'w, crate::sdr::SdrState>,
 );
 
 #[allow(clippy::too_many_arguments)]
@@ -94,6 +95,7 @@ pub fn panel(
         fft: &mut fft,
         wf: &mut viz.0,
         viz: &mut viz.1,
+        sdr: &viz.9,
     };
     let r = menubar::show(&ctx, &layout, &mut link, now, &viz.6, &mut bar);
     rects.put("menu_bar", r);
