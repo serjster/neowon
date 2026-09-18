@@ -133,6 +133,34 @@ pub fn symbol_bits(seed: u64, n: i64) -> u32 {
     splitmix64(seed ^ SYMBOL_SALT, n as u64) as u32
 }
 
+/// Pulse values for S samples per symbol: row r (the sample's phase within
+/// its symbol) holds, at column j, `h((r + (RRC_SPAN − j)·S) / S)` for the
+/// 2·RRC_SPAN + 1 symbols around it. Built once per (S, β).
+fn rrc_table(s: usize, beta: f64) -> std::sync::Arc<Vec<f64>> {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+    type Tables = Mutex<HashMap<(usize, u64), Arc<Vec<f64>>>>;
+    static TABLES: OnceLock<Tables> = OnceLock::new();
+    let mut map = TABLES
+        .get_or_init(Default::default)
+        .lock()
+        .expect("rrc table lock");
+    map.entry((s, beta.to_bits()))
+        .or_insert_with(|| {
+            let w = 2 * RRC_SPAN as usize + 1;
+            let mut t = Vec::with_capacity(s * w);
+            for r in 0..s as i64 {
+                for j in 0..w as i64 {
+                    // Symbol n = n0 − SPAN + j; offset k − n·S = r + (SPAN − j)·S.
+                    let num = r + (RRC_SPAN - j) * s as i64;
+                    t.push(rrc(num as f64 / s as f64, beta));
+                }
+            }
+            Arc::new(t)
+        })
+        .clone()
+}
+
 /// Root-raised-cosine pulse at `tau` symbol periods, roll-off `beta`,
 /// unit energy (∫h² dτ = 1), from basic operations only.
 pub fn rrc(tau: f64, beta: f64) -> f64 {
@@ -195,10 +223,16 @@ impl IqComponent {
         }
     }
 
-    /// The baseband (pre-carrier) value of a `Digital` component at time
-    /// `t`: Σ a_n h(u − n), u = t · symbol_rate, scaled so the matched
-    /// filter recovers `amplitude · a_n`.
-    fn digital(&self, seed: u64, t: f64, rate: f64) -> (f64, f64) {
+    /// The baseband (pre-carrier) value of a `Digital` component at
+    /// sample `index`: Σ a_n h(u − n), u = index · symbol_rate / rate,
+    /// scaled so the matched filter recovers `amplitude · a_n`.
+    ///
+    /// With an integer number of samples per symbol S, every pulse offset
+    /// is exactly `(index − n·S) / S`, so the pulse values come from a
+    /// table of those same exact values (fast enough for a live scene);
+    /// otherwise each is computed directly. Either way a sample is a pure
+    /// function of (seed, index).
+    fn digital(&self, seed: u64, index: u64, rate: f64) -> (f64, f64) {
         let IqComponent::Digital {
             modulation,
             symbol_rate,
@@ -209,16 +243,31 @@ impl IqComponent {
         else {
             return (0.0, 0.0);
         };
-        let u = t * symbol_rate;
-        let n0 = u.floor() as i64;
+        let sps = rate / symbol_rate;
         let (mut i, mut q) = (0.0, 0.0);
-        for n in n0 - RRC_SPAN..=n0 + RRC_SPAN {
-            let h = rrc(u - n as f64, rolloff);
+        let mut add = |n: i64, h: f64| {
             let (a, b) = modulation.point(symbol_bits(seed, n));
             i += a * h;
             q += b * h;
+        };
+        if sps.fract() == 0.0 && (1.0..=4096.0).contains(&sps) {
+            let s = sps as i64;
+            let k = index as i64;
+            let n0 = k.div_euclid(s);
+            let r = k.rem_euclid(s) as usize;
+            let table = rrc_table(s as usize, rolloff);
+            let row = &table[r * (2 * RRC_SPAN as usize + 1)..][..2 * RRC_SPAN as usize + 1];
+            for (j, &h) in row.iter().enumerate() {
+                add(n0 - RRC_SPAN + j as i64, h);
+            }
+        } else {
+            let u = index as f64 / rate * symbol_rate;
+            let n0 = u.floor() as i64;
+            for n in n0 - RRC_SPAN..=n0 + RRC_SPAN {
+                add(n, rrc(u - n as f64, rolloff));
+            }
         }
-        let g = amplitude / (rate / symbol_rate).sqrt();
+        let g = amplitude / sps.sqrt();
         (i * g, q * g)
     }
 }
@@ -257,7 +306,7 @@ impl IqScene {
         let t = index as f64 / self.sample_rate;
         for c in &self.components {
             if let IqComponent::Digital { offset_hz, .. } = *c {
-                let (a, b) = c.digital(seed, t, self.sample_rate);
+                let (a, b) = c.digital(seed, index, self.sample_rate);
                 let (cos, sin) = cos_sin_turns(offset_hz * t);
                 i += a * cos - b * sin;
                 q += a * sin + b * cos;
@@ -455,6 +504,18 @@ mod tests {
         let x = 1.0 / (4.0 * 0.35);
         assert!((rrc(x, 0.35) - rrc(x + 1e-7, 0.35)).abs() < 1e-5);
         assert!((rrc(0.0, 0.35) - rrc(1e-7, 0.35)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn rrc_table_matches_the_direct_pulse() {
+        let t = rrc_table(10, 0.35);
+        let w = 2 * RRC_SPAN as usize + 1;
+        for r in 0..10 {
+            for j in 0..w {
+                let tau = (r as f64 + (RRC_SPAN - j as i64) as f64 * 10.0) / 10.0;
+                assert!((t[r * w + j] - rrc(tau, 0.35)).abs() < 1e-15);
+            }
+        }
     }
 
     #[test]

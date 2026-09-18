@@ -18,21 +18,38 @@ use neowon_backend::{
 };
 use neowon_core::SharedFrame;
 
+use neowon_core::Modulation;
+
 use crate::iq::{IqComponent, IqScene};
 
 /// Pairs per frame (32 ms at 2.048 MS/s).
 pub const CHUNK_PAIRS: usize = 64 * 1024;
 
-/// A transmitter in a scene.
+/// A transmitter in a scene: a carrier, or a digitally modulated signal
+/// (modulation, symbol rate, roll-off).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Emitter {
     pub freq_hz: f64,
-    /// Full-scale units.
+    /// Full-scale units (for a digital emitter, the symbol amplitude after
+    /// a matched filter).
     pub amplitude: f64,
+    pub digital: Option<(Modulation, f64, f64)>,
 }
 
 const fn em(freq_hz: f64, amplitude: f64) -> Emitter {
-    Emitter { freq_hz, amplitude }
+    Emitter {
+        freq_hz,
+        amplitude,
+        digital: None,
+    }
+}
+
+const fn dig(freq_hz: f64, amplitude: f64, m: Modulation, symbol_rate: f64) -> Emitter {
+    Emitter {
+        freq_hz,
+        amplitude,
+        digital: Some((m, symbol_rate, 0.35)),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -43,7 +60,13 @@ pub struct RfScene {
 }
 
 impl RfScene {
-    pub const PRESETS: [&'static str; 4] = ["rf-reference", "rf-fm-band", "rf-hf", "rf-noise"];
+    pub const PRESETS: [&'static str; 5] = [
+        "rf-reference",
+        "rf-fm-band",
+        "rf-hf",
+        "rf-noise",
+        "rf-digital",
+    ];
 
     pub fn preset(name: &str) -> Option<Self> {
         let (emitters, noise_rms) = match name {
@@ -67,6 +90,15 @@ impl RfScene {
                 0.01,
             ),
             "rf-noise" => (Vec::new(), 0.05),
+            // Symbol rates divide 2.048 MS/s (20 and 40 samples/symbol).
+            // Symbol SNR ≈ 25 dB for QPSK, 28 dB for 16QAM.
+            "rf-digital" => (
+                vec![
+                    dig(100.3e6, 0.9, Modulation::Qpsk, 102.4e3),
+                    dig(99.6e6, 1.25, Modulation::Qam16, 51.2e3),
+                ],
+                0.05,
+            ),
             _ => return None,
         };
         Some(Self {
@@ -87,10 +119,19 @@ impl RfScene {
                 .map(|e| e.freq_hz - centre_hz + shift)
                 .zip(&self.emitters)
                 .filter(|(off, _)| off.abs() < rate / 2.0)
-                .map(|(offset_hz, e)| IqComponent::Tone {
-                    offset_hz,
-                    amplitude: e.amplitude,
-                    phase: 0.0,
+                .map(|(offset_hz, e)| match e.digital {
+                    None => IqComponent::Tone {
+                        offset_hz,
+                        amplitude: e.amplitude,
+                        phase: 0.0,
+                    },
+                    Some((modulation, symbol_rate, rolloff)) => IqComponent::Digital {
+                        modulation,
+                        symbol_rate,
+                        offset_hz,
+                        amplitude: e.amplitude,
+                        rolloff,
+                    },
                 })
                 .collect(),
             noise_rms: self.noise_rms,
