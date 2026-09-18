@@ -432,8 +432,25 @@ Auto-cal port (compensation pass descending ranges @ DC, amplitude pass ascendin
 > validation, and the windowed pixel/geometry/flow tests pass. The decisions
 > D0–D9, the feature pointers and the mechanical criteria live in
 > `docs/tasks/phase10-sdr-spec.md`; the research home is
-> `docs/sdr-feature-catalog.md`. Next: 10.0 item 2 (D6 types) and item 3 (D8
-> determinism). neowon becomes one instrument in two modes —
+> `docs/sdr-feature-catalog.md`. **Item 2 (D6) DONE:** `Capabilities`/
+> `InstrumentConfig` are `Scope | Sdr` enums in `neowon-core::instrument`
+> (with `Acquisition` and the scope config types, re-exported by
+> `neowon-backend`); `Command`/`Event`/`Backend::apply` carry
+> `InstrumentConfig`; `CaptureFrame::new` rejects Complex×Record. 10 files /
+> net 233 lines against ≤12/≤250. **Item 3 (D8) DONE:** `neowon_sim::iq` is a
+> counter-indexed splitmix64 IQ generator built from IEEE-exact operations only
+> (bit-identical on every CI platform); `neowon sim iq --seed --n --out`;
+> `--test iq_determinism` (fixture) and `--test splitmix64_vectors` pass.
+> **P0.1 DONE, SDR-G1 PASSED:** `rs-rtl` 0.5 (pure Rust, `nusb`) tunes,
+> steps gain and streams 2.048 MS/s with 0 drops on the dongle (R820T, serial
+> 00000001; facts in `docs/protocol-rtlsdr.md`). **D2 decided: an in-tree
+> driver** (`neowon-sdr::rtl`, RTL2832U + R82xx on `nusb`, ported from
+> `librtlsdr-rs`). **Item 4 DONE:** it passes P0.1 plus ppm (0.3% of
+> 2·(f+IF)·ppm), RTL AGC, HF direct sampling (Q branch, V3) and a fixed HF
+> exit; ±0.002% rate, 0 overflows, 355 ms open (`cargo run -p neowon-sdr
+> --example p01`). `rs-rtl` removed. Next: the SDR `Backend` over this driver
+> + the sim SDR backend + first views (spectrum, waterfall, IQ scope).
+> neowon becomes one instrument in two modes —
 > **Scope** and **SDR** — riding `Acquisition::Stream` and the shared engine
 > (recorder/timeline, phosphor, decode, control socket, MCP). RTL-SDR drives
 > through librtlsdr bindings *presumed* for V3 compatibility; the exact crate is
@@ -492,10 +509,11 @@ recorded manual hardware smoke run (V3 dongle) is filed in `docs/protocol-rtlsdr
 | Bevy 0.19 compute pattern | `GoL/tools/physarum/src/gpu.rs`, `GoL/docs/bevy/compute_shaders_wgsl.md` |
 | Custom render pipeline pattern | `GoL/tools/plife3d/src/draw.rs`, `GoL/docs/troubleshooting/bevy.md` |
 | egui integration pattern | `GoL/tools/physarum/src/ui.rs` |
-| SDR crates | `librtlsdr` bindings (presumed for V3; `rs-rtl` pure-Rust alternative, `seify` for later multi-hardware); the crate is settled by the P0.1 spike — `docs/tasks/phase10-sdr-spec.md` D2 |
+| SDR driver | in-tree `crates/neowon-sdr/src/rtl/` (RTL2832U + R82xx on `nusb`); porting reference `tmp-inspiration/librtlsdr-rs`; `seify` for later multi-hardware — `docs/tasks/phase10-sdr-spec.md` D2 |
+| RTL-SDR control reference (ppm, direct sampling, AGC, offset tuning) | `tmp-inspiration/SDRPlusPlus/source_modules/rtl_sdr_source/src/main.cpp` (API usage); `tmp-inspiration/librtlsdr-rs` (audited pure-Rust port of librtlsdr: register sequences + documented hazards) |
 | SDR feature catalog (home) | `docs/sdr-feature-catalog.md` |
 | RTL-SDR hardware/protocol facts | `docs/protocol-rtlsdr.md` (created with Phase 10) |
-| SDR feature analysis (raw) | `tmp-inspiration/{ravenSDR,rtlsdrAI,rtl-ml,modulation-classification,RF-Classification-ML,CNN-BiLSTM-AMC,torchsig,gnuradio_llm,holohub}` — untracked input only; the tracked home is `docs/sdr-feature-catalog.md` |
+| SDR feature analysis (raw) | `tmp-inspiration/{SDRPlusPlus,librtlsdr-rs,ravenSDR,rtlsdrAI,rtl-ml,modulation-classification,RF-Classification-ML,CNN-BiLSTM-AMC,torchsig,gnuradio_llm,holohub}` — untracked input only; the tracked home is `docs/sdr-feature-catalog.md` |
 | Flipper host RPC | `flipper-rpc` crate + `flipperdevices/flipperzero-protobuf` |
 
 ---
