@@ -84,6 +84,12 @@ pub trait Backend: Send {
         Vec::new()
     }
 
+    /// Reseed the deterministic generator on generating backends. Returns
+    /// false where there is none (hardware).
+    fn set_seed(&mut self, _seed: u64) -> Result<bool, BackendError> {
+        Ok(false)
+    }
+
     /// Probe the signal and pick sensible settings. Returns the new config
     /// (already applied to the instrument) or `None` if unsupported / no
     /// signal found.
