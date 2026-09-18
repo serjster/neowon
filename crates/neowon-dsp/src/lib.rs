@@ -4,15 +4,18 @@
 
 pub mod acq;
 pub mod decode;
+pub mod detect;
 pub mod fft;
 pub mod iq;
 pub mod math;
 pub mod measure;
+pub mod modmeas;
 pub mod stats;
 pub mod timeline;
 
 pub use acq::peak_advised;
 pub use decode::{DecodeError, Digital, Event, EventKind, Threshold, digitize};
+pub use detect::{DetectConfig, Track, Tracker, TrackerConfig, detect, detect_spectrum};
 pub use fft::{Spectrum, Window, spectrum};
 pub use iq::{IqSpectrum, iq_spectrum};
 pub use math::{MathOp, math_trace};

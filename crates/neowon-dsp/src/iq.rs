@@ -69,31 +69,65 @@ impl IqSpectrum {
 /// Averaged power spectrum over every whole `n`-pair block of `iq`
 /// (`n` a power of two). `None` if there is not one block.
 pub fn iq_spectrum(iq: &[f32], sample_rate: f64, window: Window, n: usize) -> Option<IqSpectrum> {
-    if !n.is_power_of_two() || n < 2 || iq.len() < 2 * n || sample_rate <= 0.0 {
+    welch(iq, sample_rate, window, n, n)
+}
+
+/// Welch average over blocks of `n` pairs starting every `hop` pairs
+/// (`hop = n / 2` is the usual 50% overlap: with a tapered window, no part
+/// of the signal then sits only at block edges).
+pub fn welch(
+    iq: &[f32],
+    sample_rate: f64,
+    window: Window,
+    n: usize,
+    hop: usize,
+) -> Option<IqSpectrum> {
+    average(&stft(iq, window, n, hop)?, sample_rate)
+}
+
+/// Linear power spectra of the blocks of `n` pairs starting every `hop`
+/// pairs, DC-centred and scaled like `iq_spectrum` (a tone of amplitude A
+/// has power A² at its bin). `None` if there is not one block.
+pub fn stft(iq: &[f32], window: Window, n: usize, hop: usize) -> Option<Vec<Vec<f64>>> {
+    if !n.is_power_of_two() || n < 2 || hop == 0 || iq.len() < 2 * n {
         return None;
     }
     let win: Vec<f64> = (0..n).map(|i| window.coeff(i, n)).collect();
     let cg = win.iter().sum::<f64>() / n as f64;
+    let scale = 1.0 / (n as f64 * cg).powi(2);
     let fft = FftPlanner::new().plan_fft_forward(n);
-    let mut acc = vec![0.0; n];
     let mut buf = vec![Complex64::default(); n];
-    let mut blocks = 0;
-    for block in iq.chunks_exact(2 * n) {
-        for (i, (b, w)) in buf.iter_mut().zip(&win).enumerate() {
-            *b = Complex64::new(block[2 * i] as f64 * w, block[2 * i + 1] as f64 * w);
-        }
-        fft.process(&mut buf);
-        for (k, c) in buf.iter().enumerate() {
-            // Rotate so DC lands at n/2.
-            acc[(k + n / 2) % n] += c.norm_sqr();
-        }
-        blocks += 1;
+    let starts = (0..)
+        .map(|b| 2 * b * hop)
+        .take_while(|&s| s + 2 * n <= iq.len());
+    Some(
+        starts
+            .map(|s| {
+                let block = &iq[s..s + 2 * n];
+                for (i, (b, w)) in buf.iter_mut().zip(&win).enumerate() {
+                    *b = Complex64::new(block[2 * i] as f64 * w, block[2 * i + 1] as f64 * w);
+                }
+                fft.process(&mut buf);
+                let mut p = vec![0.0; n];
+                for (k, c) in buf.iter().enumerate() {
+                    // Rotate so DC lands at n/2.
+                    p[(k + n / 2) % n] = c.norm_sqr() * scale;
+                }
+                p
+            })
+            .collect(),
+    )
+}
+
+/// Mean of linear block spectra (from `stft`) as a dBFS spectrum.
+pub fn average(blocks: &[Vec<f64>], sample_rate: f64) -> Option<IqSpectrum> {
+    let n = blocks.first()?.len();
+    if sample_rate <= 0.0 {
+        return None;
     }
-    let scale = 1.0 / (blocks as f64 * (n as f64 * cg).powi(2));
-    let power_db = acc
-        .iter()
-        .map(|p| {
-            let p = p * scale;
+    let power_db = (0..n)
+        .map(|k| {
+            let p = blocks.iter().map(|b| b[k]).sum::<f64>() / blocks.len() as f64;
             if p > 0.0 {
                 (10.0 * p.log10()).max(FLOOR_DB)
             } else {
@@ -104,7 +138,7 @@ pub fn iq_spectrum(iq: &[f32], sample_rate: f64, window: Window, n: usize) -> Op
     Some(IqSpectrum {
         bin_hz: sample_rate / n as f64,
         power_db,
-        blocks,
+        blocks: blocks.len(),
     })
 }
 
