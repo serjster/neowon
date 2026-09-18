@@ -384,10 +384,22 @@ fn controls(ui: &mut egui::Ui, sdr: &SdrState, link: &Link, script: &mut Script)
     ui.monospace(format!("frames {}", sdr.frames_seen));
 }
 
-/// I/Q scatter of the latest frame's decimated samples, full scale = the
-/// box edge.
+/// I/Q scatter of the latest frame's decimated samples. Scaled to the
+/// samples' peak (real signals sit tens of dB below full scale, so a fixed
+/// full-scale box shows a dot); the zoom factor is printed, and 1× means
+/// the box edge is full scale.
 fn constellation(ui: &mut egui::Ui, sdr: &SdrState) {
-    ui.label("IQ");
+    let peak = sdr
+        .iq
+        .iter()
+        .flat_map(|p| [p[0].abs(), p[1].abs()])
+        .fold(0.0f32, f32::max);
+    let zoom = if peak > 0.0 {
+        (0.9 / peak).max(1.0)
+    } else {
+        1.0
+    };
+    ui.label(format!("IQ  ×{zoom:.0}"));
     let side = ui.available_width().min(220.0);
     let (r, _) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
     let p = ui.painter_at(r);
@@ -407,7 +419,7 @@ fn constellation(ui: &mut egui::Ui, sdr: &SdrState) {
         (1.0, GRID),
     );
     p.circle_stroke(r.center(), side / 2.0, (1.0, GRID));
-    let half = side / 2.0;
+    let half = side / 2.0 * zoom;
     for [i, q] in &sdr.iq {
         let pos = r.center() + egui::vec2(i * half, -q * half);
         p.rect_filled(

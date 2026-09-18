@@ -148,3 +148,15 @@ duration (no chunk dropped; supervisor drops 0). The 99.4 MHz station peaks
 peak bin wanders ±5 kHz with modulation. Tuning to 9.74 MHz switches to
 direct sampling automatically (a peak 24–32 dB over the floor at
 9.64 MHz), and tuning back to 99.4 MHz restores the tuner path.
+
+## The app on the dongle (2026-09-18)
+
+`NEOWON_CONTROL=<port> cargo run -p neowon-app -- --rtl` (hardware; run by
+hand). `sdr tune 99.4M`, `sdr gain 29.7`, `sdr span 1M` show the 99.4 MHz
+station as a ~200 kHz FM channel peaking at about −40 dBFS over a −72 dBFS
+floor, with narrow carriers either side. `sdr tune 9.7M` crosses into
+direct sampling on its own: the 31 m shortwave carriers appear, the
+strongest at 9.600 MHz, −43 dBFS. At these levels the samples span only a
+few of the 8-bit codes, so the IQ constellation auto-scales to the peak
+(×8 here), where the FM ring and the u8 quantisation lattice are both
+visible.
