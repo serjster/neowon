@@ -457,8 +457,15 @@ Auto-cal port (compensation pass descending ranges @ DC, amplitude pass ascendin
 > `sim iq --seed`, `get sdr`, `get iq`; `--test sdr_mode`). Seen on the
 > dongle: the 99.4 MHz FM channel and 9.6 MHz shortwave. Deferred: `sdr
 > mode|squelch` (no demodulator until 10.3), IQ in the recorder (risk 4),
-> mode-aware menu bar/front panel (10.9). Next: 10.1 detection &
-> measurement. neowon becomes one instrument in two modes —
+> mode-aware menu bar/front panel (10.9). **10.1 DONE:** `neowon_dsp::detect`
+> (continuous 50%-overlap STFT, lower-quartile floor over a quarter of the
+> band, 99%-occupied-band edges, block-resolution timing), `Tracker`
+> (identity, 0.25 s debounce, hold), `neowon_dsp::modmeas` (OBW, channel
+> power, SNR, flatness, instantaneous A/P/F), `SignalObservation` in core;
+> `--test detect_golden` passes the spec's five rows; live in the app
+> (`get detections`, `get modmeas`, `sdr detect|threshold`). On the dongle
+> it finds the 99.4 MHz FM station (~115 kHz, 25 dB SNR) and the narrow
+> carriers around it. Next: 10.2 catalog. neowon becomes one instrument in two modes —
 > **Scope** and **SDR** — riding `Acquisition::Stream` and the shared engine
 > (recorder/timeline, phosphor, decode, control socket, MCP). RTL-SDR drives
 > through librtlsdr bindings *presumed* for V3 compatibility; the exact crate is
