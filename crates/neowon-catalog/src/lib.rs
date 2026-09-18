@@ -15,7 +15,7 @@ pub use model::{
     Alias, BandCoverage, BandPlanEntry, Emitter, Entity, Id, ObsRecord, Observation, ProvKind,
     Provenance, Signal, Source, Survey, Transmission,
 };
-pub use op::Op;
+pub use op::{Op, edit_from_text};
 pub use state::State;
 pub use store::Catalog;
 

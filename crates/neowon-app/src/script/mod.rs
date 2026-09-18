@@ -110,12 +110,14 @@ type ExtraState<'w> = (
     ResMut<'w, crate::decode::DecodeState>,
     ResMut<'w, crate::ui::settings::Settings>,
     ResMut<'w, crate::sdr::SdrState>,
+    ResMut<'w, crate::catalog::CatalogState>,
 );
 
 #[derive(Debug, Clone)]
 pub enum Action {
     Stimulus(String),
     Sdr(crate::sdr::SdrAction),
+    Catalog(crate::catalog::CatalogAction),
     Rate(f64),
     Vdiv(usize, f64),
     Enable(usize, bool),
@@ -312,6 +314,7 @@ pub fn run_script(
         debug!("script: {action:?}");
         match action {
             Action::Sdr(a) => crate::sdr::run(a, &mut ext.11, &mut link),
+            Action::Catalog(a) => crate::catalog::run(a, &mut ext.12, &ext.11, &mut link),
             Action::Stimulus(name) => {
                 let _ = link.sup.commands.send(Command::Stimulus(name.clone()));
                 link.stimulus = name;

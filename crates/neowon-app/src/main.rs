@@ -25,6 +25,7 @@
 //! level/offset/position (ui/touch.rs).
 
 mod autopeak;
+mod catalog;
 mod control;
 mod cursors;
 mod decode;
@@ -176,6 +177,7 @@ fn main() {
         .init_resource::<viz::waterfall::WaterfallState>()
         .init_resource::<viz::three_d::Viz3dState>()
         .insert_resource(sdr::SdrState::new(sdr_mode))
+        .insert_resource(catalog::CatalogState::open_from_env())
         .insert_resource(script::load_from_env())
         .insert_resource(control::start_from_env())
         .add_systems(
@@ -195,7 +197,7 @@ fn main() {
         )
         .add_systems(
             EguiPrimaryContextPass,
-            (ui::panel, ui::sdr_view::show).chain(),
+            (ui::panel, ui::sdr_view::show, ui::catalog_window::show).chain(),
         )
         .add_systems(
             Update,

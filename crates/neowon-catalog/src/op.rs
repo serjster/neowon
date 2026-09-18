@@ -84,3 +84,14 @@ impl Op {
         !matches!(self, Op::Merge { .. } | Op::Purge { .. })
     }
 }
+
+/// `Op::Edit` from text: JSON when it parses (`12.5`, `null`, `"x"`),
+/// else the text as a string (`catalog edit #3 notes strong at night`).
+pub fn edit_from_text(id: Id, field: &str, text: &str) -> Op {
+    Op::Edit {
+        id,
+        field: field.to_string(),
+        value: serde_json::from_str(text)
+            .unwrap_or_else(|_| serde_json::Value::String(text.into())),
+    }
+}

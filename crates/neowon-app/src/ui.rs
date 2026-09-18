@@ -2,6 +2,7 @@
 //! §1). Composition lives here; each region is its own module. The old
 //! monolithic collapsible panel is gone.
 
+pub mod catalog_window;
 pub mod descriptors;
 pub mod dialog_acquire;
 pub mod dialog_channel;

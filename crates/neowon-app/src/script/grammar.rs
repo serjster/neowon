@@ -67,6 +67,7 @@ pub(crate) fn parse(text: &str) -> Result<VecDeque<(f64, Action)>, String> {
             "stimulus" => Action::Stimulus(rest()?.to_string()),
             "sdr" => Action::Sdr(crate::sdr::parse(&mut rest).map_err(|e| err(&e))?),
             "sim" => Action::Sdr(crate::sdr::parse_sim(&mut rest).map_err(|e| err(&e))?),
+            "catalog" => Action::Catalog(crate::catalog::parse(&mut rest).map_err(|e| err(&e))?),
             "rate" => Action::Rate(rest()?.parse().map_err(|_| err("bad rate"))?),
             "vdiv" => Action::Vdiv(
                 rest()?.parse().map_err(|_| err("bad ch"))?,

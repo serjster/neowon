@@ -91,3 +91,16 @@ fn provenance_mut(e: &mut Entity) -> &mut crate::Provenance {
         Entity::Observation(x) => &mut x.provenance,
     }
 }
+
+/// Export to a JSON file; returns how many entities were written.
+pub fn export_file(cat: &Catalog, path: &std::path::Path) -> Result<usize, Error> {
+    let doc = export(cat);
+    std::fs::write(path, serde_json::to_vec_pretty(&doc)?)?;
+    Ok(doc.entities.len())
+}
+
+/// Import a file written by `export_file`.
+pub fn import_file(cat: &mut Catalog, path: &std::path::Path, at: &str) -> Result<Vec<Id>, Error> {
+    let doc: Export = serde_json::from_slice(&std::fs::read(path)?)?;
+    import(cat, &doc, at)
+}

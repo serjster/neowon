@@ -94,6 +94,7 @@ type ExtraState<'w> = (
     Res<'w, crate::deep::DeepView>,
     Res<'w, crate::decode::DecodeState>,
     Res<'w, crate::sdr::SdrState>,
+    Res<'w, crate::catalog::CatalogState>,
 );
 
 /// Drain pending requests. Runs before `run_script` so injected commands
@@ -115,7 +116,8 @@ pub fn poll(
     viz: Res<Viz3dState>,
     extra: ExtraState,
 ) {
-    let (fx, ap, deep, dec, sdr) = (&extra.0, &extra.1, &extra.2, &extra.3, &extra.4);
+    let (fx, ap, deep, dec, sdr, cat) =
+        (&extra.0, &extra.1, &extra.2, &extra.3, &extra.4, &extra.5);
     let Some(rx) = &server.rx else { return };
     let now = time.elapsed_secs_f64();
     for req in rx.try_iter() {
@@ -131,6 +133,10 @@ pub fn poll(
             Some("iq") => crate::sdr::iq_json(sdr),
             Some("detections") => crate::sdr::detections_json(sdr),
             Some("modmeas") => crate::sdr::modmeas_json(sdr),
+            Some("catalog") => crate::catalog::catalog_json(cat),
+            Some(q) if q.starts_with("history ") => {
+                crate::catalog::history_json(cat, q[8..].trim())
+            }
             Some(other) => format!(
                 r#"{{"ok":false,"error":"unknown query {}"}}"#,
                 escape(other)
@@ -149,7 +155,7 @@ pub fn poll(
     }
 }
 
-fn escape(s: &str) -> String {
+pub(crate) fn escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
