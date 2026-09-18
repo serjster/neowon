@@ -24,7 +24,8 @@ Conclusion: nothing to salvage as a driver. Its egui plot/side-panel structure i
 - **The vendor Java app** (`lib/owon-vds-tiny-1.1.5-cf19.jar`) — decompiled and cross-validated against the Python. Full register map, trigger word bit layout, calibration DAC math, `.cap` record format, and machine parameter files all extracted (see §3 and §10).
 - **`~/projects/GoL`** — Bevy **0.19** patterns: compute-shader plugins (physarum: 4 WGSL passes, storage textures, texture→sprite display), custom instanced render pipelines, egui integration on `EguiPrimaryContextPass`, GPU readback screenshots, naga-based WGSL validation tests, and written tutorials in `GoL/docs/bevy/`. Also the dev-profile trick (`opt-level=1` workspace, `opt-level=3` deps + hot crates).
 - **Hardware confirmed present**: the scope enumerates on this Mac as VID `0x5345` / PID `0x1234` (strings "ZHBI2.0"/"ZPRO2.0"). CH1 is on the 1 kHz 5 V test signal — perfect bring-up target.
-- **Ecosystem** (verified current, late 2026): Bevy 0.19.1 stable; `bevy_egui` 0.42 (egui 0.34) is the standard tool-UI pairing; `nusb` is the pure-Rust USB stack (no libusb, no drivers needed on macOS); no existing usable VDS1022 crate (one early-stage Windows-only GitHub project, `Atmel2005/ATMELOWON`, useful only as a reference); SDR: pure-Rust `rs-rtl`/`librtlsdr-rs` (nusb-based) or `seify` for multi-hardware; Flipper: `flipper-rpc` crate speaks the official protobuf RPC over USB CDC.
+- **Hardware confirmed present (SDR)**: an **RTL-SDR V3** dongle is on hand (user, 2026-09-18). It is the input to the Phase 10 P0.1 driver spike and the phase-closing hardware smoke run.
+- **Ecosystem** (verified current, late 2026): Bevy 0.19.1 stable; `bevy_egui` 0.41 (egui 0.34) is the standard tool-UI pairing; `nusb` is the pure-Rust USB stack (no libusb, no drivers needed on macOS); no existing usable VDS1022 crate (one early-stage Windows-only GitHub project, `Atmel2005/ATMELOWON`, useful only as a reference); SDR: pure-Rust `rs-rtl` (nusb-based) or `librtlsdr-rs` bindings over the system `librtlsdr`/libusb (librtlsdr presumed for V3 compatibility; the crate is settled by the Phase 10 P0.1 spike — see `docs/tasks/phase10-sdr-spec.md` D2), `seify` for multi-hardware; Flipper: `flipper-rpc` crate speaks the official protobuf RPC over USB CDC.
 
 ### Device essentials (VDS1022I)
 
@@ -49,12 +50,14 @@ Full register map and bit layouts: §10 references + `vds1022.py` lines cited th
 - GPU offload for everything per-sample: waveform rasterization, persistence/intensity grading, FFT, decimation for display, XY, waterfall.
 - Clean backend abstraction so a new instrument = one crate implementing one trait set.
 - Cross-platform (macOS first, Linux next, Windows eventually — nusb supports all three).
+- A second instrument: RTL-SDR signal intelligence — detection, modulation analysis, classification, protocol/source identification, scanning and a persistent catalog — as an SDR mode over the same acquisition abstraction (user decision 2026-09-18; Phase 10).
 
 **Non-goals (for now)**
 
 - Driving the AWG of other OWON models, VDS2052 support (kept cheap by the address-table design, but not a milestone).
 - Replacing the vendor app's SCPI server.
 - On-device Flipper apps (host-side RPC only).
+- SDR signal intelligence does **not** preempt scope feature-parity: Phases 8–9 keep priority and Phase 10 work waits for the active scope phase.
 
 ---
 
@@ -122,7 +125,7 @@ Gotchas already known from GoL: uniform struct field order must match WGSL; `NoA
 
 ### UI
 
-`bevy_egui` 0.42 on `EguiPrimaryContextPass`: side control panel (channels / timebase / trigger / acquisition), top status bar (run state, sample rate, freq meter), bottom measurement strip, floating dialogs (measure config, decode setup, cal). The waveform view is the Bevy-rendered texture; egui draws overlays only where cheap (cursor readouts, decode tables). Keyboard-first bindings from day one. Persist app state as RON/JSON per device serial.
+`bevy_egui` 0.41 on `EguiPrimaryContextPass`: side control panel (channels / timebase / trigger / acquisition), top status bar (run state, sample rate, freq meter), bottom measurement strip, floating dialogs (measure config, decode setup, cal). The waveform view is the Bevy-rendered texture; egui draws overlays only where cheap (cursor readouts, decode tables). Keyboard-first bindings from day one. Persist app state as RON/JSON per device serial.
 
 ---
 
@@ -419,9 +422,31 @@ Decoder framework over any trace (analog threshold → bitstream → decoder): U
 
 Auto-cal port (compensation pass descending ranges @ DC, amplitude pass ascending @ AC, adaptive convergence, probes-off interlock), manual fine-tune dialog, per-serial JSON cal store, and — explicitly guarded, double-confirm — flash write-back.
 
-### Phase 10 — SDR backend
+### Phase 10 — SDR backend & signal intelligence (the 2-in-1 program)
 
-`neowon-sdr`: RTL-SDR via `rs-rtl` (pure Rust/nusb) first, `seify` if/when more hardware is wanted. IQ enters as a `Continuous` stream (same path as roll mode). New views: spectrum (GPU FFT), waterfall (scrolling storage texture). Demodulators (AM/NFM/WFM/SSB) produce ordinary traces → existing measurements/decoders apply. Realtime decode targets: start with things the existing decoder framework nearly covers (OOK/ASK keyfobs via threshold→UART-ish framing), grow toward POCSAG/ADS-B as separate decoder plugins.
+> **Status 2026-09-18:** planned, not started. The decisions D0–D9, the feature
+> pointers, the D1b spike and the mechanical criteria live in
+> `docs/tasks/phase10-sdr-spec.md`; the research home is
+> `docs/sdr-feature-catalog.md`. neowon becomes one instrument in two modes —
+> **Scope** and **SDR** — riding `Acquisition::Stream` and the shared engine
+> (recorder/timeline, phosphor, decode, control socket, MCP). RTL-SDR drives
+> through librtlsdr bindings *presumed* for V3 compatibility; the exact crate is
+> settled by the P0.1 spike on the on-hand V3 dongle. Core frames generalise to
+> `f32` + a real/complex layout tag (D1b, spike-guarded, budget named). A new
+> engine-free `neowon-catalog` holds the persistent signal/source/emitter catalog
+> with full management.
+>
+> Sub-phases: **10.0** backend + core IQ + sim + first views · **10.1** detection
+> & measurement · **10.2** catalog v1 · **10.3** modulation lab · **10.4** scanning
+> & survey · **10.5** classification · **10.6** protocol & source · **10.7** RF
+> fingerprinting · **10.8** dataset & training (parallel) · **10.9** UX/control
+> parity (continuous). Each ends runnable and sim-tested; do not begin without
+> reading the spec's Purpose, decisions (D0–D9), D1b spike and gates (SDR-G1/SDR-G2).
+
+**Done when:** the spec's phase "Done when" is met — all mechanical criteria pass,
+gates SDR-G1/SDR-G2 are recorded, both modes run against sim, every SDR control is script-
+and MCP-reachable, the catalog survives restart with full management, and the
+recorded manual hardware smoke run (V3 dongle) is filed in `docs/protocol-rtlsdr.md`.
 
 ### Phase 11 — Flipper Zero (exploratory)
 
@@ -462,9 +487,21 @@ Auto-cal port (compensation pass descending ranges @ DC, amplitude pass ascendin
 | Bevy 0.19 compute pattern | `GoL/tools/physarum/src/gpu.rs`, `GoL/docs/bevy/compute_shaders_wgsl.md` |
 | Custom render pipeline pattern | `GoL/tools/plife3d/src/draw.rs`, `GoL/docs/troubleshooting/bevy.md` |
 | egui integration pattern | `GoL/tools/physarum/src/ui.rs` |
-| SDR crates | `rs-rtl`, `librtlsdr-rs`, `seify`, FutureSDR (framework, not chosen) |
+| SDR crates | `librtlsdr` bindings (presumed for V3; `rs-rtl` pure-Rust alternative, `seify` for later multi-hardware); the crate is settled by the P0.1 spike — `docs/tasks/phase10-sdr-spec.md` D2 |
+| SDR feature catalog (home) | `docs/sdr-feature-catalog.md` |
+| RTL-SDR hardware/protocol facts | `docs/protocol-rtlsdr.md` (created with Phase 10) |
+| SDR feature analysis (raw) | `tmp-inspiration/{ravenSDR,rtlsdrAI,rtl-ml,modulation-classification,RF-Classification-ML,CNN-BiLSTM-AMC,torchsig,gnuradio_llm,holohub}` — untracked input only; the tracked home is `docs/sdr-feature-catalog.md` |
 | Flipper host RPC | `flipper-rpc` crate + `flipperdevices/flipperzero-protobuf` |
 
 ---
 
-**Next action:** Phase 0 scaffold, then Phase 1 bring-up against the connected scope (CH1 @ 1 kHz 5 V) — the single riskiest and most valuable step.
+## Backlog
+
+Deferred findings, with the reason (the home the critic skill's `defer` writes to).
+
+- (none currently. The Phase 10 classification corpus is no longer deferred: D9 collects it
+  from 10.0, from a public over-the-air dataset or a live capture.)
+
+---
+
+**Next action:** Phase 8 (decoder polish; roll-mode direction) for the scope. The Phase 10 RTL-SDR program is specified and audited — `docs/tasks/phase10-sdr-spec.md`.
