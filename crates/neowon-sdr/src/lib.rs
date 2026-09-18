@@ -5,5 +5,6 @@
 
 pub mod backend;
 pub mod rtl;
+pub mod survey;
 
 pub use backend::RtlBackend;

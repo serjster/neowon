@@ -16,7 +16,7 @@ pub use backend::SimBackend;
 pub use figures::XyFigure;
 pub use iq::{IqComponent, IqScene};
 pub use scenario::Scenario;
-pub use sdr::{RfScene, SimSdrBackend};
+pub use sdr::{Emitter, RfScene, SimSdrBackend, em};
 pub use signal::{Component, SignalSpec, Xorshift};
 
 /// Samples per record, matching the VDS1022 frame shape.
