@@ -481,8 +481,13 @@ Auto-cal port (compensation pass descending ranges @ DC, amplitude pass ascendin
 > vs 3.162% closed form, QPSK Rs within 0.002%, C42 −2.0000/−1.0000. In the
 > app: `sdr analyse on`, `sdr modulation auto|<m>`, `get modmeas` lab
 > block, recovered constellation; `--test sdr_modlab` auto-identifies QPSK
-> and 16QAM and matches closed-form EVM. Next: 10.4 scanning & survey.
-> neowon becomes one instrument in two modes —
+> and 16QAM and matches closed-form EVM. **10.4 DONE:** `neowon_sdr::survey`
+> (frame-fed state machine, per-step `BandCoverage` with scanned/truncated/
+> kept-power floor, clipped to the asked range; `diff` → new/gone/
+> stronger/weaker/same/unknown, never gone/new where a survey could not
+> have seen); `--test survey_diff` fixed-order on the sim; in the app `sdr
+> survey …`, `get survey|surveydiff`, `catalog survey`, MCP `sdr_survey*`
+> (`--test sdr_survey`). Next: 10.5 classification (gated by SDR-G2). neowon becomes one instrument in two modes —
 > **Scope** and **SDR** — riding `Acquisition::Stream` and the shared engine
 > (recorder/timeline, phosphor, decode, control socket, MCP). RTL-SDR drives
 > through librtlsdr bindings *presumed* for V3 compatibility; the exact crate is
