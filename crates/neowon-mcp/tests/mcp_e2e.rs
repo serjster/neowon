@@ -110,6 +110,7 @@ fn mcp_tools_drive_the_sim() {
         "catalog",
         "sdr_survey",
         "sdr_survey_result",
+        "sdr_classify",
     ] {
         assert!(tools.contains(name), "missing tool {name}: {tools}");
     }

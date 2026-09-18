@@ -221,6 +221,20 @@ fn lab(ui: &mut egui::Ui, sdr: &SdrState, script: &mut Script) {
     } else if sdr.analyse_on {
         ui.weak("no signal near the tuned frequency");
     }
+    if let Some(c) = &sdr.classification {
+        let label = if c.unknown {
+            "unknown"
+        } else {
+            c.class.label()
+        };
+        ui.monospace(format!(
+            "class {label}  {:.2} ({})\n  next {} (margin {:.2})",
+            c.confidence,
+            c.trust.label(),
+            c.runner_up.label(),
+            c.margin
+        ));
+    }
 }
 
 /// Detection controls and the active tracks, strongest first.
