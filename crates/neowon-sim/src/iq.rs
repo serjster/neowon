@@ -84,6 +84,55 @@ pub enum IqComponent {
         amplitude: f64,
         phase: f64,
     },
+    /// A tone switched on for `duration_s` from `start_s` (sample time
+    /// `index / sample_rate`), silent otherwise.
+    Burst {
+        offset_hz: f64,
+        amplitude: f64,
+        start_s: f64,
+        duration_s: f64,
+    },
+    /// A linear sweep from `from_hz` to `to_hz` across `duration_s`,
+    /// starting at `start_s`; silent outside it. Phase is
+    /// `f0·τ + (f1 − f0)·τ² / (2T)` turns, τ the time into the sweep.
+    Chirp {
+        from_hz: f64,
+        to_hz: f64,
+        amplitude: f64,
+        start_s: f64,
+        duration_s: f64,
+    },
+}
+
+impl IqComponent {
+    /// `(amplitude, phase in turns)` at time `t`, or `None` while silent.
+    fn at(&self, t: f64) -> Option<(f64, f64)> {
+        let within = |start: f64, dur: f64| t >= start && t < start + dur;
+        match *self {
+            IqComponent::Tone {
+                offset_hz,
+                amplitude,
+                phase,
+            } => Some((amplitude, offset_hz * t + phase)),
+            IqComponent::Burst {
+                offset_hz,
+                amplitude,
+                start_s,
+                duration_s,
+            } => within(start_s, duration_s).then_some((amplitude, offset_hz * t)),
+            IqComponent::Chirp {
+                from_hz,
+                to_hz,
+                amplitude,
+                start_s,
+                duration_s,
+            } => within(start_s, duration_s).then(|| {
+                let tau = t - start_s;
+                let turns = from_hz * tau + (to_hz - from_hz) * tau * tau / (2.0 * duration_s);
+                (amplitude, turns)
+            }),
+        }
+    }
 }
 
 /// What the simulated receiver sees: signals plus complex white noise, in
@@ -117,19 +166,27 @@ impl IqScene {
     /// The I/Q pair at sample `index` for `seed`.
     pub fn sample(&self, seed: u64, index: u64) -> (f32, f32) {
         let (mut i, mut q) = (0.0f64, 0.0f64);
+        let t = index as f64 / self.sample_rate;
         for c in &self.components {
-            match *c {
+            // Tones keep their original phase arithmetic (offset / rate ×
+            // index) so the D8 fixture's bytes do not move.
+            let (amplitude, turns) = match *c {
                 IqComponent::Tone {
                     offset_hz,
                     amplitude,
                     phase,
-                } => {
-                    let turns = offset_hz / self.sample_rate * index as f64 + phase;
-                    let (cos, sin) = cos_sin_turns(turns);
-                    i += amplitude * cos;
-                    q += amplitude * sin;
-                }
-            }
+                } => (
+                    amplitude,
+                    offset_hz / self.sample_rate * index as f64 + phase,
+                ),
+                _ => match c.at(t) {
+                    Some(v) => v,
+                    None => continue,
+                },
+            };
+            let (cos, sin) = cos_sin_turns(turns);
+            i += amplitude * cos;
+            q += amplitude * sin;
         }
         if self.noise_rms > 0.0 {
             let sigma = self.noise_rms * std::f64::consts::FRAC_1_SQRT_2;
@@ -231,6 +288,49 @@ mod tests {
         assert_eq!(f.layout, SampleLayout::Complex);
         assert_eq!(f.channels[0].unit_count(f.layout), 256);
         assert!((f.duration() - 256.0 / 2.048e6).abs() < 1e-15);
+    }
+
+    #[test]
+    fn bursts_and_chirps_are_gated_and_sweep() {
+        let rate = 8192.0;
+        let scene = IqScene {
+            sample_rate: rate,
+            components: vec![
+                IqComponent::Burst {
+                    offset_hz: 1000.0,
+                    amplitude: 0.5,
+                    start_s: 0.25,
+                    duration_s: 0.01,
+                },
+                IqComponent::Chirp {
+                    from_hz: -2000.0,
+                    to_hz: -1000.0,
+                    amplitude: 0.25,
+                    start_s: 0.5,
+                    duration_s: 0.25,
+                },
+            ],
+            noise_rms: 0.0,
+        };
+        let mag = |k: u64| {
+            let (i, q) = scene.sample(1, k);
+            ((i * i + q * q) as f64).sqrt()
+        };
+        assert_eq!(mag(0), 0.0);
+        assert!((mag(2048) - 0.5).abs() < 1e-6); // t = 0.25: burst on
+        assert_eq!(mag(2048 + 82), 0.0); // 10 ms later: off
+        assert!((mag(4096 + 100) - 0.25).abs() < 1e-6); // inside the chirp
+        // Instantaneous frequency sweeps from -2 kHz to -1 kHz.
+        let freq = |k: u64| {
+            let (a, b) = (scene.sample(1, k), scene.sample(1, k + 1));
+            let (re, im) = (
+                (b.0 * a.0 + b.1 * a.1) as f64,
+                (b.1 * a.0 - b.0 * a.1) as f64,
+            );
+            im.atan2(re) * rate / std::f64::consts::TAU
+        };
+        assert!((freq(4096) + 2000.0).abs() < 5.0, "{}", freq(4096));
+        assert!((freq(6142) + 1000.0).abs() < 5.0, "{}", freq(6142));
     }
 
     #[test]

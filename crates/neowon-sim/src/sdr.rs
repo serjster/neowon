@@ -259,7 +259,10 @@ mod tests {
         let offs: Vec<f64> = bb
             .components
             .iter()
-            .map(|IqComponent::Tone { offset_hz, .. }| *offset_hz)
+            .filter_map(|c| match c {
+                IqComponent::Tone { offset_hz, .. } => Some(*offset_hz),
+                _ => None,
+            })
             .collect();
         assert_eq!(offs.len(), 2);
         assert!((offs[0] + 0.7e6).abs() < 1.0 && (offs[1] - 0.4e6).abs() < 1.0);
@@ -268,7 +271,10 @@ mod tests {
     #[test]
     fn ppm_raises_the_band() {
         let s = RfScene::preset("rf-reference").unwrap();
-        let IqComponent::Tone { offset_hz, .. } = s.baseband(100e6, 2.048e6, 10.0).components[0];
+        let IqComponent::Tone { offset_hz, .. } = s.baseband(100e6, 2.048e6, 10.0).components[0]
+        else {
+            panic!("rf-reference is a tone");
+        };
         assert!((offset_hz - (100e3 + 1000.0)).abs() < 1e-6);
     }
 
