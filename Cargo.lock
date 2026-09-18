@@ -4126,6 +4126,7 @@ name = "neowon-dsp"
 version = "0.1.0"
 dependencies = [
  "neowon-core",
+ "neowon-sim",
  "rustfft",
 ]
 
