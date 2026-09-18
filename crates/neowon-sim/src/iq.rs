@@ -10,7 +10,9 @@
 //! libms. So sine is a local polynomial and Gaussian noise is Irwin–Hall
 //! (a sum of twelve uniforms), whose tails stop at ±6σ.
 
-use neowon_core::{AcqMode, Acquisition, CaptureFrame, ChannelCapture, IqCal, SampleLayout};
+use neowon_core::{
+    AcqMode, Acquisition, CaptureFrame, ChannelCapture, IqCal, Modulation, SampleLayout,
+};
 
 const GOLDEN: u64 = 0x9E37_79B9_7F4A_7C15;
 
@@ -106,6 +108,49 @@ pub enum IqComponent {
         start_s: f64,
         duration_s: f64,
     },
+    /// A continuous digitally modulated carrier: Gray-labelled symbols
+    /// drawn from the seed (`symbol_bits`), root-raised-cosine shaped with
+    /// roll-off `rolloff`, at `offset_hz` from centre. `amplitude` is the
+    /// symbol amplitude after a unit-energy matched filter, so a noise RMS
+    /// of `amplitude · 10^(−snr/20)` gives that Es/N0 at the decisions.
+    /// Per-sample power is `amplitude² / sps`.
+    Digital {
+        modulation: Modulation,
+        symbol_rate: f64,
+        offset_hz: f64,
+        amplitude: f64,
+        rolloff: f64,
+    },
+}
+
+/// Symbols either side of the current one that shape a sample.
+pub const RRC_SPAN: i64 = 12;
+/// Keeps symbol draws independent of the noise draws of the same seed.
+const SYMBOL_SALT: u64 = 0x5EED_0F5E_B01D_A7A5;
+
+/// The label of symbol `n` for `seed` (low bits used per modulation).
+pub fn symbol_bits(seed: u64, n: i64) -> u32 {
+    splitmix64(seed ^ SYMBOL_SALT, n as u64) as u32
+}
+
+/// Root-raised-cosine pulse at `tau` symbol periods, roll-off `beta`,
+/// unit energy (∫h² dτ = 1), from basic operations only.
+pub fn rrc(tau: f64, beta: f64) -> f64 {
+    use std::f64::consts::PI;
+    let sin_pi = |x: f64| cos_sin_turns(x / 2.0).1;
+    let cos_pi = |x: f64| cos_sin_turns(x / 2.0).0;
+    if tau.abs() < 1e-12 {
+        return 1.0 - beta + 4.0 * beta / PI;
+    }
+    if beta > 0.0 && (tau.abs() - 1.0 / (4.0 * beta)).abs() < 1e-12 {
+        let x = 1.0 / (4.0 * beta);
+        return beta
+            * std::f64::consts::FRAC_1_SQRT_2
+            * ((1.0 + 2.0 / PI) * sin_pi(x) + (1.0 - 2.0 / PI) * cos_pi(x));
+    }
+    let num = sin_pi(tau * (1.0 - beta)) + 4.0 * beta * tau * cos_pi(tau * (1.0 + beta));
+    let den = PI * tau * (1.0 - (4.0 * beta * tau) * (4.0 * beta * tau));
+    num / den
 }
 
 impl IqComponent {
@@ -145,7 +190,36 @@ impl IqComponent {
                 let turns = from_hz * tau + (to_hz - from_hz) * tau * tau / (2.0 * duration_s);
                 (amplitude, turns)
             }),
+            // Complex-valued; `IqScene::sample` builds it directly.
+            IqComponent::Digital { .. } => None,
         }
+    }
+
+    /// The baseband (pre-carrier) value of a `Digital` component at time
+    /// `t`: Σ a_n h(u − n), u = t · symbol_rate, scaled so the matched
+    /// filter recovers `amplitude · a_n`.
+    fn digital(&self, seed: u64, t: f64, rate: f64) -> (f64, f64) {
+        let IqComponent::Digital {
+            modulation,
+            symbol_rate,
+            amplitude,
+            rolloff,
+            ..
+        } = *self
+        else {
+            return (0.0, 0.0);
+        };
+        let u = t * symbol_rate;
+        let n0 = u.floor() as i64;
+        let (mut i, mut q) = (0.0, 0.0);
+        for n in n0 - RRC_SPAN..=n0 + RRC_SPAN {
+            let h = rrc(u - n as f64, rolloff);
+            let (a, b) = modulation.point(symbol_bits(seed, n));
+            i += a * h;
+            q += b * h;
+        }
+        let g = amplitude / (rate / symbol_rate).sqrt();
+        (i * g, q * g)
     }
 }
 
@@ -182,6 +256,13 @@ impl IqScene {
         let (mut i, mut q) = (0.0f64, 0.0f64);
         let t = index as f64 / self.sample_rate;
         for c in &self.components {
+            if let IqComponent::Digital { offset_hz, .. } = *c {
+                let (a, b) = c.digital(seed, t, self.sample_rate);
+                let (cos, sin) = cos_sin_turns(offset_hz * t);
+                i += a * cos - b * sin;
+                q += a * sin + b * cos;
+                continue;
+            }
             // Tones keep their original phase arithmetic (offset / rate ×
             // index) so the D8 fixture's bytes do not move.
             let (amplitude, turns) = match *c {
@@ -346,6 +427,52 @@ mod tests {
         };
         assert!((freq(4096) + 2000.0).abs() < 5.0, "{}", freq(4096));
         assert!((freq(6142) + 1000.0).abs() < 5.0, "{}", freq(6142));
+    }
+
+    #[test]
+    fn rrc_has_unit_energy_and_nyquist_zeros_when_squared() {
+        // ∫h² = 1 (Riemann sum at 64 samples per symbol over ±12 symbols).
+        let e: f64 = (-12 * 64..=12 * 64)
+            .map(|k| rrc(k as f64 / 64.0, 0.35).powi(2) / 64.0)
+            .sum();
+        assert!((e - 1.0).abs() < 2e-3, "{e}");
+        // h * h is a raised cosine: zero at non-zero integer symbol lags.
+        let rc = |lag: f64| -> f64 {
+            (-12 * 64..=12 * 64)
+                .map(|k| {
+                    let t = k as f64 / 64.0;
+                    rrc(t, 0.35) * rrc(t - lag, 0.35) / 64.0
+                })
+                .sum()
+        };
+        assert!(
+            rc(1.0).abs() < 3e-3 && rc(2.0).abs() < 3e-3,
+            "{} {}",
+            rc(1.0),
+            rc(2.0)
+        );
+        // The special points are continuous with their neighbourhoods.
+        let x = 1.0 / (4.0 * 0.35);
+        assert!((rrc(x, 0.35) - rrc(x + 1e-7, 0.35)).abs() < 1e-5);
+        assert!((rrc(0.0, 0.35) - rrc(1e-7, 0.35)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn digital_power_is_amplitude_squared_over_sps() {
+        let scene = IqScene {
+            sample_rate: 1e6,
+            components: vec![IqComponent::Digital {
+                modulation: Modulation::Qam16,
+                symbol_rate: 100e3,
+                offset_hz: 0.0,
+                amplitude: 0.5,
+                rolloff: 0.35,
+            }],
+            noise_rms: 0.0,
+        };
+        let d = scene.samples(1, 0, 20_000);
+        let p = d.iter().map(|&v| (v as f64).powi(2)).sum::<f64>() / 20_000.0;
+        assert!((p - 0.25 / 10.0).abs() < 0.001, "{p}");
     }
 
     #[test]
