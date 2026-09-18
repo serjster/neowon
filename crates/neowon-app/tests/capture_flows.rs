@@ -59,7 +59,7 @@ fn capture_history_session_roundtrip() {
     let f = &frames[0];
     assert_eq!(f.sample_rate, 250e3);
     assert!(f.channels.iter().any(|c| c.ch == 0));
-    assert!(f.channels[0].raw.len() >= 1000);
+    assert!(f.channels[0].data.len() >= 1000);
 
     // Session round-trip: the mutations after the first save (vdiv 5,
     // trigpos 0.25) must be reverted by the load, so the second save is

@@ -101,7 +101,7 @@ fn line(link: &Link, ch: usize, hysteresis: f64) -> Option<Digital> {
     let frame = link.latest.as_ref()?;
     let cap = frame.channels.iter().find(|c| c.ch == ch)?;
     digitize(
-        &cap.raw,
+        &cap.data,
         frame.sample_rate,
         Threshold::Relative { hysteresis },
     )
@@ -173,7 +173,7 @@ pub fn draw(
         return;
     }
     let Some(frame) = &link.latest else { return };
-    let n = frame.channels.first().map_or(0, |c| c.raw.len()).max(1);
+    let n = frame.channels.first().map_or(0, |c| c.data.len()).max(1);
     let w = layout.plot.width();
     let h = layout.plot.height();
     let o = layout.plot_center;

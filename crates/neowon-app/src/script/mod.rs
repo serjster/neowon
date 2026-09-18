@@ -535,13 +535,13 @@ pub fn run_script(
                 pf.v_div = v;
             }
             Action::PfCapture => {
-                let raw: Option<Vec<i8>> = if pf.source_slot < 2 {
+                let raw: Option<Vec<f32>> = if pf.source_slot < 2 {
                     link.latest
                         .as_ref()
                         .and_then(|f| f.channels.iter().find(|c| c.ch == pf.source_slot))
-                        .map(|c| c.raw.clone())
+                        .map(|c| c.data.clone())
                 } else {
-                    math.trace.as_ref().map(|c| c.raw.clone())
+                    math.trace.as_ref().map(|c| c.data.clone())
                 };
                 if let Some(raw) = raw {
                     pf.mask = Some(crate::derived::build_pf_mask(&raw, pf.h_div, pf.v_div));

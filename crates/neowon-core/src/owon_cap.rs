@@ -19,7 +19,7 @@ use std::io::{self, Read};
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::{AcqMode, CaptureFrame, ChannelCapture, SharedFrame};
+use crate::{AcqMode, CaptureFrame, ChannelCapture, IqCal, SampleLayout, SharedFrame};
 
 /// `[Voltbase]` table from the jar's `VDS1022ONE.txt`, volts per division.
 const VOLTBASE: [f64; 10] = [0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0];
@@ -150,17 +150,16 @@ pub fn read(path: &Path) -> io::Result<Vec<SharedFrame>> {
             let probe = PROBE.get(probe_idx.max(0) as usize).copied().unwrap_or(1.0);
             let volts_per_lsb = volts_div / 25.0 * probe;
             let sign = if inverse == 1 { -1i16 } else { 1 };
-            let raw: Vec<i8> = c
+            let data: Vec<f32> = c
                 .take(datalen as usize)?
                 .iter()
-                .map(|&b| ((b as i8) as i16 * sign).clamp(-128, 127) as i8)
+                .map(|&b| ((b as i8) as i16 * sign).clamp(-128, 127) as i8 as f32)
                 .collect();
-            let clipped = raw.iter().any(|&r| r.unsigned_abs() >= 125);
+            let clipped = data.iter().any(|&r| r.abs() >= 125.0);
             channels.push(ChannelCapture {
                 ch: ch as usize,
-                raw,
-                volts_per_lsb,
-                zero_volts: -(pos0 as f64) * volts_per_lsb,
+                data,
+                cal: IqCal::real(volts_per_lsb, -(pos0 as f64) * volts_per_lsb),
                 clipped,
                 freq_meter: (freq.is_finite() && freq > 0.0).then_some(freq as f64),
             });
@@ -168,7 +167,9 @@ pub fn read(path: &Path) -> io::Result<Vec<SharedFrame>> {
         }
         c.at = frame_end;
         let rate = sample_rate(timebase_idx);
-        let n = channels.first().map_or(0, |c: &ChannelCapture| c.raw.len());
+        let n = channels
+            .first()
+            .map_or(0, |c: &ChannelCapture| c.data.len());
         let idx = frames.len() as f64;
         // Frame start = index x (record duration + inter-frame gap). With no
         // gap recorded (a crashed recording leaves it 0) the frames are laid
@@ -179,6 +180,7 @@ pub fn read(path: &Path) -> io::Result<Vec<SharedFrame>> {
             t_capture: Some(idx * (n as f64 / rate.max(1e-12) + gap)),
             sample_rate: sample_rate(timebase_idx),
             acq: if peak { AcqMode::Peak } else { AcqMode::Sample },
+            layout: SampleLayout::Real,
             channels,
         }));
     }
@@ -272,15 +274,15 @@ mod tests {
             assert_eq!(f.channels.len(), 2);
             let c0 = &f.channels[0];
             assert_eq!(c0.ch, 0);
-            assert_eq!(c0.raw, vec![0, 25, 50, -125]);
+            assert_eq!(c0.data, vec![0.0, 25.0, 50.0, -125.0]);
             // voltbase 4 = 100 mV/div, probe idx 1 = ×10 → 40 mV/LSB.
-            assert!((c0.volts_per_lsb - 0.04).abs() < 1e-12);
-            assert!((c0.zero_volts - (-10.0 * 0.04)).abs() < 1e-12);
+            assert!((c0.cal.scale_i - 0.04).abs() < 1e-12);
+            assert!((c0.cal.offset_i - (-10.0 * 0.04)).abs() < 1e-12);
             assert!(c0.clipped);
             assert_eq!(c0.freq_meter, Some(1000.0));
             let c1 = &f.channels[1];
             assert_eq!(c1.ch, 1);
-            assert!((c1.volts_per_lsb - 0.04).abs() < 1e-12); // 1 V/div ×1
+            assert!((c1.cal.scale_i - 0.04).abs() < 1e-12); // 1 V/div ×1
             assert!(!c1.clipped);
         }
     }

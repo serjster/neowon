@@ -235,12 +235,10 @@ pub fn setup(
     ));
 }
 
-/// Decimate a record's i8 samples to `n` normalized f32 points.
-fn decimate(raw: &[i8], n: usize) -> Vec<f32> {
+/// Decimate a record's samples to `n` normalized f32 points.
+fn decimate(raw: &[f32], n: usize) -> Vec<f32> {
     let len = raw.len().max(1);
-    (0..n)
-        .map(|i| raw[i * len / n.max(1)] as f32 / 125.0)
-        .collect()
+    (0..n).map(|i| raw[i * len / n.max(1)] / 125.0).collect()
 }
 
 /// Fold new records into the histories, drive the orbit camera, and draw
@@ -274,7 +272,7 @@ pub fn update(
         viz.last_seq = frame.seq;
         for ch in 0..2 {
             if let Some(cap) = frame.channels.iter().find(|c| c.ch == ch) {
-                let pts = decimate(&cap.raw, RING_PTS);
+                let pts = decimate(&cap.data, RING_PTS);
                 viz.rings[ch].push_front(pts);
                 viz.rings[ch].truncate(RINGS);
             }

@@ -11,15 +11,16 @@ pub struct BasicStats {
 }
 
 pub fn basic_stats(cap: &ChannelCapture) -> Option<BasicStats> {
-    let raw = raw_stats(&cap.raw)?;
-    let lsb = cap.volts_per_lsb;
+    let raw = raw_stats(&cap.data)?;
+    let lsb = cap.cal.scale_i;
+    let z = cap.cal.offset_i;
     Some(BasicStats {
-        vmin: raw.min as f64 * lsb + cap.zero_volts,
-        vmax: raw.max as f64 * lsb + cap.zero_volts,
+        vmin: raw.min as f64 * lsb + z,
+        vmax: raw.max as f64 * lsb + z,
         vpp: (raw.max - raw.min) as f64 * lsb,
-        vavg: raw.mean * lsb + cap.zero_volts,
+        vavg: raw.mean * lsb + z,
         vrms: {
-            let zero = cap.zero_volts / lsb;
+            let zero = z / lsb;
             let total = raw.mean_sq + 2.0 * zero * raw.mean + zero * zero;
             total.max(0.0).sqrt() * lsb
         },
@@ -33,7 +34,7 @@ struct RawStats {
     mean_sq: f64,
 }
 
-fn raw_stats(raw: &[i8]) -> Option<RawStats> {
+fn raw_stats(raw: &[f32]) -> Option<RawStats> {
     if raw.is_empty() {
         return None;
     }
@@ -89,7 +90,7 @@ struct Crossing {
 }
 
 /// Interpolated threshold crossings with hysteresis around `mid`.
-fn crossings(raw: &[i8], mid: f64, hyst: f64) -> Vec<Crossing> {
+fn crossings(raw: &[f32], mid: f64, hyst: f64) -> Vec<Crossing> {
     let hi_th = mid + hyst / 2.0;
     let lo_th = mid - hyst / 2.0;
     let mut out = Vec::new();
@@ -136,7 +137,7 @@ fn crossings(raw: &[i8], mid: f64, hyst: f64) -> Vec<Crossing> {
 /// Vtop/Vbase by histogram mode above/below the midpoint (i8 samples make a
 /// natural 256-bin histogram). Falls back to max/min for signals without flat
 /// levels (e.g. sine).
-fn top_base(raw: &[i8], min: i32, max: i32) -> (f64, f64) {
+fn top_base(raw: &[f32], min: i32, max: i32) -> (f64, f64) {
     let mid = ((min + max) / 2) as i8;
     let mut hist = [0u32; 256];
     for &r in raw {
@@ -162,7 +163,7 @@ fn top_base(raw: &[i8], min: i32, max: i32) -> (f64, f64) {
 
 /// Time from `from_level` to `to_level` on the edge starting at crossing `c`,
 /// searching outward from the mid crossing. Returns fractional samples.
-fn edge_time(raw: &[i8], c: &Crossing, low_level: f64, high_level: f64) -> Option<f64> {
+fn edge_time(raw: &[f32], c: &Crossing, low_level: f64, high_level: f64) -> Option<f64> {
     let n = raw.len();
     let idx = c.t as usize;
     let (start_level, end_level) = if c.rising {
@@ -230,22 +231,22 @@ fn edge_time(raw: &[i8], c: &Crossing, low_level: f64, high_level: f64) -> Optio
 /// full cycle, so the frequency comes out at half the column rate whatever
 /// the signal is, and edge-time searches terminate after one step.
 pub fn measure_envelope(cap: &ChannelCapture) -> Option<Measurements> {
-    if cap.raw.len() < 2 {
+    if cap.data.len() < 2 {
         return None;
     }
-    let lsb = cap.volts_per_lsb;
-    let z = cap.zero_volts;
+    let lsb = cap.cal.scale_i;
+    let z = cap.cal.offset_i;
     // Extrema survive min/max decimation whatever the interleave phase is,
     // so take them over the whole record rather than over one series.
-    let all = raw_stats(&cap.raw)?;
+    let all = raw_stats(&cap.data)?;
 
     // For the flat-top/flat-bottom histograms the two series must be told
     // apart, and which one holds the maxima is NOT fixed: the phase of the
     // pairing shifts between records on the VDS1022 (observed on hardware —
     // consecutive records reported Vmax and Vmin swapped). Identify it from
     // the data instead of trusting a convention.
-    let a: Vec<i8> = cap.raw.iter().step_by(2).copied().collect();
-    let b: Vec<i8> = cap.raw.iter().skip(1).step_by(2).copied().collect();
+    let a: Vec<f32> = cap.data.iter().step_by(2).copied().collect();
+    let b: Vec<f32> = cap.data.iter().skip(1).step_by(2).copied().collect();
     let (sa, sb) = (raw_stats(&a)?, raw_stats(&b)?);
     let (maxs, mins, hi, lo) = if sa.mean >= sb.mean {
         (&a, &b, sa, sb)
@@ -277,10 +278,10 @@ pub fn measure_envelope(cap: &ChannelCapture) -> Option<Measurements> {
 }
 
 pub fn measure(cap: &ChannelCapture, sample_rate: f64) -> Option<Measurements> {
-    let raw = &cap.raw;
+    let raw = &cap.data;
     let rs = raw_stats(raw)?;
-    let lsb = cap.volts_per_lsb;
-    let z = cap.zero_volts;
+    let lsb = cap.cal.scale_i;
+    let z = cap.cal.offset_i;
     let dt = 1.0 / sample_rate;
 
     let (top_r, base_r) = top_base(raw, rs.min, rs.max);
@@ -380,7 +381,7 @@ pub fn measure(cap: &ChannelCapture, sample_rate: f64) -> Option<Measurements> {
 /// Estimate the dominant frequency by hysteresis threshold crossings at the
 /// waveform midpoint. Robust for periodic signals with at least two full
 /// periods in the record; returns None otherwise.
-pub fn estimate_frequency(raw: &[i8], sample_rate: f64) -> Option<f64> {
+pub fn estimate_frequency(raw: &[f32], sample_rate: f64) -> Option<f64> {
     if raw.len() < 8 || sample_rate <= 0.0 {
         return None;
     }
@@ -408,7 +409,7 @@ mod tests {
     use super::*;
     use neowon_core::ChannelCapture;
 
-    fn square(n: usize, samples_per_period: f64, lo: i8, hi: i8) -> Vec<i8> {
+    fn square(n: usize, samples_per_period: f64, lo: f32, hi: f32) -> Vec<f32> {
         (0..n)
             .map(|i| {
                 let phase = (i as f64 / samples_per_period).fract();
@@ -417,12 +418,11 @@ mod tests {
             .collect()
     }
 
-    fn cap(raw: Vec<i8>, lsb: f64) -> ChannelCapture {
+    fn cap(raw: Vec<f32>, lsb: f64) -> ChannelCapture {
         ChannelCapture {
             ch: 0,
-            raw,
-            volts_per_lsb: lsb,
-            zero_volts: 0.0,
+            data: raw,
+            cal: neowon_core::IqCal::real(lsb, 0.0),
             clipped: false,
             freq_meter: None,
         }
@@ -430,15 +430,15 @@ mod tests {
 
     #[test]
     fn freq_of_square_wave() {
-        let raw = square(5000, 250.0, 0, 125);
+        let raw = square(5000, 250.0, 0.0, 125.0);
         let f = estimate_frequency(&raw, 250_000.0).unwrap();
         assert!((f - 1000.0).abs() < 5.0, "estimated {f}");
     }
 
     #[test]
     fn freq_of_sine_wave() {
-        let raw: Vec<i8> = (0..5000)
-            .map(|i| ((i as f64 / 100.0 * std::f64::consts::TAU).sin() * 100.0) as i8)
+        let raw: Vec<f32> = (0..5000)
+            .map(|i| ((i as f64 / 100.0 * std::f64::consts::TAU).sin() * 100.0) as f32)
             .collect();
         let f = estimate_frequency(&raw, 1_000_000.0).unwrap();
         assert!((f - 10_000.0).abs() < 50.0, "estimated {f}");
@@ -446,7 +446,7 @@ mod tests {
 
     #[test]
     fn stats_of_unipolar_square() {
-        let c = cap(square(5000, 250.0, 0, 125), 10.0 / 250.0);
+        let c = cap(square(5000, 250.0, 0.0, 125.0), 10.0 / 250.0);
         let s = basic_stats(&c).unwrap();
         assert_eq!(s.vmin, 0.0);
         assert_eq!(s.vmax, 5.0);
@@ -457,18 +457,18 @@ mod tests {
 
     #[test]
     fn no_freq_on_flat_line() {
-        assert!(estimate_frequency(&[3i8; 5000], 250_000.0).is_none());
+        assert!(estimate_frequency(&[3.0f32; 5000], 250_000.0).is_none());
     }
 
     #[test]
     fn full_measurements_of_square() {
         // 1 kHz, 25% duty square at 250 kS/s: 250 samples/period, 62.5 high.
-        let raw: Vec<i8> = (0..5000)
+        let raw: Vec<f32> = (0..5000)
             .map(|i| {
                 if (i as f64 / 250.0).fract() < 0.25 {
-                    100
+                    100.0
                 } else {
-                    -50
+                    -50.0
                 }
             })
             .collect();
@@ -489,8 +489,8 @@ mod tests {
 
     #[test]
     fn measurements_of_sine_use_extremes() {
-        let raw: Vec<i8> = (0..5000)
-            .map(|i| ((i as f64 / 500.0 * std::f64::consts::TAU).sin() * 100.0) as i8)
+        let raw: Vec<f32> = (0..5000)
+            .map(|i| ((i as f64 / 500.0 * std::f64::consts::TAU).sin() * 100.0) as f32)
             .collect();
         let m = measure(&cap(raw, 0.01), 250e3).unwrap();
         // Sine has no flat top: histogram peaks at the extremes.
@@ -503,8 +503,8 @@ mod tests {
     #[test]
     fn envelope_measurements_keep_amplitudes_and_drop_timings() {
         // A 1 kHz square seen as min/max pairs: alternating -100/+100.
-        let raw: Vec<i8> = (0..5000)
-            .map(|i| if i % 2 == 0 { -100 } else { 100 })
+        let raw: Vec<f32> = (0..5000)
+            .map(|i| if i % 2 == 0 { -100.0 } else { 100.0 })
             .collect();
         let cap = cap(raw, 0.01);
         let e = measure_envelope(&cap).unwrap();
@@ -539,11 +539,11 @@ mod tests {
         // VDS1022 shifts this phase between records, so the result must not
         // depend on it (a naive even=min assumption reports a negative Vpp
         // on the shifted record).
-        let a: Vec<i8> = (0..5000)
-            .map(|i| if i % 2 == 0 { -100 } else { 100 })
+        let a: Vec<f32> = (0..5000)
+            .map(|i| if i % 2 == 0 { -100.0 } else { 100.0 })
             .collect();
-        let b: Vec<i8> = (0..5000)
-            .map(|i| if i % 2 == 0 { 100 } else { -100 })
+        let b: Vec<f32> = (0..5000)
+            .map(|i| if i % 2 == 0 { 100.0 } else { -100.0 })
             .collect();
         let ma = measure_envelope(&cap(a, 0.01)).unwrap();
         let mb = measure_envelope(&cap(b, 0.01)).unwrap();

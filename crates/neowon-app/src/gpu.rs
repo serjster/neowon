@@ -113,8 +113,9 @@ pub struct DeepFrame {
     /// since a rebuilt trace has no record sequence number of its own.
     pub rev: u64,
     pub columns: usize,
-    /// Per channel, `2 * columns` interleaved (min, max) values.
-    pub pairs: [Vec<i8>; CHANNELS],
+    /// Per channel, `2 * columns` interleaved (min, max) values. A missing
+    /// column is `f32::NAN` (see `neowon_dsp::timeline::NO_DATA`).
+    pub pairs: [Vec<f32>; CHANNELS],
     pub enabled: [bool; CHANNELS],
     /// 1 = this column had no acquisition, for the gap markers.
     pub gaps: Vec<u32>,
@@ -301,14 +302,14 @@ fn prepare_buffers(
         }
         if d.rev != b.uploaded_deep {
             let n = (d.columns * 2).min(MAX_SAMPLES);
-            let mut data = vec![0i32; CHANNELS * n + d.columns];
+            let mut data = vec![0f32; CHANNELS * n + d.columns];
             for ch in 0..CHANNELS {
                 for (i, &v) in d.pairs[ch].iter().take(n).enumerate() {
-                    data[ch * n + i] = v as i32;
+                    data[ch * n + i] = v;
                 }
             }
             for (c, slot) in data[CHANNELS * n..].iter_mut().enumerate() {
-                *slot = d.gaps.contains(&(c as u32)) as i32;
+                *slot = d.gaps.contains(&(c as u32)) as u8 as f32;
             }
             queue.write_buffer(&b.wave, 0, bytemuck::cast_slice(&data));
             b.uploaded_deep = d.rev;
@@ -329,16 +330,16 @@ fn prepare_buffers(
                 .channels
                 .iter()
                 .filter(|c| c.ch < CHANNELS)
-                .map(|c| c.raw.len().min(MAX_SAMPLES))
+                .map(|c| c.data.len().min(MAX_SAMPLES))
                 .max()
                 .unwrap_or(0);
-            let mut data = vec![0i32; CHANNELS * n.max(1)];
+            let mut data = vec![0f32; CHANNELS * n.max(1)];
             for cap in &frame.channels {
                 if cap.ch >= CHANNELS {
                     continue;
                 }
-                for (i, &r) in cap.raw.iter().take(n).enumerate() {
-                    data[cap.ch * n + i] = r as i32;
+                for (i, &r) in cap.data.iter().take(n).enumerate() {
+                    data[cap.ch * n + i] = r;
                 }
             }
             queue.write_buffer(&b.wave, 0, bytemuck::cast_slice(&data));

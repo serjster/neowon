@@ -113,28 +113,24 @@ impl Averager {
                 .channels
                 .iter()
                 .zip(&self.acc)
-                .any(|(c, a)| c.raw.len() != a.len())
+                .any(|(c, a)| c.data.len() != a.len())
         {
-            self.acc = frame
-                .channels
-                .iter()
-                .map(|c| c.raw.iter().map(|&r| r as f32).collect())
-                .collect();
+            self.acc = frame.channels.iter().map(|c| c.data.clone()).collect();
             self.count = 1;
         } else {
             self.count += 1;
             let k = self.count.min(self.n as u32) as f32;
             for (cap, acc) in frame.channels.iter().zip(&mut self.acc) {
-                for (&r, a) in cap.raw.iter().zip(acc.iter_mut()) {
-                    *a += (r as f32 - *a) / k;
+                for (&r, a) in cap.data.iter().zip(acc.iter_mut()) {
+                    *a += (r - *a) / k;
                 }
             }
         }
         let mut out = frame.clone();
         for (cap, acc) in out.channels.iter_mut().zip(&self.acc) {
-            cap.raw = acc
+            cap.data = acc
                 .iter()
-                .map(|&a| a.round().clamp(-128.0, 127.0) as i8)
+                .map(|&a| a.round().clamp(-128.0, 127.0))
                 .collect();
         }
         out.acq = AcqMode::Average(self.n);
@@ -321,7 +317,7 @@ fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use neowon_core::ChannelCapture;
+    use neowon_core::{ChannelCapture, IqCal, SampleLayout};
 
     fn frame(vals: &[i8]) -> CaptureFrame {
         CaptureFrame {
@@ -329,11 +325,11 @@ mod tests {
             seq: 0,
             sample_rate: 1.0,
             acq: AcqMode::Sample,
+            layout: SampleLayout::Real,
             channels: vec![ChannelCapture {
                 ch: 0,
-                raw: vals.to_vec(),
-                volts_per_lsb: 1.0,
-                zero_volts: 0.0,
+                data: vals.iter().map(|&v| v as f32).collect(),
+                cal: IqCal::real(1.0, 0.0),
                 clipped: false,
                 freq_meter: None,
             }],
@@ -345,13 +341,13 @@ mod tests {
         let mut avg = Averager::default();
         avg.reset(4);
         let a = avg.fold(&frame(&[100, 0]));
-        assert_eq!(a.channels[0].raw, vec![100, 0]);
+        assert_eq!(a.channels[0].data, vec![100.0, 0.0]);
         // Fold in an opposite frame repeatedly: converges toward the mean of
         // the last window, never oscillates outside bounds.
         let b = avg.fold(&frame(&[0, 100]));
-        assert_eq!(b.channels[0].raw, vec![50, 50]);
+        assert_eq!(b.channels[0].data, vec![50.0, 50.0]);
         let c = avg.fold(&frame(&[0, 100]));
-        assert!(c.channels[0].raw[0] < 50 && c.channels[0].raw[1] > 50);
+        assert!(c.channels[0].data[0] < 50.0 && c.channels[0].data[1] > 50.0);
         assert_eq!(c.acq, AcqMode::Average(4));
     }
 }

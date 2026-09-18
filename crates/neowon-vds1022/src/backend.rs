@@ -177,11 +177,12 @@ impl Backend for Vds1022Backend {
             let _ = dev.capture(Duration::from_secs(2)).map_err(fatal)?;
             dev.capture(Duration::from_secs(2)).map_err(fatal)
         };
-        let measure = |f: &neowon_core::CaptureFrame| -> Option<(i32, i32)> {
+        let measure = |f: &neowon_core::CaptureFrame| -> Option<(f32, f32)> {
             let cap = f.channels.iter().find(|c| c.ch == src)?;
-            let (min, max) = cap.raw.iter().fold((i32::MAX, i32::MIN), |(lo, hi), &r| {
-                (lo.min(r as i32), hi.max(r as i32))
-            });
+            let (min, max) = cap
+                .data
+                .iter()
+                .fold((f32::MAX, f32::MIN), |(lo, hi), &r| (lo.min(r), hi.max(r)));
             Some((min, max))
         };
 
@@ -211,12 +212,12 @@ impl Backend for Vds1022Backend {
                 return Ok(None);
             };
             (min, max) = (lo, hi);
-            if hi - lo >= 8 || vb == 0 {
+            if hi - lo >= 8.0 || vb == 0 {
                 break;
             }
             vb = vb.saturating_sub(2);
         }
-        if max - min < 4 {
+        if max - min < 4.0 {
             return Ok(None); // flat — no signal
         }
 
@@ -256,7 +257,7 @@ impl Backend for Vds1022Backend {
         // measurable at 250 kS/s; retry at a faster rate for fast signals.
         let mut rate = 250e3;
         let cap = frame.channels.iter().find(|c| c.ch == src);
-        let mut freq = cap.and_then(|c| neowon_dsp::estimate_frequency(&c.raw, frame.sample_rate));
+        let mut freq = cap.and_then(|c| neowon_dsp::estimate_frequency(&c.data, frame.sample_rate));
         if freq.is_none() {
             self.dev.set_sample_rate(25e6).map_err(fatal)?;
             let f2 = capture_one(&mut self.dev)?;
@@ -264,7 +265,7 @@ impl Backend for Vds1022Backend {
                 .channels
                 .iter()
                 .find(|c| c.ch == src)
-                .and_then(|c| neowon_dsp::estimate_frequency(&c.raw, f2.sample_rate));
+                .and_then(|c| neowon_dsp::estimate_frequency(&c.data, f2.sample_rate));
         }
         if let Some(f) = freq {
             // ~5 periods across the 5000-sample record.

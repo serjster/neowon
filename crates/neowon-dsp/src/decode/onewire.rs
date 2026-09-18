@@ -104,25 +104,25 @@ mod tests {
     use super::*;
 
     struct Builder {
-        raw: Vec<i8>,
+        raw: Vec<f32>,
         rate: f64,
     }
 
     impl Builder {
         fn new(rate: f64) -> Self {
             Self {
-                raw: vec![100; (rate * 20e-6) as usize],
+                raw: vec![100.0; (rate * 20e-6) as usize],
                 rate,
             }
         }
         fn low(&mut self, us: f64) -> &mut Self {
             let n = (self.rate * us * 1e-6) as usize;
-            self.raw.extend(std::iter::repeat_n(-100i8, n));
+            self.raw.extend(std::iter::repeat_n(-100.0f32, n));
             self
         }
         fn high(&mut self, us: f64) -> &mut Self {
             let n = (self.rate * us * 1e-6) as usize;
-            self.raw.extend(std::iter::repeat_n(100i8, n));
+            self.raw.extend(std::iter::repeat_n(100.0f32, n));
             self
         }
         fn reset(&mut self) -> &mut Self {

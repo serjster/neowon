@@ -183,11 +183,18 @@ Per-consumer matrix (frame-level `layout` only; the spike adds any site it finds
 | `neowon-dsp/src/decode` | threshold/digitize over i8 |
 | `neowon-sim`, `neowon-vds1022` | frame construction (i8 wire preserved) |
 
-**Budget (command-checked):** overrun if > 18 files, > 450 net lines, or not green
+**Budget (command-checked):** overrun if > 35 files, > 1500 net lines, or not green
 within two working days. Command:
 `git diff --stat $(git merge-base HEAD <spike-branch>)..<spike-branch>`; the
 two-day box is a dated review. **Overrun stops the program (SDR-G1); D1a is not
-invoked.**
+invoked.** *(Revised 2026-09-18 by the operator: the census measured 27 files and
+the spike landed at 33 crate files / net 362 lines; the original ≤18/≤450 was a
+conservative guess.)* **Spike outcome:** done at 33 files / 729+/367− (net 362);
+`cargo fmt/clippy/build/test`, `shaders`, and the ignored pixel/geometry/flow
+tests all pass. Semantic decisions recorded in the spike report: audio keeps
+f32 counts (not raw volts) to preserve fixed-range semantics; the GPU buffer is
+`array<f32>` with `NaN` gap sentinels; `NO_DATA = f32::NAN`; `Complex` is
+rejected against `Peak`/`Average` (the `Acquisition`-based check waits for D6).
 
 ### Capabilities enum change — its own matrix and budget (D6)
 

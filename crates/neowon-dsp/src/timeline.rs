@@ -17,10 +17,10 @@
 
 /// Column value meaning "no acquired data here".
 ///
-/// `-128` is outside the sample encoding's usable range (±125 is full
-/// scale) but *is* producible — the averager clamps to it — so reduced
-/// values are clamped to ±127 and this code is reserved.
-pub const NO_DATA: i8 = i8::MIN;
+/// `NaN` is outside the sample encoding's usable range and is never produced
+/// by real data (reduced values are clamped to >= -127), so it is an
+/// unambiguous gap marker. Test with `.is_nan()` — `NaN != NaN`.
+pub const NO_DATA: f32 = f32::NAN;
 
 /// A fixed-tile min/max summary of one record, computed once when the
 /// record is stored so that redrawing a long window does not have to touch
@@ -28,18 +28,18 @@ pub const NO_DATA: i8 = i8::MIN;
 #[derive(Debug, Clone)]
 pub struct Tiles {
     pub tile: usize,
-    pub min: Vec<i8>,
-    pub max: Vec<i8>,
+    pub min: Vec<f32>,
+    pub max: Vec<f32>,
 }
 
-/// Summarize `raw` into `tile`-sample buckets.
-pub fn summarize(raw: &[i8], tile: usize) -> Tiles {
+/// Summarize `data` into `tile`-sample buckets.
+pub fn summarize(data: &[f32], tile: usize) -> Tiles {
     let tile = tile.max(1);
-    let n = raw.len().div_ceil(tile);
+    let n = data.len().div_ceil(tile);
     let (mut min, mut max) = (Vec::with_capacity(n), Vec::with_capacity(n));
-    for chunk in raw.chunks(tile) {
-        min.push(*chunk.iter().min().unwrap_or(&0));
-        max.push(*chunk.iter().max().unwrap_or(&0));
+    for chunk in data.chunks(tile) {
+        min.push(chunk.iter().copied().reduce(f32::min).unwrap_or(0.0));
+        max.push(chunk.iter().copied().reduce(f32::max).unwrap_or(0.0));
     }
     Tiles { tile, min, max }
 }
@@ -47,10 +47,10 @@ pub fn summarize(raw: &[i8], tile: usize) -> Tiles {
 /// One acquired record placed on the session time axis.
 #[derive(Debug, Clone, Copy)]
 pub struct Segment<'a> {
-    /// Time of `raw[0]`, seconds on the session clock.
+    /// Time of `data[0]`, seconds on the session clock.
     pub t0: f64,
     pub sample_rate: f64,
-    pub raw: &'a [i8],
+    pub raw: &'a [f32],
     /// Optional precomputed summary, used when a column spans many samples.
     pub tiles: Option<&'a Tiles>,
 }
@@ -65,10 +65,10 @@ impl Segment<'_> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Reduced {
     pub columns: usize,
-    /// `2 * columns` values: (min, max) per column, `NO_DATA` where nothing
-    /// was acquired. Rendered as a vertical span per column, which is how a
-    /// scope's envelope looks.
-    pub pairs: Vec<i8>,
+    /// `2 * columns` values: (min, max) per column, `NO_DATA` (NaN) where
+    /// nothing was acquired. Rendered as a vertical span per column, which is
+    /// how a scope's envelope looks.
+    pub pairs: Vec<f32>,
     /// Fraction of the window actually covered by acquisition, 0..=1.
     pub coverage: f64,
     /// Columns with no data, ascending — the mask the renderer marks.
@@ -209,18 +209,18 @@ pub fn reduce(segments: &[Segment<'_>], window: (f64, f64), columns: usize) -> R
                 continue;
             };
             let (p_lo, p_hi) = (&mut pairs[col * 2], lo);
-            if *p_lo == NO_DATA || p_hi < *p_lo {
+            if p_lo.is_nan() || p_hi < *p_lo {
                 *p_lo = clamp_sample(p_hi);
             }
             let slot = &mut pairs[col * 2 + 1];
-            if *slot == NO_DATA || hi > *slot {
+            if slot.is_nan() || hi > *slot {
                 *slot = clamp_sample(hi);
             }
         }
     }
 
     let gaps: Vec<u32> = (0..columns)
-        .filter(|&c| pairs[c * 2] == NO_DATA)
+        .filter(|&c| pairs[c * 2].is_nan())
         .map(|c| c as u32)
         .collect();
     let mut spans: Vec<(f64, f64)> = segments
@@ -237,13 +237,13 @@ pub fn reduce(segments: &[Segment<'_>], window: (f64, f64), columns: usize) -> R
 }
 
 /// A reduced value can never be the sentinel.
-fn clamp_sample(v: i8) -> i8 {
-    v.max(-127)
+fn clamp_sample(v: f32) -> f32 {
+    v.max(-127.0)
 }
 
 /// Min and max of `raw[i0..i1]`, via the tile summary when the range is wide
 /// enough for it to be exact-enough and much cheaper.
-fn extremes(seg: &Segment<'_>, i0: usize, i1: usize) -> Option<(i8, i8)> {
+fn extremes(seg: &Segment<'_>, i0: usize, i1: usize) -> Option<(f32, f32)> {
     if let Some(t) = seg.tiles
         && i1 - i0 >= t.tile * 2
     {
@@ -252,8 +252,8 @@ fn extremes(seg: &Segment<'_>, i0: usize, i1: usize) -> Option<(i8, i8)> {
         let first = i0.div_ceil(t.tile);
         let last = i1 / t.tile;
         if first < last {
-            let mut lo = *t.min[first..last].iter().min()?;
-            let mut hi = *t.max[first..last].iter().max()?;
+            let mut lo = t.min[first..last].iter().copied().reduce(f32::min)?;
+            let mut hi = t.max[first..last].iter().copied().reduce(f32::max)?;
             for &v in &seg.raw[i0..(first * t.tile).min(i1)] {
                 lo = lo.min(v);
                 hi = hi.max(v);
@@ -266,14 +266,16 @@ fn extremes(seg: &Segment<'_>, i0: usize, i1: usize) -> Option<(i8, i8)> {
         }
     }
     let slice = seg.raw.get(i0..i1)?;
-    Some((*slice.iter().min()?, *slice.iter().max()?))
+    let lo = slice.iter().copied().reduce(f32::min)?;
+    let hi = slice.iter().copied().reduce(f32::max)?;
+    Some((lo, hi))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn seg<'a>(t0: f64, rate: f64, raw: &'a [i8]) -> Segment<'a> {
+    fn seg<'a>(t0: f64, rate: f64, raw: &'a [f32]) -> Segment<'a> {
         Segment {
             t0,
             sample_rate: rate,
@@ -288,7 +290,7 @@ mod tests {
         // sample lies inside the drawn envelope. Which column owns a sample
         // exactly on a boundary is ambiguous to a float rounding, so the
         // check allows a one-column straddle.
-        let raw: Vec<i8> = (0..1000).map(|i| ((i * 7) % 200 - 100) as i8).collect();
+        let raw: Vec<f32> = (0..1000).map(|i| ((i * 7) % 200 - 100) as f32).collect();
         let (rate, window, cols) = (1000.0, (0.0, 1.0), 100usize);
         let r = reduce(&[seg(0.0, rate, &raw)], window, cols);
         assert!(r.gaps.is_empty(), "a contiguous record has no gaps");
@@ -302,7 +304,7 @@ mod tests {
             let hi = (c + 2).min(cols);
             let mut covered = false;
             for col in lo..hi {
-                if r.pairs[col * 2] != NO_DATA && r.pairs[col * 2] <= v && v <= r.pairs[col * 2 + 1]
+                if !r.pairs[col * 2].is_nan() && r.pairs[col * 2] <= v && v <= r.pairs[col * 2 + 1]
                 {
                     covered = true;
                 }
@@ -314,7 +316,7 @@ mod tests {
     #[test]
     fn an_empty_window_is_all_gap() {
         let r = reduce(&[], (0.0, 1.0), 16);
-        assert!(r.pairs.iter().all(|&v| v == NO_DATA));
+        assert!(r.pairs.iter().all(|&v| v.is_nan()));
         assert_eq!(r.coverage, 0.0);
         assert_eq!(r.gaps.len(), 16);
     }
@@ -323,7 +325,7 @@ mod tests {
     fn dead_time_between_segments_becomes_gap_columns() {
         // Two 0.25 s records with 0.25 s of dead time between them, in a 1 s
         // window: half covered, and the gap lands where the clock says.
-        let raw = [50i8; 250];
+        let raw = [50.0f32; 250];
         let segs = [seg(0.0, 1000.0, &raw), seg(0.5, 1000.0, &raw)];
         let r = reduce(&segs, (0.0, 1.0), 100);
         assert!((r.coverage - 0.5).abs() < 1e-9, "coverage {}", r.coverage);
@@ -338,7 +340,7 @@ mod tests {
     fn overlapping_segments_never_exceed_full_coverage() {
         // Timestamps are estimates, so segments can overlap; summing their
         // durations would report 200 % covered.
-        let raw = [10i8; 100];
+        let raw = [10.0f32; 100];
         let segs = [seg(0.0, 100.0, &raw), seg(0.5, 100.0, &raw)];
         let r = reduce(&segs, (0.0, 1.5), 32);
         assert!(r.coverage <= 1.0);
@@ -347,7 +349,7 @@ mod tests {
 
     #[test]
     fn segments_outside_the_window_are_ignored_safely() {
-        let raw = [1i8; 100];
+        let raw = [1.0f32; 100];
         // Entirely before, entirely after, and straddling each edge.
         let segs = [
             seg(-10.0, 100.0, &raw),
@@ -366,15 +368,15 @@ mod tests {
     fn the_sentinel_is_never_produced_by_real_data() {
         // -128 is producible upstream (the averager clamps to it) and must
         // not be mistaken for a gap.
-        let raw = [i8::MIN; 100];
+        let raw = [-128.0f32; 100];
         let r = reduce(&[seg(0.0, 100.0, &raw)], (0.0, 1.0), 10);
         assert!(r.gaps.is_empty(), "clamped data read as a gap");
-        assert!(r.pairs.iter().all(|&v| v == -127));
+        assert!(r.pairs.iter().all(|&v| v == -127.0));
     }
 
     #[test]
     fn tiles_agree_with_the_raw_reduction() {
-        let raw: Vec<i8> = (0..4096).map(|i| ((i * 13) % 250 - 125) as i8).collect();
+        let raw: Vec<f32> = (0..4096).map(|i| ((i * 13) % 250 - 125) as f32).collect();
         let t = summarize(&raw, 64);
         let window = (0.0, 1.0);
         let plain = reduce(&[seg(0.0, 4096.0, &raw)], window, 64);
@@ -402,7 +404,7 @@ mod tests {
 
     #[test]
     fn discontinuities_count_breaks_not_blank_columns() {
-        let raw = [50i8; 100];
+        let raw = [50.0f32; 100];
         // Three separate 0.1 s records in a 1 s window: two dead intervals
         // between them and one trailing, however many columns those happen
         // to occupy.

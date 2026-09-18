@@ -223,9 +223,9 @@ mod tests {
     fn normal_sweep_aligns_trigger() {
         let mut b = armed(0.0, Sweep::Normal);
         let frame = b.poll_frame(Duration::from_millis(200)).unwrap().unwrap();
-        let raw = &frame.channels[0].raw;
+        let raw = &frame.channels[0].data;
         // Crossing placed at index 2500; 0 V = 0 counts at 10 V range.
-        assert!(raw[2500].unsigned_abs() <= 4, "raw[2500] = {}", raw[2500]);
+        assert!(raw[2500].abs() <= 4.0, "raw[2500] = {}", raw[2500]);
         assert!(raw[2510] > raw[2490], "not rising at the trigger point");
     }
 
@@ -258,16 +258,16 @@ mod tests {
         };
         b.apply(&cfg).unwrap();
         let base = b.poll_frame(Duration::from_millis(200)).unwrap().unwrap();
-        let raw0 = base.channels[0].raw[0];
-        assert_eq!(raw0, 50, "1 V at 0.02 V/LSB"); // 50 counts above center
+        let raw0 = base.channels[0].data[0];
+        assert_eq!(raw0, 50.0, "1 V at 0.02 V/LSB"); // 50 counts above center
 
         cfg.channels[0].offset = 0.1; // +25 counts, like the zero DAC
         b.apply(&cfg).unwrap();
         let shifted = b.poll_frame(Duration::from_millis(200)).unwrap().unwrap();
         let cap = &shifted.channels[0];
-        assert_eq!(cap.raw[0], 75);
-        // zero_volts compensates: recovered volts stay 1 V.
-        let volts = cap.raw[0] as f64 * cap.volts_per_lsb + cap.zero_volts;
+        assert_eq!(cap.data[0], 75.0);
+        // cal compensates: recovered volts stay 1 V.
+        let volts = cap.cal.volts_i(cap.data[0]);
         assert!((volts - 1.0).abs() < 1e-9, "recovered {volts} V");
     }
 

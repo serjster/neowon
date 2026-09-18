@@ -49,20 +49,20 @@ pub fn overlay(ctx: &egui::Context, l: &Layout, refs: &RefState) {
     ));
     for (ch, trace) in refs.traces.iter().enumerate() {
         let Some(t) = trace else { continue };
-        if t.raw.len() < 2 {
+        if t.data.len() < 2 {
             continue;
         }
         // At most ~1k points: min/max-preserving would be nicer, but a
         // stride is fine for a ghost.
-        let step = (t.raw.len() / 1024).max(1);
+        let step = (t.data.len() / 1024).max(1);
         let pts: Vec<egui::Pos2> = t
-            .raw
+            .data
             .iter()
             .step_by(step)
             .enumerate()
             .map(|(i, &r)| {
-                let x = rect.left() + (i * step) as f32 / (t.raw.len() - 1) as f32 * rect.width();
-                let y = rect.center().y - r as f32 / 200.0 * rect.height();
+                let x = rect.left() + (i * step) as f32 / (t.data.len() - 1) as f32 * rect.width();
+                let y = rect.center().y - r / 200.0 * rect.height();
                 egui::pos2(x, y.clamp(rect.top(), rect.bottom()))
             })
             .collect();
