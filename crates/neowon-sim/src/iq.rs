@@ -108,6 +108,22 @@ pub enum IqComponent {
         start_s: f64,
         duration_s: f64,
     },
+    /// Amplitude modulation by a tone: `amplitude·(1 + depth·cos(2π·tone·t))`
+    /// on a carrier at `offset_hz`.
+    Am {
+        offset_hz: f64,
+        amplitude: f64,
+        depth: f64,
+        tone_hz: f64,
+    },
+    /// Frequency modulation by a tone: instantaneous frequency
+    /// `offset_hz + deviation_hz·cos(2π·tone·t)`, constant envelope.
+    Fm {
+        offset_hz: f64,
+        amplitude: f64,
+        deviation_hz: f64,
+        tone_hz: f64,
+    },
     /// A continuous digitally modulated carrier: Gray-labelled symbols
     /// drawn from the seed (`symbol_bits`), root-raised-cosine shaped with
     /// roll-off `rolloff`, at `offset_hz` from centre. `amplitude` is the
@@ -218,6 +234,27 @@ impl IqComponent {
                 let turns = from_hz * tau + (to_hz - from_hz) * tau * tau / (2.0 * duration_s);
                 (amplitude, turns)
             }),
+            IqComponent::Am {
+                offset_hz,
+                amplitude,
+                depth,
+                tone_hz,
+            } => Some((
+                amplitude * (1.0 + depth * cos_sin_turns(tone_hz * t).0),
+                offset_hz * t,
+            )),
+            // Phase: ∫ f dt = offset·t + deviation·sin(2π·tone·t)/(2π·tone).
+            IqComponent::Fm {
+                offset_hz,
+                amplitude,
+                deviation_hz,
+                tone_hz,
+            } => Some((
+                amplitude,
+                offset_hz * t
+                    + deviation_hz * cos_sin_turns(tone_hz * t).1
+                        / (std::f64::consts::TAU * tone_hz),
+            )),
             // Complex-valued; `IqScene::sample` builds it directly.
             IqComponent::Digital { .. } => None,
         }
@@ -534,6 +571,46 @@ mod tests {
         let d = scene.samples(1, 0, 20_000);
         let p = d.iter().map(|&v| (v as f64).powi(2)).sum::<f64>() / 20_000.0;
         assert!((p - 0.25 / 10.0).abs() < 0.001, "{p}");
+    }
+
+    #[test]
+    fn am_envelope_and_fm_frequency_follow_their_tones() {
+        let rate = 48_000.0;
+        let am = IqScene {
+            sample_rate: rate,
+            components: vec![IqComponent::Am {
+                offset_hz: 1000.0,
+                amplitude: 0.4,
+                depth: 0.5,
+                tone_hz: 100.0,
+            }],
+            noise_rms: 0.0,
+        };
+        let env = |k: u64| {
+            let (i, q) = am.sample(1, k);
+            ((i * i + q * q) as f64).sqrt()
+        };
+        assert!((env(0) - 0.6).abs() < 1e-6 && (env(240) - 0.2).abs() < 1e-6); // t = 0, half a tone period
+        let fm = IqScene {
+            sample_rate: rate,
+            components: vec![IqComponent::Fm {
+                offset_hz: 0.0,
+                amplitude: 0.5,
+                deviation_hz: 3000.0,
+                tone_hz: 100.0,
+            }],
+            noise_rms: 0.0,
+        };
+        let f = |k: u64| {
+            let (a, b) = (fm.sample(1, k), fm.sample(1, k + 1));
+            let (re, im) = (
+                (b.0 * a.0 + b.1 * a.1) as f64,
+                (b.1 * a.0 - b.0 * a.1) as f64,
+            );
+            im.atan2(re) * rate / std::f64::consts::TAU
+        };
+        assert!((f(0) - 3000.0).abs() < 20.0, "{}", f(0)); // peak deviation at t = 0
+        assert!((f(240) + 3000.0).abs() < 20.0, "{}", f(240));
     }
 
     #[test]
