@@ -7,11 +7,13 @@ use neowon_core::{AcqMode, CaptureFrame, ChannelCapture, IqCal, SampleLayout};
 
 pub mod backend;
 pub mod figures;
+pub mod iq;
 pub mod scenario;
 pub mod signal;
 
 pub use backend::SimBackend;
 pub use figures::XyFigure;
+pub use iq::{IqComponent, IqScene};
 pub use scenario::Scenario;
 pub use signal::{Component, SignalSpec, Xorshift};
 

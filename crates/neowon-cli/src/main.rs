@@ -11,6 +11,8 @@ use neowon_core::{Coupling, Slope, Sweep};
 use neowon_dsp::{basic_stats, estimate_frequency};
 use neowon_vds1022::{ChannelSetup, Vds1022};
 
+mod sim;
+
 #[derive(Parser)]
 #[command(name = "neowon", about = "VDS1022 oscilloscope CLI")]
 struct Cli {
@@ -50,6 +52,11 @@ enum Cmd {
     },
     /// Run the backend auto-set against the live signal and print the result
     Autoset,
+    /// Deterministic simulator output; never opens a device
+    Sim {
+        #[command(subcommand)]
+        cmd: sim::SimCmd,
+    },
 }
 
 #[derive(clap::Args, Clone, Copy)]
@@ -115,6 +122,7 @@ fn main() -> Result<()> {
         Cmd::Stream { secs, acq } => stream(&cli, secs, acq),
         Cmd::Smoke { acq } => smoke(&cli, acq),
         Cmd::Autoset => autoset(&cli),
+        Cmd::Sim { ref cmd } => sim::run(cmd),
     }
 }
 
