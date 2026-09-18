@@ -502,7 +502,13 @@ Auto-cal port (compensation pass descending ranges @ DC, amplitude pass ascendin
 > SigMF export; `neowon sim dataset`; `--test dataset_recipe` (bit-identical
 > + pinned FNV, metadata re-measured from samples, rectangles hold the
 > energy). QC panel deferred (no IQ playback yet).
-> Next without the operator: 10.9 UX parity. neowon becomes one instrument in two modes —
+> **10.9 partial:** `instrument scope|sdr` switches at run time within the
+> launch family (menu + MCP `instrument`); SDR/catalog actions print their
+> script lines and round-trip (parity by construction); app bar is
+> mode-aware; `--test sdr_integration` runs scope→SDR→tune→detect→analyse→
+> classify→catalog→export→scope→SDR. Missing: decode in the chain (10.6),
+> a mode-aware front panel.
+> Nothing left that runs without the operator except polish. neowon becomes one instrument in two modes —
 > **Scope** and **SDR** — riding `Acquisition::Stream` and the shared engine
 > (recorder/timeline, phosphor, decode, control socket, MCP). RTL-SDR drives
 > through librtlsdr bindings *presumed* for V3 compatibility; the exact crate is
