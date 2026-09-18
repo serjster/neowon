@@ -129,6 +129,8 @@ pub fn poll(
             Some("decode") => decode_json(dec),
             Some("sdr") => crate::sdr::sdr_json(sdr),
             Some("iq") => crate::sdr::iq_json(sdr),
+            Some("detections") => crate::sdr::detections_json(sdr),
+            Some("modmeas") => crate::sdr::modmeas_json(sdr),
             Some(other) => format!(
                 r#"{{"ok":false,"error":"unknown query {}"}}"#,
                 escape(other)

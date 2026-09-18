@@ -1,5 +1,5 @@
 //! SDR mode's screen: spectrum over waterfall where the scope grid sits,
-//! controls and an IQ constellation over the dock rail. Drawn only while
+//! controls and an IQ constellation over the dock rail (`sdr_dock`). Drawn only while
 //! an SDR is connected; mode-aware chrome (front panel, menus) is 10.9.
 //!
 //! Every control injects a script action instead of mutating state, so a
@@ -7,24 +7,22 @@
 
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
-use neowon_backend::SdrGain;
 
 use crate::Link;
 use crate::script::{Action, Script};
-use crate::sdr::{FFT_SIZES, SdrAction, SdrState, WF_H, WF_W};
+use crate::sdr::{SdrAction, SdrState, WF_H, WF_W};
 use crate::ui::layout::Layout;
 
-const BG: egui::Color32 = egui::Color32::from_rgb(10, 12, 16);
-const GRID: egui::Color32 = egui::Color32::from_rgba_premultiplied(70, 80, 95, 90);
-const TRACE: egui::Color32 = egui::Color32::from_rgb(120, 220, 255);
+pub(super) const BG: egui::Color32 = egui::Color32::from_rgb(10, 12, 16);
+pub(super) const GRID: egui::Color32 = egui::Color32::from_rgba_premultiplied(70, 80, 95, 90);
+pub(super) const TRACE: egui::Color32 = egui::Color32::from_rgb(120, 220, 255);
 const TEXT: egui::Color32 = egui::Color32::from_rgb(170, 180, 195);
-const SPANS: [f64; 6] = [0.0, 1e6, 500e3, 200e3, 100e3, 50e3];
 
 pub fn fmt_mhz(hz: f64) -> String {
     format!("{:.4} MHz", hz / 1e6)
 }
 
-fn inject(script: &mut Script, a: SdrAction) {
+pub(super) fn inject(script: &mut Script, a: SdrAction) {
     script.inject(Action::Sdr(a));
 }
 
@@ -97,9 +95,9 @@ pub fn show(
             );
             inner.set_clip_rect(rect);
             egui::ScrollArea::vertical().show(&mut inner, |ui| {
-                controls(ui, &sdr, &link, &mut script);
+                super::sdr_dock::controls(ui, &sdr, &link, &mut script);
                 ui.add_space(8.0);
-                constellation(ui, &sdr);
+                super::sdr_dock::constellation(ui, &sdr);
             });
         });
 }
@@ -146,6 +144,30 @@ fn draw_spectrum(p: &egui::Painter, r: egui::Rect, sdr: &SdrState) {
                 TEXT,
             );
         }
+    }
+    // Active tracks: their occupied band, shaded, with the track id.
+    let x_of =
+        |hz: f64| r.min.x + ((hz - sdr.config.centre_hz) / sdr.span() + 0.5) as f32 * r.width();
+    for t in sdr.tracker.active() {
+        let (x0, x1) = (x_of(t.last.lo_hz), x_of(t.last.hi_hz));
+        let (x0, x1) = (x0.max(r.min.x), (x1.max(x0 + 2.0)).min(r.max.x));
+        if x0 >= r.max.x || x1 <= r.min.x {
+            continue;
+        }
+        let band =
+            egui::Rect::from_min_max(egui::pos2(x0, r.min.y + 20.0), egui::pos2(x1, r.max.y));
+        p.rect_filled(
+            band,
+            0.0,
+            egui::Color32::from_rgba_unmultiplied(80, 255, 140, 28),
+        );
+        p.text(
+            egui::pos2(x0, r.min.y + 22.0),
+            egui::Align2::LEFT_TOP,
+            format!("#{}", t.id),
+            font.clone(),
+            egui::Color32::from_rgb(120, 255, 160),
+        );
     }
     let n = sdr.columns.len();
     if n > 1 {
@@ -224,208 +246,6 @@ fn pointer(
         inject(
             script,
             SdrAction::Span(if span >= rate { 0.0 } else { span }),
-        );
-    }
-}
-
-fn controls(ui: &mut egui::Ui, sdr: &SdrState, link: &Link, script: &mut Script) {
-    let c = &sdr.config;
-    ui.heading("SDR");
-    if let Some(caps) = &sdr.caps {
-        ui.label(format!("{} · {} · {}", caps.name, caps.tuner, caps.serial));
-    }
-    ui.separator();
-
-    ui.label("Centre frequency (MHz)");
-    let mut mhz = c.centre_hz / 1e6;
-    if ui
-        .add(egui::DragValue::new(&mut mhz).speed(0.01).max_decimals(6))
-        .changed()
-    {
-        inject(script, SdrAction::Tune(mhz * 1e6));
-    }
-    ui.horizontal(|ui| {
-        for (label, step) in [("−1M", -1e6), ("−100k", -1e5), ("+100k", 1e5), ("+1M", 1e6)] {
-            if ui.small_button(label).clicked() {
-                inject(script, SdrAction::Step(step));
-            }
-        }
-    });
-
-    let rates = sdr
-        .caps
-        .as_ref()
-        .map(|c| c.sample_rates.clone())
-        .unwrap_or_default();
-    egui::ComboBox::from_label("Rate")
-        .selected_text(format!("{:.3} MS/s", c.sample_rate / 1e6))
-        .show_ui(ui, |ui| {
-            for r in rates {
-                if ui
-                    .selectable_label(r == c.sample_rate, format!("{:.3} MS/s", r / 1e6))
-                    .clicked()
-                {
-                    inject(script, SdrAction::Rate(r));
-                }
-            }
-        });
-
-    let auto = c.gain == SdrGain::Auto;
-    let mut want_auto = auto;
-    if ui.checkbox(&mut want_auto, "Tuner AGC").changed() {
-        inject(
-            script,
-            SdrAction::Gain(if want_auto { None } else { Some(29.7) }),
-        );
-    }
-    if let (SdrGain::Manual(db), Some(caps)) = (c.gain, &sdr.caps) {
-        let mut g = db;
-        let max = caps.gains_db.last().copied().unwrap_or(50.0);
-        if ui
-            .add(egui::Slider::new(&mut g, 0.0..=max).text("gain dB"))
-            .changed()
-        {
-            inject(script, SdrAction::Gain(Some(g)));
-        }
-    }
-    let mut agc = c.agc;
-    if ui.checkbox(&mut agc, "RTL digital AGC").changed() {
-        inject(script, SdrAction::Agc(agc));
-    }
-    ui.horizontal(|ui| {
-        let mut ppm = c.ppm;
-        ui.label("ppm");
-        if ui
-            .add(
-                egui::DragValue::new(&mut ppm)
-                    .speed(0.1)
-                    .range(-200.0..=200.0),
-            )
-            .changed()
-        {
-            inject(script, SdrAction::Ppm(ppm));
-        }
-    });
-    ui.separator();
-
-    egui::ComboBox::from_label("Span")
-        .selected_text(format!("{:.0} kHz", sdr.span() / 1e3))
-        .show_ui(ui, |ui| {
-            for s in SPANS {
-                let text = if s == 0.0 {
-                    "full".to_string()
-                } else {
-                    format!("{:.0} kHz", s / 1e3)
-                };
-                if ui.selectable_label(sdr.span_hz == s, text).clicked() {
-                    inject(script, SdrAction::Span(s));
-                }
-            }
-        });
-    egui::ComboBox::from_label("FFT")
-        .selected_text(sdr.fft_size.to_string())
-        .show_ui(ui, |ui| {
-            for n in FFT_SIZES {
-                if ui
-                    .selectable_label(sdr.fft_size == n, n.to_string())
-                    .clicked()
-                {
-                    inject(script, SdrAction::Fft(n));
-                }
-            }
-        });
-    ui.horizontal(|ui| {
-        let (mut r, mut d) = (sdr.ref_db, sdr.range_db);
-        ui.label("ref");
-        let a = ui
-            .add(egui::DragValue::new(&mut r).speed(1.0).range(-150.0..=30.0))
-            .changed();
-        ui.label("range");
-        let b = ui
-            .add(egui::DragValue::new(&mut d).speed(1.0).range(10.0..=200.0))
-            .changed();
-        if a || b {
-            inject(
-                script,
-                SdrAction::Level {
-                    ref_db: r,
-                    range_db: d,
-                },
-            );
-        }
-    });
-
-    if sdr.caps.as_ref().is_some_and(|c| c.tuner == "sim") {
-        egui::ComboBox::from_label("Scene")
-            .selected_text(link.stimulus.clone())
-            .show_ui(ui, |ui| {
-                for name in neowon_sim::RfScene::PRESETS {
-                    if ui.selectable_label(link.stimulus == name, name).clicked() {
-                        script.inject(Action::Stimulus(name.into()));
-                    }
-                }
-            });
-    }
-    let label = if c.running { "Stop" } else { "Run" };
-    if ui.button(label).clicked() {
-        inject(script, SdrAction::Run(!c.running));
-    }
-    ui.separator();
-    if let Some((hz, db)) = sdr.peak() {
-        ui.monospace(format!("peak  {}\n      {db:.1} dBFS", fmt_mhz(hz)));
-    }
-    if let Some(s) = &sdr.spectrum {
-        ui.monospace(format!(
-            "floor {:.1} dBFS\nbin   {:.0} Hz",
-            s.median_db(),
-            s.bin_hz
-        ));
-    }
-    ui.monospace(format!("frames {}", sdr.frames_seen));
-}
-
-/// I/Q scatter of the latest frame's decimated samples. Scaled to the
-/// samples' peak (real signals sit tens of dB below full scale, so a fixed
-/// full-scale box shows a dot); the zoom factor is printed, and 1× means
-/// the box edge is full scale.
-fn constellation(ui: &mut egui::Ui, sdr: &SdrState) {
-    let peak = sdr
-        .iq
-        .iter()
-        .flat_map(|p| [p[0].abs(), p[1].abs()])
-        .fold(0.0f32, f32::max);
-    let zoom = if peak > 0.0 {
-        (0.9 / peak).max(1.0)
-    } else {
-        1.0
-    };
-    ui.label(format!("IQ  ×{zoom:.0}"));
-    let side = ui.available_width().min(220.0);
-    let (r, _) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
-    let p = ui.painter_at(r);
-    p.rect_filled(r, 0.0, BG);
-    p.line_segment(
-        [
-            egui::pos2(r.center().x, r.min.y),
-            egui::pos2(r.center().x, r.max.y),
-        ],
-        (1.0, GRID),
-    );
-    p.line_segment(
-        [
-            egui::pos2(r.min.x, r.center().y),
-            egui::pos2(r.max.x, r.center().y),
-        ],
-        (1.0, GRID),
-    );
-    p.circle_stroke(r.center(), side / 2.0, (1.0, GRID));
-    let half = side / 2.0 * zoom;
-    for [i, q] in &sdr.iq {
-        let pos = r.center() + egui::vec2(i * half, -q * half);
-        p.rect_filled(
-            egui::Rect::from_center_size(pos, egui::vec2(1.5, 1.5)),
-            0.0,
-            TRACE,
         );
     }
 }

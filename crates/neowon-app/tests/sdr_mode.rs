@@ -118,6 +118,35 @@ fn sdr_mode_tunes_measures_and_stays_deterministic() {
             "{s}"
         );
 
+        // Detection finds both in-band emitters (98.3 MHz at 0.15 FS and
+        // 99.4 MHz at 0.3 FS), each within half a bin and at its level,
+        // once they have lasted the tracker's minimum duration.
+        let d = conn.wait("get detections", 10, |r| r.matches(r#""id":"#).count() == 2);
+        // One flat object per detection: split on the id key.
+        let items: Vec<&str> = d.split(r#"{"id":"#).skip(1).collect();
+        for (hz, amp) in [(99.4e6, 0.3f64), (98.3e6, 0.15)] {
+            let hit = items
+                .iter()
+                .find(|o| (field(o, "centre_hz") - hz).abs() <= 250.0)
+                .unwrap_or_else(|| panic!("{hz} missing: {d}"));
+            let dbfs = field(hit, "power_dbfs");
+            assert!((dbfs - 20.0 * amp.log10()).abs() < 0.2, "{hz}: {hit}");
+        }
+        let m = conn.request("get modmeas");
+        assert!((field(&m, "centre_hz") - 99.4e6).abs() <= 250.0, "{m}");
+        assert!(
+            (field(&m, "channel_power_dbfs") - 20.0 * 0.3f64.log10()).abs() < 0.2,
+            "{m}"
+        );
+        // Flatness is reported but not asserted: over a CW tone's
+        // three-bin occupied band the Hann main lobe is itself fairly flat.
+        assert!(field(&m, "snr_db") > 30.0, "{m}");
+
+        // Noise alone: tracks drain once unseen for the hold time.
+        assert!(conn.request("stimulus rf-noise").contains(r#""ok":true"#));
+        conn.wait("get detections", 10, |r| r.contains(r#""detections":[]"#));
+        assert!(conn.request("stimulus rf-fm-band").contains(r#""ok":true"#));
+
         // Out-of-caps requests are refused and leave the config alone.
         assert!(conn.request("sdr rate 1234").contains(r#""ok":true"#));
         let st = conn.wait("get status", 5, |r| r.contains("rate 1234"));
