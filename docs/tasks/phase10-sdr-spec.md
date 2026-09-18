@@ -256,6 +256,11 @@ it + `sim iq --seed`; views (spectrum, waterfall, IQ scope); debug surface
 | two fresh processes, same seed | bytes | identical | bit-exact | `cargo run -p neowon-cli -- sim iq --seed 1 --n 1024 --out a.f32 && … --out b.f32 && cmp a.f32 b.f32` |
 | D1b spike | files/lines | ≤35 / ≤1500 (revised) | exact | spike report |
 
+**Status 2026-09-18: 10.0 DONE** (all four rows met; see Deviations for
+what was deferred). Views, backends and scripts landed as described in
+`PLAN.md` §4; `cargo test -p neowon-app --test sdr_mode -- --ignored`
+drives them end to end on the sim.
+
 `get iq` → `{seed:u64, n:usize, layout:"real"|"complex", bytes_fnv:u64}`;
 `get detections` → `{centre_hz, bandwidth_hz, power_dbfs, snr_db, first_seen_s,
 last_seen_s}[]`; `get modmeas` → `{symbol_rate_hz, evm_rms_pct, obw99_hz,
@@ -492,6 +497,23 @@ criterion.
   bandwidth **and gain**, which upstream loses because the tuner `init`
   resets every register; `RtlSdr::tuner_if_hz()` is exposed because ppm
   maths needs it.
+- **10.0 scope (2026-09-18).**
+  - `get iq` also reports `start`, the frame's first sample index, so a
+    test can re-derive `bytes_fnv` from the D8 generator. Without it the
+    fingerprint could only be compared against a recording.
+  - `sdr mode` and `sdr squelch` are deferred to 10.3. Both act on a
+    demodulator, and there is none yet; a control with no effect would be
+    dishonest.
+  - SDR frames bypass the recorder. IQ needs its own sub-budget of the
+    ring (risk 4), so SDR history is the waterfall only for now.
+  - The menu bar and front panel are still the scope's in SDR mode
+    (mode-aware chrome is 10.9). The SDR view and controls draw over the
+    plot and dock.
+  - `--sdr-sim` / `--rtl` select the instrument at launch; switching at
+    run time is 10.9.
+  - `script/mod.rs` was already over the hard budget; it grew by 3 lines
+    (one `Action` variant and a one-line arm). `main.rs` shrank below its
+    starting size because backend selection moved to `launch.rs`.
 - **D8, CLI vs. the hardware rule.** AGENTS.md says "no `neowon-cli`" for
   automated runs; `neowon sim …` never opens a device (dispatch opens USB per
   hardware subcommand), so the spec's two-process `cmp` criterion is safe to
