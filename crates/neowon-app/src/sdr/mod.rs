@@ -19,7 +19,7 @@ mod actions;
 mod readout;
 
 use crate::viz::waterfall::thermal;
-pub use actions::{SdrAction, parse, parse_sim, run};
+pub use actions::{SdrAction, parse, parse_hz, parse_sim, run};
 pub use readout::{detections_json, iq_json, modmeas_json, sdr_json};
 
 /// Waterfall texture: display columns × history rows (newest on top).

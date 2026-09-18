@@ -167,6 +167,9 @@ pub fn controls(ui: &mut egui::Ui, sdr: &SdrState, link: &Link, script: &mut Scr
     ui.monospace(format!("frames {}", sdr.frames_seen));
     ui.separator();
     signals(ui, sdr, script);
+    if ui.button("Catalog…").clicked() {
+        script.inject(Action::Catalog(crate::catalog::CatalogAction::Window(true)));
+    }
 }
 
 /// Detection controls and the active tracks, strongest first.
