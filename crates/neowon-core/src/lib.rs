@@ -3,6 +3,7 @@
 
 pub mod frame;
 pub mod instrument;
+pub mod modulation;
 pub mod nwc;
 pub mod observation;
 pub mod owon_cap;
@@ -13,6 +14,7 @@ pub use instrument::{
     Acquisition, Capabilities, ChannelConfig, InstrumentConfig, ScopeCaps, ScopeConfig, SdrCaps,
     SdrConfig, SdrGain, TriggerConfig,
 };
+pub use modulation::Modulation;
 pub use observation::SignalObservation;
 
 /// Input coupling. Hardware encodings are backend-specific.
