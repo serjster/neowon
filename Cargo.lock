@@ -4072,6 +4072,7 @@ dependencies = [
  "neowon-backend",
  "neowon-core",
  "neowon-dsp",
+ "neowon-sdr",
  "neowon-sim",
  "neowon-vds1022",
  "png",

@@ -86,6 +86,16 @@ pub fn start_from_env() -> ControlServer {
     ControlServer { rx: Some(rx) }
 }
 
+/// Later-phase resources bundled into one system param (Bevy caps systems
+/// at 16 parameters).
+type ExtraState<'w> = (
+    Res<'w, crate::effects::Effects>,
+    Res<'w, crate::autopeak::AutoPeak>,
+    Res<'w, crate::deep::DeepView>,
+    Res<'w, crate::decode::DecodeState>,
+    Res<'w, crate::sdr::SdrState>,
+);
+
 /// Drain pending requests. Runs before `run_script` so injected commands
 /// land in the same frame.
 #[allow(clippy::too_many_arguments)]
@@ -103,15 +113,9 @@ pub fn poll(
     hist: Res<History>,
     wf: Res<WaterfallState>,
     viz: Res<Viz3dState>,
-    // Bundled: Bevy caps systems at 16 parameters.
-    extra: (
-        Res<crate::effects::Effects>,
-        Res<crate::autopeak::AutoPeak>,
-        Res<crate::deep::DeepView>,
-        Res<crate::decode::DecodeState>,
-    ),
+    extra: ExtraState,
 ) {
-    let (fx, ap, deep, dec) = (&extra.0, &extra.1, &extra.2, &extra.3);
+    let (fx, ap, deep, dec, sdr) = (&extra.0, &extra.1, &extra.2, &extra.3, &extra.4);
     let Some(rx) = &server.rx else { return };
     let now = time.elapsed_secs_f64();
     for req in rx.try_iter() {
@@ -123,6 +127,8 @@ pub fn poll(
             }
             Some("measure") => measure_json(&meas),
             Some("decode") => decode_json(dec),
+            Some("sdr") => crate::sdr::sdr_json(sdr),
+            Some("iq") => crate::sdr::iq_json(sdr),
             Some(other) => format!(
                 r#"{{"ok":false,"error":"unknown query {}"}}"#,
                 escape(other)
