@@ -388,6 +388,14 @@ unscanned or pruned peak is `unknown`, never `gone`.
 seeded new tone `new`, removed tone `gone`, raised tone `stronger`, truncated band
 overflow `unknown`, unscanned band all `unknown`.
 
+**Status 2026-09-19: 10.4 DONE.** `cargo test -p neowon-sdr --test
+survey_diff -- --nocapture` passes the fixed-order row set (same, gone,
+new, stronger; a truncated band's weak peaks unknown; a skipped band
+unknown). `BandCoverage.band` is stored as `lo_hz`/`hi_hz`, and its
+`retained_power_floor` is a finite sentinel (`f64::MIN`) when nothing was
+cut, so catalog JSON stays valid. Coverage and peaks are clipped to the
+requested range.
+
 ### 10.5 — Classification & recognition
 
 C1 `DspClassifier`; C2 `MlClassifier` (default-off `ort`); C3 `unknown` + top-2 +
