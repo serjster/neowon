@@ -16,6 +16,9 @@ use neowon_catalog::{
 use crate::Link;
 use crate::sdr::SdrState;
 
+mod readout;
+pub use readout::{catalog_json, history_json};
+
 #[derive(Resource)]
 pub struct CatalogState {
     pub cat: Option<Catalog>,
@@ -117,6 +120,8 @@ pub enum CatalogAction {
     Import(String),
     Window(bool),
     Select(Option<Id>),
+    /// File the latest completed survey's coverage (optional name).
+    Survey(String),
 }
 
 fn ids(s: &str) -> Result<Vec<Id>, String> {
@@ -164,6 +169,7 @@ pub fn parse<'a>(
         "import" => CatalogAction::Import(tail(0)),
         "window" => CatalogAction::Window(matches!(arg(0)?, "on" | "1")),
         "select" => CatalogAction::Select(arg(0)?.parse().ok()),
+        "survey" => CatalogAction::Survey(tail(0)),
         other => return Err(format!("unknown catalog verb {other:?}")),
     })
 }
@@ -314,6 +320,32 @@ fn apply(a: CatalogAction, st: &mut CatalogState, sdr: &SdrState) -> Result<(), 
                     )?;
                     st.selected = Some(id);
                 }
+                CatalogAction::Survey(name) => {
+                    let r = sdr.surveys.last().ok_or("no completed survey to file")?;
+                    let id = cat.next_id();
+                    let name = if name.is_empty() {
+                        format!(
+                            "{:.3}–{:.3} MHz",
+                            r.plan.start_hz / 1e6,
+                            r.plan.stop_hz / 1e6
+                        )
+                    } else {
+                        name
+                    };
+                    commit(
+                        cat,
+                        Op::Insert {
+                            entity: Entity::Survey(neowon_catalog::Survey {
+                                id,
+                                name,
+                                started: at.clone(),
+                                coverage: r.coverage.clone(),
+                                pinned: false,
+                                provenance: user(&at),
+                            }),
+                        },
+                    )?;
+                }
                 CatalogAction::Observe => {
                     let n = observe(cat, sdr, &at)?;
                     info!("catalog: filed {n} observations");
@@ -375,76 +407,6 @@ fn apply(a: CatalogAction, st: &mut CatalogState, sdr: &SdrState) -> Result<(), 
         }
     }
     Ok(())
-}
-
-fn esc(s: &str) -> String {
-    format!("\"{}\"", crate::control::escape(s))
-}
-
-/// `get catalog`: the listed signals and the catalog's health.
-pub fn catalog_json(st: &CatalogState) -> String {
-    let Some(cat) = &st.cat else {
-        return format!(
-            r#"{{"ok":false,"error":"no catalog open at {}"}}"#,
-            st.path.display()
-        );
-    };
-    let rows: Vec<String> = st
-        .signals()
-        .iter()
-        .map(|s| {
-            let tags: Vec<String> = s.tags.iter().map(|t| esc(t)).collect();
-            let aliases: Vec<String> = s.aliases.iter().map(|a| esc(&a.name)).collect();
-            format!(
-                concat!(
-                    r#"{{"id":{},"name":{},"centre_hz":{},"bandwidth_hz":{},"tags":[{}],"#,
-                    r#""aliases":[{}],"pinned":{},"observations":{}}}"#
-                ),
-                s.id.0,
-                esc(&s.name),
-                s.centre_hz,
-                s.bandwidth_hz,
-                tags.join(","),
-                aliases.join(","),
-                s.pinned,
-                st.observations_of(s.id)
-            )
-        })
-        .collect();
-    format!(
-        r#"{{"ok":true,"path":{},"seq":{},"entities":{},"integrity":{},"signals":[{}]}}"#,
-        esc(&st.path.display().to_string()),
-        cat.seq(),
-        cat.state().entities.len(),
-        cat.state().integrity().len(),
-        rows.join(",")
-    )
-}
-
-/// `get history <id>`: a signal's observations, redirects followed.
-pub fn history_json(st: &CatalogState, id: &str) -> String {
-    let (Some(cat), Ok(id)) = (&st.cat, id.parse::<Id>()) else {
-        return r#"{"ok":false,"error":"no catalog, or a bad id"}"#.into();
-    };
-    match cat.state().history(id) {
-        Ok(h) => {
-            let rows: Vec<String> = h
-                .iter()
-                .map(|o| {
-                    format!(
-                        r#"{{"id":{},"signal":{},"t_start":{},"centre_hz":{},"power_dbfs":{},"snr_db":{}}}"#,
-                        o.id.0, o.signal.0, o.obs.t_start, o.obs.centre_hz, o.obs.power_dbfs, o.obs.snr_db
-                    )
-                })
-                .collect();
-            format!(
-                r#"{{"ok":true,"canonical":{},"rows":[{}]}}"#,
-                cat.state().resolve(id).map_or(0, |i| i.0),
-                rows.join(",")
-            )
-        }
-        Err(e) => format!(r#"{{"ok":false,"error":{}}}"#, esc(&e.to_string())),
-    }
 }
 
 #[cfg(test)]
