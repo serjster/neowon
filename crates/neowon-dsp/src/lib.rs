@@ -9,6 +9,7 @@ pub mod fft;
 pub mod iq;
 pub mod math;
 pub mod measure;
+pub mod modlab;
 pub mod modmeas;
 pub mod stats;
 pub mod timeline;
