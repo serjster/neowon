@@ -5,7 +5,10 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use neowon_backend::{Backend, BackendError, Capabilities, ScopeConfig};
+use neowon_backend::{
+    Acquisition, Backend, BackendError, Capabilities, InstrumentConfig, ScopeCaps, ScopeConfig,
+    scope_config,
+};
 use neowon_core::{CaptureFrame, SharedFrame, Slope, Sweep, TriggerKind};
 
 use crate::{SAMPLES, Scenario, SimSource};
@@ -22,7 +25,7 @@ impl SimBackend {
     pub fn new() -> Self {
         Self {
             src: SimSource::default(),
-            caps: Capabilities {
+            caps: Capabilities::Scope(ScopeCaps {
                 name: "Simulated".into(),
                 serial: "sim-0".into(),
                 channels: 2,
@@ -35,11 +38,11 @@ impl SimBackend {
                 ],
                 volts_div: vec![0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0],
                 probes: vec![1.0, 10.0, 100.0],
-                acquisition: neowon_backend::Acquisition::Record {
+                acquisition: Acquisition::Record {
                     samples: crate::SAMPLES,
                 },
                 hardware_trigger: true,
-            },
+            }),
             cfg: ScopeConfig::default(),
             next_at: Instant::now(),
             // NEOWON_SIM_FPS drives the pacing in tests that need a known
@@ -116,7 +119,8 @@ impl Backend for SimBackend {
         &self.caps
     }
 
-    fn apply(&mut self, cfg: &ScopeConfig) -> Result<(), BackendError> {
+    fn apply(&mut self, cfg: &InstrumentConfig) -> Result<(), BackendError> {
+        let cfg = scope_config(cfg)?;
         // WAV playback keeps the file's own rate; everything else follows
         // the configured timebase.
         if !matches!(self.src.scenario(), Scenario::XyWav { .. }) {
@@ -215,7 +219,7 @@ mod tests {
             position: 0.5,
             ..Default::default()
         };
-        b.apply(&cfg).unwrap();
+        b.apply(&cfg.clone().into()).unwrap();
         b
     }
 
@@ -256,13 +260,13 @@ mod tests {
             ],
             ..Default::default()
         };
-        b.apply(&cfg).unwrap();
+        b.apply(&cfg.clone().into()).unwrap();
         let base = b.poll_frame(Duration::from_millis(200)).unwrap().unwrap();
         let raw0 = base.channels[0].data[0];
         assert_eq!(raw0, 50.0, "1 V at 0.02 V/LSB"); // 50 counts above center
 
         cfg.channels[0].offset = 0.1; // +25 counts, like the zero DAC
-        b.apply(&cfg).unwrap();
+        b.apply(&cfg.clone().into()).unwrap();
         let shifted = b.poll_frame(Duration::from_millis(200)).unwrap().unwrap();
         let cap = &shifted.channels[0];
         assert_eq!(cap.data[0], 75.0);

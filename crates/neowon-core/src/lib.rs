@@ -2,11 +2,16 @@
 //! channel/trigger vocabulary. No I/O, no device specifics, no GPU.
 
 pub mod frame;
+pub mod instrument;
 pub mod nwc;
 pub mod owon_cap;
 pub mod wav;
 
 pub use frame::{CaptureFrame, ChannelCapture, FrameError, IqCal, SampleLayout, SharedFrame};
+pub use instrument::{
+    Acquisition, Capabilities, ChannelConfig, InstrumentConfig, ScopeCaps, ScopeConfig, SdrCaps,
+    SdrConfig, SdrGain, TriggerConfig,
+};
 
 /// Input coupling. Hardware encodings are backend-specific.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

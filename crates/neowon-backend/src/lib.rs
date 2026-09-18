@@ -5,118 +5,15 @@
 
 use std::time::Duration;
 
-use neowon_core::{AcqMode, Coupling, SharedFrame, Slope, Sweep, TriggerKind};
+use neowon_core::SharedFrame;
+pub use neowon_core::{
+    Acquisition, Capabilities, ChannelConfig, InstrumentConfig, ScopeCaps, ScopeConfig, SdrCaps,
+    SdrConfig, SdrGain, TriggerConfig,
+};
 
 pub mod supervisor;
 
 pub use supervisor::{Command, Event, Supervisor, spawn};
-
-/// How samples reach the host. This is the difference that most divides
-/// instruments, and it decides what the horizontal controls can mean.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Acquisition {
-    /// Discrete records of a fixed length, separated by dead time the
-    /// instrument spends transferring and re-arming. The time one record
-    /// covers is `samples / sample_rate`, so spanning more time costs
-    /// sample rate — a USB scope with a small buffer.
-    Record { samples: usize },
-    /// A continuous sample stream, handed over in chunks that are
-    /// contiguous in time. There is no record and no dead time; how much
-    /// time you can see is bounded only by host memory — a sound card, an
-    /// SDR, a logic analyser in streaming mode.
-    Stream { chunk: usize },
-}
-
-impl Acquisition {
-    /// Samples per delivered frame, whichever kind this is.
-    pub fn frame_len(self) -> usize {
-        match self {
-            Acquisition::Record { samples } => samples,
-            Acquisition::Stream { chunk } => chunk,
-        }
-    }
-
-    pub fn is_stream(self) -> bool {
-        matches!(self, Acquisition::Stream { .. })
-    }
-}
-
-/// What an instrument can do; the UI builds itself from this.
-#[derive(Debug, Clone)]
-pub struct Capabilities {
-    pub name: String,
-    pub serial: String,
-    pub channels: usize,
-    /// Supported sample rates, ascending, S/s.
-    pub sample_rates: Vec<f64>,
-    /// Supported volts/div settings, ascending. Empty when the input range
-    /// is not adjustable (a sound card has one full scale).
-    pub volts_div: Vec<f64>,
-    pub probes: Vec<f64>,
-    /// How samples arrive.
-    pub acquisition: Acquisition,
-    /// Does the instrument find trigger events itself? When false the host
-    /// has to, or the display free-runs.
-    pub hardware_trigger: bool,
-}
-
-impl Capabilities {
-    /// Samples in one delivered frame. Named for the record it usually is,
-    /// but a streaming source answers with its chunk size so the
-    /// single-frame display keeps working.
-    pub fn record_len(&self) -> usize {
-        self.acquisition.frame_len()
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ChannelConfig {
-    pub enabled: bool,
-    /// Volts per division at the instrument input (before probe factor).
-    pub volts_div: f64,
-    pub coupling: Coupling,
-    pub probe: f64,
-    /// Vertical offset as a fraction of full scale, -0.5..=0.5.
-    pub offset: f64,
-}
-
-impl Default for ChannelConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            volts_div: 1.0,
-            coupling: Coupling::Dc,
-            probe: 1.0,
-            offset: 0.0,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct TriggerConfig {
-    /// Zero-based source channel.
-    pub source: usize,
-    pub kind: TriggerKind,
-    /// Level in volts (at the probe tip); the edge/pulse level.
-    pub level: f64,
-    pub sweep: Sweep,
-    /// Trigger holdoff in seconds.
-    pub holdoff: f64,
-}
-
-impl Default for TriggerConfig {
-    fn default() -> Self {
-        Self {
-            source: 0,
-            kind: TriggerKind::Edge {
-                slope: Slope::Rising,
-            },
-            level: 0.0,
-            sweep: Sweep::Auto,
-            holdoff: 100e-9,
-        }
-    }
-}
 
 /// Function of the MULTI (aux) BNC port.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,41 +21,6 @@ pub enum MultiMode {
     TriggerOut,
     PassFailOut,
     TriggerIn,
-}
-
-/// Complete desired instrument state. Backends diff this against what they
-/// last applied.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ScopeConfig {
-    pub channels: Vec<ChannelConfig>,
-    pub sample_rate: f64,
-    pub trigger: TriggerConfig,
-    /// Horizontal trigger position, fraction of the record (0.5 = centered).
-    pub position: f64,
-    pub acq: AcqMode,
-    pub running: bool,
-}
-
-impl Default for ScopeConfig {
-    fn default() -> Self {
-        Self {
-            channels: vec![
-                ChannelConfig {
-                    enabled: true,
-                    ..Default::default()
-                },
-                ChannelConfig::default(),
-            ],
-            sample_rate: 250e3,
-            trigger: TriggerConfig {
-                level: 2.5,
-                ..Default::default()
-            },
-            position: 0.5,
-            acq: AcqMode::Sample,
-            running: true,
-        }
-    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -172,11 +34,20 @@ pub enum BackendError {
     Transient(String),
 }
 
+/// The scope half of `cfg`, or the error a scope backend returns when
+/// handed an SDR config.
+pub fn scope_config(cfg: &InstrumentConfig) -> Result<&ScopeConfig, BackendError> {
+    cfg.scope()
+        .ok_or_else(|| BackendError::Transient("SDR config sent to a scope backend".into()))
+}
+
 pub trait Backend: Send {
     fn capabilities(&self) -> &Capabilities;
 
     /// Drive the instrument to `cfg`. Called from the supervisor thread.
-    fn apply(&mut self, cfg: &ScopeConfig) -> Result<(), BackendError>;
+    /// A config for the other instrument mode is an error (see
+    /// [`scope_config`]).
+    fn apply(&mut self, cfg: &InstrumentConfig) -> Result<(), BackendError>;
 
     /// Wait up to `budget` for the next frame. `Ok(None)` means no data yet.
     fn poll_frame(&mut self, budget: Duration) -> Result<Option<SharedFrame>, BackendError>;
@@ -218,5 +89,21 @@ pub trait Backend: Send {
     /// signal found.
     fn autoset(&mut self) -> Result<Option<ScopeConfig>, BackendError> {
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scope_backends_refuse_sdr_config() {
+        let scope = InstrumentConfig::from(ScopeConfig::default());
+        assert_eq!(scope_config(&scope).unwrap(), &ScopeConfig::default());
+        let sdr = InstrumentConfig::from(SdrConfig::default());
+        assert!(matches!(
+            scope_config(&sdr),
+            Err(BackendError::Transient(_))
+        ));
     }
 }
