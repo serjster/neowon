@@ -465,7 +465,15 @@ Auto-cal port (compensation pass descending ranges @ DC, amplitude pass ascendin
 > `--test detect_golden` passes the spec's five rows; live in the app
 > (`get detections`, `get modmeas`, `sdr detect|threshold`). On the dongle
 > it finds the 99.4 MHz FM station (~115 kHz, 25 dB SNR) and the narrow
-> carriers around it. Next: 10.2 catalog. neowon becomes one instrument in two modes —
+> carriers around it. **10.2 DONE:** `neowon-catalog` (manifest + snapshot +
+> CRC-framed fsynced WAL, single-writer lock, merge redirects with chain
+> compression, explicit cascades, pinning, exact session undo, v0→v1
+> migration, export/import; the spec's six suites incl. crash failpoints);
+> in the app (`catalog add|observe|rename|alias|tag|pin|edit|merge|delete|
+> purge|bulk|undo|export|import|window`, `get catalog`, `get history`,
+> Catalog window) and MCP (`catalog`, `catalog_list`, `catalog_history`,
+> `sdr_*`); `--test catalog_flow` survives an app restart. Next: 10.3
+> modulation lab. neowon becomes one instrument in two modes —
 > **Scope** and **SDR** — riding `Acquisition::Stream` and the shared engine
 > (recorder/timeline, phosphor, decode, control socket, MCP). RTL-SDR drives
 > through librtlsdr bindings *presumed* for V3 compatibility; the exact crate is

@@ -354,6 +354,12 @@ unpin|export|import`; MCP mirrors. UI: Catalog window.
 | purge with a pinned entry → 0 pinned removed | exact | `cargo test -p neowon-catalog --test purge_pinned` |
 | history under a merge redirect returns canonical rows | fixed-order | `cargo test -p neowon-catalog --test redirect_history` |
 
+**Status 2026-09-19: 10.2 DONE.** All six rows pass
+(`cargo test -p neowon-catalog`; `NEOWON_CATALOG_KILL=<point>` runs one
+failpoint, and without it the crash suite runs all three). App and MCP
+integration: `cargo test -p neowon-app --test catalog_flow -- --ignored`,
+`cargo test -p neowon-mcp -- --ignored`.
+
 ### 10.3 — Modulation analysis
 
 M1 constellation + recovery; M2 EVM/MER; M3 cumulants C20–C63; M4 cyclic
@@ -535,6 +541,21 @@ criterion.
     noise floor, so it has no truth to compare against.
   - *Transient:* checked as never active at any frame, not merely absent
     at the end, and its timed span must match the true one within a block.
+- **10.2 catalog (2026-09-19).**
+  - Undo is per session (an in-memory stack of exact inverses). Merge and
+    purge cannot be undone and clear the stack; persisting undo across
+    restarts was not asked for.
+  - "zstd blobs" (D4) are deferred. Nothing attaches binary payloads yet;
+    the first will be IQ snippets on observations.
+  - The single-writer actor is an exclusive file lock plus `&mut`
+    ownership. The app commits on its main thread; commits are
+    user-paced, fsync-bound, and a few ms.
+  - "MCP mirrors" is one `catalog` tool taking any script verb, plus
+    `catalog_list` and `catalog_history`, rather than fourteen tools.
+  - The entity tag in JSON is `entity`, not `kind`: `Source` has a `kind`
+    field, and the collision only showed on WAL replay.
+  - Deleting a signal also drops redirects that pointed at it (the
+    merged-away ids keep their own tombstones).
 - **D8, CLI vs. the hardware rule.** AGENTS.md says "no `neowon-cli`" for
   automated runs; `neowon sim …` never opens a device (dispatch opens USB per
   hardware subcommand), so the spec's two-process `cmp` criterion is safe to
