@@ -5,6 +5,7 @@ members = [
     "crates/neowon-backend",
     "crates/neowon-dsp",
     "crates/neowon-sim",
+    "crates/neowon-sdr",
     "crates/neowon-audio",
     "crates/neowon-vds1022",
     "crates/neowon-cli",
@@ -22,6 +23,7 @@ neowon-core = { path = "crates/neowon-core" }
 neowon-backend = { path = "crates/neowon-backend" }
 neowon-dsp = { path = "crates/neowon-dsp" }
 neowon-sim = { path = "crates/neowon-sim" }
+neowon-sdr = { path = "crates/neowon-sdr" }
 neowon-audio = { path = "crates/neowon-audio" }
 neowon-vds1022 = { path = "crates/neowon-vds1022" }
 
