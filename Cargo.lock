@@ -4178,6 +4178,8 @@ dependencies = [
  "neowon-backend",
  "neowon-core",
  "neowon-dsp",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
