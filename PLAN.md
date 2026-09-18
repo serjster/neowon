@@ -496,7 +496,13 @@ Auto-cal port (compensation pass descending ranges @ DC, amplitude pass ascendin
 > C2 learned path (`ort`), C5/C6/C9 evaluation, and gate SDR-G2 all need a
 > D9 corpus (over-the-air, held-out-frequency + cross-day); 10.6 needs
 > independent reference vectors (external files); 10.7 waits on SDR-G2.
-> Next without the operator: 10.8 dataset pipeline, 10.9 UX parity. neowon becomes one instrument in two modes —
+> **10.8 DONE:** `neowon_sim::dataset` — seeded recipes (JSON), CW/AM/FM/
+> 5 constellations, IQ-imbalance + DC impairments, wideband compositing
+> with disjoint rectangles, hierarchical metadata of the drawn values,
+> SigMF export; `neowon sim dataset`; `--test dataset_recipe` (bit-identical
+> + pinned FNV, metadata re-measured from samples, rectangles hold the
+> energy). QC panel deferred (no IQ playback yet).
+> Next without the operator: 10.9 UX parity. neowon becomes one instrument in two modes —
 > **Scope** and **SDR** — riding `Acquisition::Stream` and the shared engine
 > (recorder/timeline, phosphor, decode, control socket, MCP). RTL-SDR drives
 > through librtlsdr bindings *presumed* for V3 compatibility; the exact crate is
