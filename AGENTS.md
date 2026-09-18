@@ -116,9 +116,13 @@ restart-with-script loops when iterating on behavior or diagnosing state:
 - **Bevy 0.19.1 pinned**; most online Bevy docs describe other eras. For API
   questions, `~/projects/GoL` (same Bevy version) plus its vendored sources
   and `docs/bevy/` notes are the authority.
-- **Sample encoding:** i8, ±125 = full vertical range (10 divisions),
-  `volts_per_lsb` + `zero_volts` per capture. Sim produces the same encoding
-  as hardware — one code path for every consumer. Don't invent new encodings.
+- **Sample encoding:** scope backends use i8, ±125 = full vertical range (10
+  divisions), `volts_per_lsb` + `zero_volts` per capture — sim and hardware share
+  it. Streaming backends (audio, SDR) carry f32 real/complex samples with a
+  `SampleLayout` tag (Phase 10, decision D1b): core frames store f32, the core
+  calibration is `IqCal{scale_i, scale_q, offset_i, offset_q}` (Real: q == i), and
+  scope backends convert their i8 wire encoding at frame construction. Don't
+  invent other encodings.
 - **Library crates are engine-free:** `neowon-core`, `neowon-backend`,
   `neowon-dsp`, `neowon-sim` carry no Bevy/GPU dependencies; the app is the
   only place Bevy lives.
