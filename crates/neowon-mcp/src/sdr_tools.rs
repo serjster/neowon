@@ -122,6 +122,16 @@ impl Scope {
         Ok(format!(r#"{{"survey":{survey},"diff":{diff}}}"#))
     }
 
+    #[tool(
+        description = "The DSP classifier's verdict on the signal nearest the \
+        tuned frequency (noise, cw, am, fm, bpsk, qpsk, 8psk, 16qam, 64qam): \
+        label, confidence, trust (unproven until an over-the-air evaluation), \
+        unknown, top-2 margin. Needs `sdr analyse on`."
+    )]
+    async fn sdr_classify(&self) -> Result<String, ErrorData> {
+        self.req("get classify")
+    }
+
     #[tool(description = "List catalogued signals (id, name, frequency, \
         bandwidth, tags, aliases, pinned, observation count) and catalog health.")]
     async fn catalog_list(&self, p: Parameters<CatalogListParams>) -> Result<String, ErrorData> {

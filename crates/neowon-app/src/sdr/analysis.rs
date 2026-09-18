@@ -4,6 +4,7 @@
 
 use neowon_core::{CaptureFrame, Modulation};
 use neowon_dsp::Track;
+use neowon_dsp::classify::{Classification, classify as dsp_classify, features};
 use neowon_dsp::modlab::{Cumulants, cumulants, recover, select, symbol_rate};
 
 /// Roll-off the lab assumes (the common RRC choice; also the simulator's).
@@ -99,4 +100,17 @@ pub fn analyse(
             .map(|z| [z.re as f32, z.im as f32])
             .collect(),
     })
+}
+
+/// The DSP classifier's verdict on `track`.
+pub fn classify(frame: &CaptureFrame, centre_hz: f64, track: &Track) -> Option<Classification> {
+    let data = &frame.channels[0].data;
+    let data = &data[..data.len().min(2 * PAIRS)];
+    let f = features(
+        data,
+        frame.sample_rate,
+        track.last.centre_hz - centre_hz,
+        track.last.bandwidth_hz(),
+    )?;
+    Some(dsp_classify(&f))
 }

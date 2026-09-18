@@ -173,3 +173,23 @@ reports:
 A 31-bin rolling-median floor missed the station entirely: its window
 sat inside the 400-bin channel. The detector's floor is now the lower
 quartile of a quarter-band window.
+
+## The DSP classifier on the air (2026-09-19)
+
+With `sdr analyse on` on the dongle (Phase 10.5, C1):
+- **Broadcast FM (99.4, 106.6 MHz) → `unknown`** (confidence 0.2–0.44).
+  Its C42 wanders between −0.25 and +3.8, nowhere near a constellation.
+  The detector reports the station as ~55 kHz fragments rather than its
+  ~200 kHz channel, so the classifier's channel clips the ±75 kHz FM
+  (envelope CV 0.3–0.7, not flat), and the stereo pilot and RDS put lines
+  in the symbol-rate band. An earlier version, whose constellation weights
+  were only relative, called this **64QAM at confidence 0.95**. Scoring
+  digital by the best constellation's *absolute* fit, with a competing
+  "none of these" score, made it `unknown`. This is the D9 domain-shift
+  risk made concrete: nothing here is `validated`.
+- **The weak 98.302 MHz carrier (7–12 dB in band) → `am`** at 0.63–0.83.
+  At that SNR, noise alone gives a CW an envelope CV near 0.3, so CW and
+  AM are not separable there. Ground truth is unknown (it may be a
+  receiver spur).
+Open: FM wants the detector to hold a broadcast channel together, or the
+classifier to widen its channel for wideband candidates.

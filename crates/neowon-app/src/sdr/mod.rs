@@ -22,7 +22,7 @@ pub mod scan;
 
 use crate::viz::waterfall::thermal;
 pub use actions::{SdrAction, parse, parse_hz, parse_sim, run};
-pub use readout::{detections_json, iq_json, modmeas_json, sdr_json};
+pub use readout::{classify_json, detections_json, iq_json, modmeas_json, sdr_json};
 pub use scan::{diff_json as survey_diff_json, survey_json};
 
 /// Waterfall texture: display columns × history rows (newest on top).
@@ -74,6 +74,8 @@ pub struct SdrState {
     /// The modulation to assume, or `None` to pick it from cumulants.
     pub modulation: Option<neowon_core::Modulation>,
     pub analysis: Option<analysis::Analysis>,
+    /// The DSP classifier's verdict on the same signal.
+    pub classification: Option<neowon_dsp::classify::Classification>,
     /// A survey in progress, and the last completed ones (oldest first).
     pub survey: Option<neowon_sdr::survey::Survey>,
     pub surveys: Vec<neowon_sdr::survey::SurveyResult>,
@@ -115,6 +117,7 @@ impl Default for SdrState {
             analyse_on: false,
             modulation: None,
             analysis: None,
+            classification: None,
             survey: None,
             surveys: Vec::new(),
             last_seq: None,
@@ -222,6 +225,9 @@ pub fn update(mut sdr: ResMut<SdrState>) {
                 d(a).total_cmp(&d(b))
             })
             .cloned();
+        sdr.classification = target
+            .as_ref()
+            .and_then(|t| analysis::classify(&frame, centre, t));
         sdr.analysis = target.and_then(|t| analysis::analyse(&frame, centre, &t, sdr.modulation));
     }
 }

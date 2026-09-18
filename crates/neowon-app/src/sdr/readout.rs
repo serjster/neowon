@@ -163,3 +163,34 @@ pub fn modmeas_json(sdr: &SdrState) -> String {
         lab,
     )
 }
+
+/// `get classify`: the DSP classifier's verdict on the signal nearest the
+/// tuned frequency (runs with `sdr analyse on`), in the spec's schema plus
+/// the runner-up. Trust stays "unproven" until an over-the-air evaluation
+/// (D9) validates a class.
+pub fn classify_json(sdr: &SdrState) -> String {
+    let Some(c) = &sdr.classification else {
+        return r#"{"ok":false,"error":"nothing classified yet (sdr analyse on)"}"#.into();
+    };
+    format!(
+        concat!(
+            r#"{{"ok":true,"label":"{}","confidence":{},"trust":"{}","unknown":{},"#,
+            r#""top2_margin":{},"runner_up":"{}","features":{{"snr_db":{},"#,
+            r#""carrier_fraction":{},"envelope_cv":{},"freq_spread":{},"cyclic_line_db":{},"#,
+            r#""c42":{},"c40_abs":{}}}}}"#
+        ),
+        c.class.label(),
+        num(c.confidence),
+        c.trust.label(),
+        c.unknown,
+        num(c.margin),
+        c.runner_up.label(),
+        num(c.features.snr_db),
+        num(c.features.carrier_fraction),
+        num(c.features.envelope_cv),
+        num(c.features.freq_spread),
+        num(c.features.cyclic_line_db),
+        num(c.features.c42),
+        num(c.features.c40_abs),
+    )
+}

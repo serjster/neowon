@@ -34,6 +34,13 @@ fn lab_identifies_and_measures_digital_signals() {
                     && raw_str(r, "modulation") == label
             });
             println!("{label}: {m}");
+            let k = c.wait("get classify", 10, |r| {
+                raw_str(r, "label") == label.to_lowercase()
+            });
+            assert!(
+                k.contains(r#""trust":"unproven""#) && k.contains(r#""unknown":false"#),
+                "{k}"
+            );
             let got = field(&m, "evm_rms_pct");
             assert!(
                 (got - evm).abs() < 1.0,
