@@ -311,6 +311,10 @@ fixture table (class tolerance):
 | noise only | 7 | 8192 | — | zero peaks above threshold |
 | transient 0.5×min_duration | 7 | 8192 | 30 dB | absent from active set |
 
+**Status 2026-09-18: 10.1 DONE.** `detect_golden` passes all five rows;
+readouts print as JSON (`-- --nocapture`). Interpretations are in
+Deviations.
+
 ### 10.2 — Catalog v1 (`neowon-catalog`)
 
 Model (D4/D7): opaque immutable ids; `Signal`, `Transmission`, `Source`,
@@ -514,6 +518,23 @@ criterion.
   - `script/mod.rs` was already over the hard budget; it grew by 3 lines
     (one `Action` variant and a one-line arm). `main.rs` shrank below its
     starting size because backend selection moved to `launch.rs`.
+- **10.1 detection (2026-09-18).**
+  - *Floor:* the lower quartile over a window a quarter of the band wide,
+    not a rolling median. On the dongle a narrow median sat inside a
+    200 kHz FM station and hid it. The quartile is corrected to the noise
+    mean (Wilson–Hilferty), and floored at −120 dBFS/bin.
+  - *Blocks:* 50% overlap, continuous across frames. Non-overlapping Hann
+    blocks hid a 10 ms burst on a block edge.
+  - *Fixture parameters the table leaves implicit:* fs = 8192 Hz (N is
+    one second), nfft 256 × 4 blocks per 125 ms frame, 32 Hz bins,
+    min_duration 0.25 s. SNR is signal over total noise power.
+  - *"10 ms burst at 0.5 fs":* read as centred at half the capture's
+    duration. Its "bandwidth ±1 bin" is measured against the burst's own
+    99% bandwidth, computed from its exact energy spectrum. The burst has
+    raised-cosine edges: a rectangular gate's 99% bandwidth is set by the
+    noise floor, so it has no truth to compare against.
+  - *Transient:* checked as never active at any frame, not merely absent
+    at the end, and its timed span must match the true one within a block.
 - **D8, CLI vs. the hardware rule.** AGENTS.md says "no `neowon-cli`" for
   automated runs; `neowon sim …` never opens a device (dispatch opens USB per
   hardware subcommand), so the spec's two-process `cmp` criterion is safe to

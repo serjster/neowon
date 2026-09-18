@@ -160,3 +160,16 @@ strongest at 9.600 MHz, −43 dBFS. At these levels the samples span only a
 few of the 8-bit codes, so the IQ constellation auto-scales to the peak
 (×8 here), where the FM ring and the u8 quantisation lattice are both
 visible.
+
+## Detection on the dongle (2026-09-18)
+
+At 99 MHz centre, 2.048 MS/s, 29.7 dB, the in-app detector (Phase 10.1)
+reports:
+- the 99.4 MHz FM station: ~112–120 kHz occupied (99%), −25 dBFS
+  integrated, 25 dB SNR;
+- six narrow carriers (e.g. 98.302 MHz at −42 dBFS, 99.070 MHz at
+  −54 dBFS), 0.5–1.5 kHz wide, 13–28 dB SNR.
+
+A 31-bin rolling-median floor missed the station entirely: its window
+sat inside the 400-bin channel. The detector's floor is now the lower
+quartile of a quarter-band window.
