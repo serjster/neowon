@@ -6,6 +6,7 @@
 use neowon_core::{AcqMode, CaptureFrame, ChannelCapture, IqCal, SampleLayout};
 
 pub mod backend;
+pub mod dataset;
 pub mod figures;
 pub mod iq;
 pub mod scenario;
