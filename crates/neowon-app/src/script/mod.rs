@@ -109,11 +109,13 @@ type ExtraState<'w> = (
     ResMut<'w, crate::deep::DeepView>,
     ResMut<'w, crate::decode::DecodeState>,
     ResMut<'w, crate::ui::settings::Settings>,
+    ResMut<'w, crate::sdr::SdrState>,
 );
 
 #[derive(Debug, Clone)]
 pub enum Action {
     Stimulus(String),
+    Sdr(crate::sdr::SdrAction),
     Rate(f64),
     Vdiv(usize, f64),
     Enable(usize, bool),
@@ -309,6 +311,7 @@ pub fn run_script(
         let (_, action) = script.queue.pop_front().unwrap();
         debug!("script: {action:?}");
         match action {
+            Action::Sdr(a) => crate::sdr::run(a, &mut ext.11, &mut link),
             Action::Stimulus(name) => {
                 let _ = link.sup.commands.send(Command::Stimulus(name.clone()));
                 link.stimulus = name;

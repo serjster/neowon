@@ -32,9 +32,11 @@ mod deep;
 mod derived;
 mod effects;
 mod gpu;
+mod launch;
 mod record;
 mod refs;
 mod script;
+mod sdr;
 mod session;
 mod ui;
 mod view;
@@ -47,8 +49,7 @@ use bevy_egui::input::EguiWantsInput;
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
 use gpu::{PLOT_H, PLOT_W, Persistence, Phosphor, PhosphorPlugin, TraceMode};
 use neowon_backend::{
-    Backend, Capabilities, Command, Event, InstrumentConfig, MultiMode, ScopeCaps, ScopeConfig,
-    Supervisor,
+    Capabilities, Command, Event, InstrumentConfig, MultiMode, ScopeCaps, ScopeConfig, Supervisor,
 };
 use neowon_core::{AcqMode, Coupling, SharedFrame, Slope, Sweep, TriggerKind};
 /// Screen geometry follows the reference scope: 10 horizontal x 8
@@ -84,41 +85,11 @@ pub struct Link {
 }
 
 fn main() {
-    // Logging is owned by Bevy's LogPlugin (honors RUST_LOG).
-    // --demo [slow]: oscilloscope-music XY playback on the simulator
-    // (assets/demo, from lofibucket.com's Oscilloscope Quake).
-    let demo = std::env::args().any(|a| a == "--demo");
-    let demo_slow = std::env::args().any(|a| a == "slow");
-    let use_sim = demo || std::env::args().any(|a| a == "--sim");
-    // --audio: the machine's sound card as a streaming two-channel scope.
-    let use_audio = std::env::args().any(|a| a == "--audio");
-    let sup = if use_audio {
-        neowon_backend::spawn(|| {
-            neowon_audio::AudioBackend::open().map(|b| Box::new(b) as Box<dyn Backend>)
-        })
-    } else if use_sim {
-        neowon_backend::spawn(|| Ok(Box::new(neowon_sim::SimBackend::new()) as Box<dyn Backend>))
-    } else {
-        neowon_backend::spawn(neowon_vds1022::backend::factory(None))
-    };
-
-    // Defaults matched to the 1 kHz probe-comp signal through a x10 probe.
-    let config = crate::view::startup_config();
-    let config = if demo {
-        let mut c = config;
-        for ch in c.channels.iter_mut().take(2) {
-            ch.enabled = true;
-            ch.volts_div = 0.5; // wav full scale (+-2 V) fills the +-4-div window
-        }
-        c
-    } else {
-        config
-    };
-    sup.apply(config.clone());
-    if demo {
-        let name = if demo_slow { "quake-slow" } else { "quake" };
-        let _ = sup.commands.send(Command::Stimulus(name.into()));
-    }
+    // Logging is owned by Bevy's LogPlugin (honors RUST_LOG). Flags and
+    // the instrument they select: `launch.rs`.
+    let launch = launch::Launch::from_args();
+    let (sup, config) = launch.start();
+    let (demo, sdr_mode) = (launch.demo, launch.sdr());
 
     // NEOWON_WINDOW=WxH overrides the initial size (layout tests).
     let (win_w, win_h) = std::env::var("NEOWON_WINDOW")
@@ -204,6 +175,7 @@ fn main() {
         .init_resource::<effects::Effects>()
         .init_resource::<viz::waterfall::WaterfallState>()
         .init_resource::<viz::three_d::Viz3dState>()
+        .insert_resource(sdr::SdrState::new(sdr_mode))
         .insert_resource(script::load_from_env())
         .insert_resource(control::start_from_env())
         .add_systems(
@@ -221,7 +193,10 @@ fn main() {
                 fit_display,
             ),
         )
-        .add_systems(EguiPrimaryContextPass, ui::panel)
+        .add_systems(
+            EguiPrimaryContextPass,
+            (ui::panel, ui::sdr_view::show).chain(),
+        )
         .add_systems(
             Update,
             (
@@ -232,6 +207,7 @@ fn main() {
                         sync_layout,
                         clear_one_shot,
                         ingest,
+                        sdr::update,
                         record::record_frames,
                         input,
                         phosphor_input,
@@ -245,6 +221,7 @@ fn main() {
                         // Before `flush`: the rule writes `config.acq`, and
                         // `flush` is what sends it to the instrument.
                         autopeak::update,
+                        sdr::flush,
                         flush,
                         derived::compute_derived,
                         decode::run,
@@ -460,7 +437,7 @@ fn update_phosphor(
     };
 }
 
-fn ingest(time: Res<Time>, mut link: ResMut<Link>) {
+fn ingest(time: Res<Time>, mut link: ResMut<Link>, mut sdr: ResMut<sdr::SdrState>) {
     link.arrived.clear();
     while let Ok(event) = link.sup.events.try_recv() {
         match event {
@@ -469,12 +446,20 @@ fn ingest(time: Res<Time>, mut link: ResMut<Link>) {
                 link.caps = Some(caps);
             }
             Event::Connected(Capabilities::Sdr(caps)) => {
-                link.status = format!("{} {}: SDR mode not supported yet", caps.name, caps.serial);
+                link.status = format!("{} {} ({})", caps.name, caps.serial, caps.tuner);
                 link.caps = None;
+                sdr.caps = Some(caps);
+                sdr.active = true;
             }
             Event::Disconnected(e) => {
                 link.status = format!("disconnected: {e}");
                 link.caps = None;
+            }
+            // Complex frames are SDR data; the scope consumers never see them.
+            Event::Frame(f) if f.layout == neowon_core::SampleLayout::Complex => {
+                link.last_frame_at = time.elapsed_secs_f64();
+                sdr.frames_seen += 1;
+                sdr.latest = Some(f);
             }
             Event::Frame(f) => {
                 link.frames_seen += 1;
@@ -488,7 +473,7 @@ fn ingest(time: Res<Time>, mut link: ResMut<Link>) {
             Event::ConfigUpdated(InstrumentConfig::Scope(cfg)) => {
                 link.config = cfg;
             }
-            Event::ConfigUpdated(InstrumentConfig::Sdr(_)) => {}
+            Event::ConfigUpdated(InstrumentConfig::Sdr(cfg)) => sdr.config = cfg,
             Event::Error(e) => link.status = format!("error: {e}"),
         }
     }

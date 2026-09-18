@@ -21,6 +21,7 @@ pub mod layout;
 pub mod measure_window;
 pub mod menu;
 pub mod menubar;
+pub mod sdr_view;
 pub mod settings;
 pub mod touch;
 pub mod viz_windows;
