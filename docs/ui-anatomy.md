@@ -28,7 +28,7 @@ every bug report costs a round trip.
 ## The regions
 
 **App bar** (`ui/menubar.rs`) — the top strip. Drop-down menus on the left
-(File, View, Settings) for things about the *application*; ambient status on
+(File, View, Instrument, Settings) for things about the *application*; ambient status on
 the right: run state, time base, sample rate, ROLL and TIMELINE badges, the
 instrument's name and serial, and the **acquisition counter** (`#1234`). That
 counter is the number of records captured since launch — it should climb
@@ -67,6 +67,56 @@ key live here and the grouping says which is which:
 Waterfall, 3D View, Settings. Anything with more content than the rail can
 show gets one of these rather than being crammed into a section.
 
+## SDR mode
+
+**Instrument** — which of the two instruments the app is: the
+oscilloscope or the SDR. The app bar's **Instrument** menu and the
+`instrument scope|sdr` script verb switch it at run time within the
+launch's family: the simulators swap for each other, and the VDS1022 swaps
+for the RTL-SDR. Each keeps its settings across a switch. (Plain `mode` is
+the scope's *trace* mode: vectors, dots or XY.)
+
+In SDR mode the regions keep their names and change their content:
+
+- **App bar** — RUN/STOP, then the tuned frequency, the IQ rate and the
+  gain (or AGC); on the right, the SDR's name and the **IQ frame counter**.
+- **Spectrum** and **waterfall** (`ui/sdr_view.rs`) — drawn where the grid
+  and descriptor bar sit: the spectrum on top, the waterfall below, newest
+  row at the top. Clicking tunes to that frequency.
+- **SDR dock** (`ui/sdr_dock.rs`) — drawn over the dock: tuning, rate, gain,
+  ppm, span, FFT size, level; **Detect** and the **signal list**; the
+  **modulation lab**; the **constellation**.
+- **Catalog window** (`ui/catalog_window.rs`) — the persistent signal
+  catalog.
+- **Front panel** — still the scope's. While the SDR is the instrument,
+  scope edits change its settings and reach the scope when it is the
+  instrument again.
+
+SDR vocabulary:
+
+- **Centre** — the tuned frequency, the middle of the displayed band.
+- **Span** — how much of the IQ band is displayed, centred on the centre.
+  *Full* means the whole sample rate.
+- **Frame** — one block of IQ pairs from the SDR (the scope's *record*).
+- **Floor** — the noise level the detector measures each bin against: the
+  lower quartile over a quarter of the band.
+- **Detection / track** — a *detection* is one frame's signal above the
+  floor. A *track* is the same signal followed across frames under a stable
+  id. It becomes active after 0.25 s and is forgotten after 1 s unseen.
+- **OBW** — occupied bandwidth: the band holding 99% of the signal's power.
+- **Lab** — the modulation lab. It measures the signal nearest the centre:
+  symbol rate, EVM/MER, cumulants, recovered constellation.
+- **Class / trust** — the classifier's verdict and whether it has been
+  proven on over-the-air data. It is `unproven` until the SDR-G2 evaluation.
+- **Survey** — a sweep of a frequency range in tuning **steps**. Its
+  **coverage** records what each step could see: whether it was scanned,
+  whether it was truncated at the peak cap, and the kept-power floor. A
+  **diff** between surveys calls a signal *unknown* where a survey could not
+  have seen it.
+- **Signal / observation** — in the catalog, a *signal* is an entity with
+  an id, a name, aliases and tags. An *observation* is one sighting of it,
+  with time, power and SNR.
+
 ## Vocabulary that matters
 
 - **Record** — one acquisition from the instrument. Fixed at 5000 samples on
@@ -93,7 +143,10 @@ show gets one of these rather than being crammed into a section.
 - A control that changes the instrument marks the config dirty and is sent on
   the next flush; a control that only changes the display does not.
 - Every control is reachable from the script grammar (`crates/neowon-app/src/
-  script/grammar.rs`). A control with no script action is a bug.
+  script/grammar.rs`). A control with no script action is a bug. SDR and
+  catalog controls inject typed actions whose `Display` is their script
+  line. The `every_action_round_trips` tests check that each line parses
+  back to the same action.
 - Widgets in the dock do not respond to the scroll wheel. The dock is a
   scrolling rail, and a widget that reacts to the wheel changes its value
   whenever the pointer crosses it mid-scroll.

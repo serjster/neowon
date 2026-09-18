@@ -16,7 +16,9 @@ use neowon_catalog::{
 use crate::Link;
 use crate::sdr::SdrState;
 
+mod grammar;
 mod readout;
+pub use grammar::{CatalogAction, parse};
 pub use readout::{catalog_json, history_json};
 
 #[derive(Resource)]
@@ -96,82 +98,6 @@ impl CatalogState {
             .and_then(|c| c.state().history(id).ok())
             .map_or(0, |h| h.len())
     }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum CatalogAction {
-    List(String),
-    /// A signal: explicit (`centre_hz`, optional name) or, with no
-    /// arguments, the strongest live detection.
-    Add(Option<(f64, String)>),
-    Observe,
-    Rename(Id, String),
-    Delete(Id, bool),
-    Purge(Vec<Id>, bool),
-    Merge(Id, Id),
-    Tag(Id, String, bool),
-    Alias(Id, String),
-    Edit(Id, String, String),
-    /// `bulk tag|untag|pin|unpin|delete <ids> [tag]`.
-    Bulk(String, Vec<Id>, String),
-    Undo,
-    Pin(Id, bool),
-    Export(String),
-    Import(String),
-    Window(bool),
-    Select(Option<Id>),
-    /// File the latest completed survey's coverage (optional name).
-    Survey(String),
-}
-
-fn ids(s: &str) -> Result<Vec<Id>, String> {
-    s.split(',')
-        .filter(|x| !x.is_empty())
-        .map(|x| x.parse())
-        .collect()
-}
-
-/// `catalog <verb> …` (the words after `catalog`).
-pub fn parse<'a>(
-    next: &mut dyn FnMut() -> Result<&'a str, String>,
-) -> Result<CatalogAction, String> {
-    let verb = next()?;
-    let mut rest = Vec::new();
-    while let Ok(w) = next() {
-        rest.push(w);
-    }
-    let arg = |i: usize| {
-        rest.get(i)
-            .copied()
-            .ok_or_else(|| format!("catalog {verb}: missing argument"))
-    };
-    let tail = |i: usize| rest.get(i..).map(|r| r.join(" ")).unwrap_or_default();
-    let id = |i: usize| -> Result<Id, String> { arg(i)?.parse() };
-    let cascade = || rest.contains(&"cascade");
-    Ok(match verb {
-        "list" => CatalogAction::List(tail(0)),
-        "add" if rest.is_empty() => CatalogAction::Add(None),
-        "add" => CatalogAction::Add(Some((crate::sdr::parse_hz(arg(0)?)?, tail(1)))),
-        "observe" => CatalogAction::Observe,
-        "rename" => CatalogAction::Rename(id(0)?, tail(1)),
-        "delete" => CatalogAction::Delete(id(0)?, cascade()),
-        "purge" => CatalogAction::Purge(ids(arg(0)?)?, cascade()),
-        "merge" => CatalogAction::Merge(id(0)?, id(1)?),
-        "tag" => CatalogAction::Tag(id(0)?, arg(1)?.to_string(), true),
-        "untag" => CatalogAction::Tag(id(0)?, arg(1)?.to_string(), false),
-        "alias" => CatalogAction::Alias(id(0)?, tail(1)),
-        "edit" => CatalogAction::Edit(id(0)?, arg(1)?.to_string(), tail(2)),
-        "bulk" => CatalogAction::Bulk(arg(0)?.to_string(), ids(arg(1)?)?, tail(2)),
-        "undo" => CatalogAction::Undo,
-        "pin" => CatalogAction::Pin(id(0)?, true),
-        "unpin" => CatalogAction::Pin(id(0)?, false),
-        "export" => CatalogAction::Export(tail(0)),
-        "import" => CatalogAction::Import(tail(0)),
-        "window" => CatalogAction::Window(matches!(arg(0)?, "on" | "1")),
-        "select" => CatalogAction::Select(arg(0)?.parse().ok()),
-        "survey" => CatalogAction::Survey(tail(0)),
-        other => return Err(format!("unknown catalog verb {other:?}")),
-    })
 }
 
 fn user(at: &str) -> Provenance {
@@ -407,41 +333,4 @@ fn apply(a: CatalogAction, st: &mut CatalogState, sdr: &SdrState) -> Result<(), 
         }
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn words<'a>(s: &'a str) -> impl FnMut() -> Result<&'a str, String> {
-        let mut w = s.split_whitespace();
-        move || w.next().ok_or_else(|| "missing argument".to_string())
-    }
-
-    #[test]
-    fn verbs_parse() {
-        assert_eq!(parse(&mut words("add")).unwrap(), CatalogAction::Add(None));
-        assert_eq!(
-            parse(&mut words("add 99.4M BBC Radio 2")).unwrap(),
-            CatalogAction::Add(Some((99.4e6, "BBC Radio 2".into())))
-        );
-        assert_eq!(
-            parse(&mut words("rename #3 Radio Two")).unwrap(),
-            CatalogAction::Rename(Id(3), "Radio Two".into())
-        );
-        assert_eq!(
-            parse(&mut words("purge 1,2,3 cascade")).unwrap(),
-            CatalogAction::Purge(vec![Id(1), Id(2), Id(3)], true)
-        );
-        assert_eq!(
-            parse(&mut words("merge 4 #5")).unwrap(),
-            CatalogAction::Merge(Id(4), Id(5))
-        );
-        assert_eq!(
-            parse(&mut words("bulk tag 1,2 fm")).unwrap(),
-            CatalogAction::Bulk("tag".into(), vec![Id(1), Id(2)], "fm".into())
-        );
-        assert!(parse(&mut words("frobnicate")).is_err());
-        assert!(parse(&mut words("merge 4")).is_err());
-    }
 }

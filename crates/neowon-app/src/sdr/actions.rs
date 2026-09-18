@@ -34,6 +34,8 @@ pub enum SdrAction {
     Modulation(Option<neowon_core::Modulation>),
     /// Detection threshold over the floor, dB.
     Threshold(f64),
+    /// `instrument sdr` (true) or `instrument scope`: switch instrument.
+    Instrument(bool),
 }
 
 /// `sdr survey <start> <stop> [cap N] [skip lo:hi]…`.
@@ -138,6 +140,60 @@ pub fn parse_sim<'a>(
     }
 }
 
+/// `instrument scope|sdr` (the word after `instrument`).
+pub fn parse_instrument<'a>(
+    next: &mut dyn FnMut() -> Result<&'a str, String>,
+) -> Result<SdrAction, String> {
+    match next()? {
+        "sdr" => Ok(SdrAction::Instrument(true)),
+        "scope" => Ok(SdrAction::Instrument(false)),
+        m => Err(format!("unknown instrument {m:?}; use scope|sdr")),
+    }
+}
+
+/// The script line for an action. Every variant has one (the match is
+/// exhaustive), and `parse` reads it back to the same action: the UI
+/// injects these actions, so this is the script-parity rule by
+/// construction.
+impl std::fmt::Display for SdrAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let on = |b: bool| if b { "on" } else { "off" };
+        match self {
+            SdrAction::Tune(hz) => write!(f, "sdr tune {hz}"),
+            SdrAction::Step(hz) => write!(f, "sdr step {hz}"),
+            SdrAction::Rate(r) => write!(f, "sdr rate {r}"),
+            SdrAction::Gain(None) => write!(f, "sdr gain auto"),
+            SdrAction::Gain(Some(db)) => write!(f, "sdr gain {db}"),
+            SdrAction::Agc(b) => write!(f, "sdr agc {}", on(*b)),
+            SdrAction::Ppm(p) => write!(f, "sdr ppm {p}"),
+            SdrAction::Span(hz) => write!(f, "sdr span {hz}"),
+            SdrAction::Fft(n) => write!(f, "sdr fft {n}"),
+            SdrAction::Level { ref_db, range_db } => write!(f, "sdr level {ref_db} {range_db}"),
+            SdrAction::Run(b) => write!(f, "sdr run {}", on(*b)),
+            SdrAction::Seed(s) => write!(f, "sim iq --seed {s}"),
+            SdrAction::Detect(b) => write!(f, "sdr detect {}", on(*b)),
+            SdrAction::Survey(None) => write!(f, "sdr survey stop"),
+            SdrAction::Survey(Some(r)) => {
+                write!(
+                    f,
+                    "sdr survey {} {} cap {}",
+                    r.start_hz, r.stop_hz, r.peak_cap
+                )?;
+                r.skip
+                    .iter()
+                    .try_for_each(|(a, b)| write!(f, " skip {a}:{b}"))
+            }
+            SdrAction::Analyse(b) => write!(f, "sdr analyse {}", on(*b)),
+            SdrAction::Modulation(None) => write!(f, "sdr modulation auto"),
+            SdrAction::Modulation(Some(m)) => write!(f, "sdr modulation {}", m.label()),
+            SdrAction::Threshold(db) => write!(f, "sdr threshold {db}"),
+            SdrAction::Instrument(sdr) => {
+                write!(f, "instrument {}", if *sdr { "sdr" } else { "scope" })
+            }
+        }
+    }
+}
+
 /// Run a script action, reporting a refusal in the log and the status
 /// line (what `get status` returns).
 pub fn run(a: SdrAction, sdr: &mut SdrState, link: &mut Link) {
@@ -149,7 +205,7 @@ pub fn run(a: SdrAction, sdr: &mut SdrState, link: &mut Link) {
 
 /// Apply a script action. Invalid values are refused, not clamped, so a
 /// script learns it asked for something the instrument cannot do.
-pub fn apply(a: SdrAction, sdr: &mut SdrState, link: &Link) -> Result<(), String> {
+pub fn apply(a: SdrAction, sdr: &mut SdrState, link: &mut Link) -> Result<(), String> {
     let caps = sdr.caps.clone();
     let in_range = |hz: f64| match &caps {
         Some(c) if !(c.freq_range_hz.0..=c.freq_range_hz.1).contains(&hz) => Err(format!(
@@ -251,6 +307,7 @@ pub fn apply(a: SdrAction, sdr: &mut SdrState, link: &Link) -> Result<(), String
             sdr.threshold_db = db;
             return Ok(());
         }
+        SdrAction::Instrument(to_sdr) => return super::instrument::switch(to_sdr, sdr, link),
         SdrAction::Seed(s) => {
             sdr.seed = s;
             let _ = link.sup.commands.send(Command::Seed(s));
@@ -337,5 +394,86 @@ mod tests {
             SdrAction::Seed(7)
         );
         assert!(parse_sim(&mut words("iq 7")).is_err());
+        assert_eq!(
+            parse_instrument(&mut words("sdr")).unwrap(),
+            SdrAction::Instrument(true)
+        );
+        assert!(parse_instrument(&mut words("audio")).is_err());
+    }
+
+    /// Which variant an action is. Exhaustive, so a new variant fails to
+    /// compile here until `every_action_round_trips` covers it.
+    fn variant(a: &SdrAction) -> usize {
+        match a {
+            SdrAction::Tune(_) => 0,
+            SdrAction::Step(_) => 1,
+            SdrAction::Rate(_) => 2,
+            SdrAction::Gain(_) => 3,
+            SdrAction::Agc(_) => 4,
+            SdrAction::Ppm(_) => 5,
+            SdrAction::Span(_) => 6,
+            SdrAction::Fft(_) => 7,
+            SdrAction::Level { .. } => 8,
+            SdrAction::Run(_) => 9,
+            SdrAction::Seed(_) => 10,
+            SdrAction::Detect(_) => 11,
+            SdrAction::Survey(_) => 12,
+            SdrAction::Analyse(_) => 13,
+            SdrAction::Modulation(_) => 14,
+            SdrAction::Threshold(_) => 15,
+            SdrAction::Instrument(_) => 16,
+        }
+    }
+
+    /// Script parity: every action the UI can inject prints as a script
+    /// line that parses back to the same action.
+    #[test]
+    fn every_action_round_trips() {
+        let all = [
+            SdrAction::Tune(99.412_345e6),
+            SdrAction::Step(-1e5),
+            SdrAction::Rate(2.048e6),
+            SdrAction::Gain(None),
+            SdrAction::Gain(Some(29.7)),
+            SdrAction::Agc(true),
+            SdrAction::Ppm(-1.3),
+            SdrAction::Span(200e3),
+            SdrAction::Fft(8192),
+            SdrAction::Level {
+                ref_db: -12.5,
+                range_db: 90.0,
+            },
+            SdrAction::Run(false),
+            SdrAction::Seed(7),
+            SdrAction::Detect(true),
+            SdrAction::Survey(None),
+            SdrAction::Survey(Some(SurveyRequest {
+                start_hz: 88e6,
+                stop_hz: 108e6,
+                peak_cap: 8,
+                skip: vec![(99e6, 99.5e6), (101e6, 101.2e6)],
+            })),
+            SdrAction::Analyse(true),
+            SdrAction::Modulation(None),
+            SdrAction::Modulation(Some(neowon_core::Modulation::Psk8)),
+            SdrAction::Threshold(9.5),
+            SdrAction::Instrument(true),
+            SdrAction::Instrument(false),
+        ];
+        let mut seen = std::collections::BTreeSet::new();
+        for a in all {
+            seen.insert(variant(&a));
+            let line = a.to_string();
+            let (head, rest) = line.split_once(' ').unwrap();
+            let mut w = words(rest);
+            let back = match head {
+                "sdr" => parse(&mut w),
+                "sim" => parse_sim(&mut w),
+                "instrument" => parse_instrument(&mut w),
+                _ => panic!("{line}"),
+            };
+            assert_eq!(back.unwrap(), a, "{line}");
+        }
+        assert_eq!(seen.len(), 17, "a variant has no round-trip sample");
     }
 }
