@@ -23,6 +23,8 @@ pub enum Command {
     PassFail(bool),
     /// Select a named stimulus on generating backends (sim, AWG).
     Stimulus(String),
+    /// Reseed the generator on generating backends (sim).
+    Seed(u64),
     Shutdown,
 }
 
@@ -191,6 +193,7 @@ fn run(
             let mut multi: Option<MultiMode> = None;
             let mut pass_fail: Option<bool> = None;
             let mut stimulus: Option<String> = None;
+            let mut seed: Option<u64> = None;
             loop {
                 match commands.try_recv() {
                     Ok(Command::Apply(cfg)) => newest = Some(cfg),
@@ -199,6 +202,7 @@ fn run(
                     Ok(Command::Multi(m)) => multi = Some(m),
                     Ok(Command::PassFail(level)) => pass_fail = Some(level),
                     Ok(Command::Stimulus(name)) => stimulus = Some(name),
+                    Ok(Command::Seed(s)) => seed = Some(s),
                     Ok(Command::Shutdown) => break 'outer,
                     Err(TryRecvError::Empty) => break,
                     Err(TryRecvError::Disconnected) => break 'outer,
@@ -239,6 +243,17 @@ fn run(
                     Ok(true) => {}
                     Ok(false) => {
                         let _ = events.try_send(Event::Error(format!("unknown stimulus {name:?}")));
+                    }
+                    Err(e) => {
+                        let _ = events.try_send(Event::Error(e.to_string()));
+                    }
+                }
+            }
+            if let Some(s) = seed {
+                match backend.set_seed(s) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        let _ = events.try_send(Event::Error("this backend has no seed".into()));
                     }
                     Err(e) => {
                         let _ = events.try_send(Event::Error(e.to_string()));
