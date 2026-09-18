@@ -628,3 +628,28 @@ criterion.
   - *QC panel deferred:* the app has no dataset view. The QC is the
     `dataset_recipe` test (metadata re-measured from the samples). A panel
     waits on IQ playback in the app, since there is no IQ recording yet.
+- **10.9 UX parity (2026-09-19), partial.**
+  - *Instrument switch:* `instrument scope|sdr` (also the app bar's
+    Instrument menu and MCP `instrument`). `mode` was already the trace
+    mode (a stable verb), so the switch has its own verb. It works within
+    the launch's family: sim ↔ sim-SDR, VDS1022 ↔ RTL-SDR, audio → sim-SDR.
+    The old supervisor is shut down and joined before the new one claims
+    a device.
+  - *Parity by construction:* `SdrAction` and `CatalogAction` implement
+    `Display` as their script line. The `every_action_round_trips` unit
+    tests parse every variant back, and an exhaustive `variant()` match
+    fails to compile until a new variant has a sample. The UI injects only
+    these actions, so this is the "every UI control and catalog op"
+    criterion.
+  - *The chain test* (`--test sdr_integration`) runs scope → `instrument
+    sdr` → tune → detect → analyse → classify → catalog → export → scope →
+    SDR, with settings kept. **Decode is missing**: it is 10.6, which is
+    blocked on reference vectors.
+  - *Mode-aware chrome:* the app bar is mode-aware (SDR run state, tuning
+    and gain, IQ frame counter). The front panel is still the scope's.
+    The tuning widget is the dock's centre field and step buttons, plus
+    click-to-tune on the spectrum and the signal list; there is no
+    dedicated dial.
+  - A `shot window` (whole-window PNG through Bevy's `Screenshot`) was
+    tried and backed out: it wrote all-black frames on macOS/Metal here.
+    UI state is verified through `get …` queries instead.
