@@ -36,7 +36,8 @@ pub struct Emitter {
     pub digital: Option<(Modulation, f64, f64)>,
 }
 
-const fn em(freq_hz: f64, amplitude: f64) -> Emitter {
+/// A carrier (see `dig` for a digital emitter).
+pub const fn em(freq_hz: f64, amplitude: f64) -> Emitter {
     Emitter {
         freq_hz,
         amplitude,
@@ -180,6 +181,14 @@ impl SimSdrBackend {
             seq: 0,
             next_at: Instant::now(),
         }
+    }
+
+    /// Start on `scene` instead of a preset.
+    pub fn with_scene(scene: RfScene) -> Self {
+        let mut b = Self::new();
+        b.scene = scene;
+        b.rebuild();
+        b
     }
 
     fn rebuild(&mut self) {

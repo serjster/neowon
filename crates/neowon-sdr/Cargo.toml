@@ -6,6 +6,8 @@ license.workspace = true
 
 [dependencies]
 neowon-core.workspace = true
+neowon-dsp.workspace = true
+neowon-catalog.workspace = true
 neowon-backend.workspace = true
 nusb.workspace = true
 crossbeam-channel.workspace = true
@@ -13,6 +15,6 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+neowon-sim.workspace = true
 anyhow.workspace = true
-neowon-dsp.workspace = true
 tracing-subscriber.workspace = true
