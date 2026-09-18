@@ -46,6 +46,16 @@ pub struct CatalogCommandParams {
     command: String,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SurveyParams {
+    /// Range to sweep, Hz.
+    start_hz: f64,
+    stop_hz: f64,
+    /// Most peaks kept per tuning step (default 32); beyond it the step
+    /// is marked truncated and weaker signals there read `unknown`.
+    peak_cap: Option<usize>,
+}
+
 #[tool_router(router = sdr_router, vis = "pub(crate)")]
 impl Scope {
     #[tool(description = "SDR mode status and settings: backend, tuner, centre, \
@@ -83,6 +93,33 @@ impl Scope {
     )]
     async fn sdr_modmeas(&self) -> Result<String, ErrorData> {
         self.req("get modmeas")
+    }
+
+    #[tool(
+        description = "Start a survey: sweep start_hz..stop_hz in tuning steps, \
+        keeping the strongest peaks per step. Poll sdr_survey_result until \
+        `running` is false."
+    )]
+    async fn sdr_survey(&self, p: Parameters<SurveyParams>) -> Result<String, ErrorData> {
+        let p = p.0;
+        self.req(&format!(
+            "sdr survey {} {} cap {}",
+            p.start_hz,
+            p.stop_hz,
+            p.peak_cap.unwrap_or(32)
+        ))
+    }
+
+    #[tool(
+        description = "The latest survey (coverage per step: scanned, truncated, \
+        kept-power floor; peaks) and, when two have completed, their diff: each \
+        signal new / gone / stronger / weaker / same, or unknown where a survey \
+        could not have seen it."
+    )]
+    async fn sdr_survey_result(&self) -> Result<String, ErrorData> {
+        let survey = self.req("get survey")?;
+        let diff = self.req("get surveydiff").unwrap_or_else(|_| "null".into());
+        Ok(format!(r#"{{"survey":{survey},"diff":{diff}}}"#))
     }
 
     #[tool(description = "List catalogued signals (id, name, frequency, \

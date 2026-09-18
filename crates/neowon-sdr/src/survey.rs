@@ -132,9 +132,15 @@ impl Survey {
         self.centres.get(self.step).copied()
     }
 
+    /// The part of a step's usable band inside the plan's range: the
+    /// range asked for is the survey's contract, so a last step reaching
+    /// past `stop_hz` neither reports nor claims coverage beyond it.
     fn band(&self, centre: f64) -> (f64, f64) {
         let half = self.plan.sample_rate * self.plan.usable / 2.0;
-        (centre - half, centre + half)
+        (
+            (centre - half).max(self.plan.start_hz),
+            (centre + half).min(self.plan.stop_hz),
+        )
     }
 
     /// Record steps that fall in a skipped range as unscanned, without

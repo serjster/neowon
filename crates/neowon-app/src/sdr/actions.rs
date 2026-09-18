@@ -26,12 +26,25 @@ pub enum SdrAction {
     Run(bool),
     Seed(u64),
     Detect(bool),
+    /// Start a survey; `None` stops a running one.
+    Survey(Option<SurveyRequest>),
     /// Run the modulation lab on the signal nearest the tuned frequency.
     Analyse(bool),
     /// The modulation the lab assumes; `None` picks it from cumulants.
     Modulation(Option<neowon_core::Modulation>),
     /// Detection threshold over the floor, dB.
     Threshold(f64),
+}
+
+/// `sdr survey <start> <stop> [cap N] [skip lo:hi]…`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SurveyRequest {
+    pub start_hz: f64,
+    pub stop_hz: f64,
+    /// Most peaks kept per step.
+    pub peak_cap: usize,
+    /// Ranges not to scan.
+    pub skip: Vec<(f64, f64)>,
 }
 
 /// `99.4M`, `100k`, `1.2G` or plain Hz.
@@ -76,6 +89,30 @@ pub fn parse<'a>(next: &mut dyn FnMut() -> Result<&'a str, String>) -> Result<Sd
         },
         "run" => SdrAction::Run(on_off(next()?)?),
         "detect" => SdrAction::Detect(on_off(next()?)?),
+        "survey" => match next()? {
+            "stop" => SdrAction::Survey(None),
+            start => {
+                let (start, stop) = (parse_hz(start)?, parse_hz(next()?)?);
+                let (mut cap, mut skip) = (32, Vec::new());
+                while let Ok(w) = next() {
+                    match w {
+                        "cap" => cap = next()?.parse().map_err(|_| "bad cap".to_string())?,
+                        "skip" => {
+                            let r = next()?;
+                            let (a, b) = r.split_once(':').ok_or("skip lo:hi")?;
+                            skip.push((parse_hz(a)?, parse_hz(b)?));
+                        }
+                        other => return Err(format!("survey: unexpected {other:?}")),
+                    }
+                }
+                SdrAction::Survey(Some(SurveyRequest {
+                    start_hz: start,
+                    stop_hz: stop,
+                    peak_cap: cap,
+                    skip,
+                }))
+            }
+        },
         "analyse" | "analyze" => SdrAction::Analyse(on_off(next()?)?),
         "modulation" => match next()? {
             "auto" => SdrAction::Modulation(None),
@@ -185,6 +222,21 @@ pub fn apply(a: SdrAction, sdr: &mut SdrState, link: &Link) -> Result<(), String
             sdr.analysis = None;
             return Ok(());
         }
+        SdrAction::Survey(None) => {
+            sdr.survey = None;
+            return Ok(());
+        }
+        SdrAction::Survey(Some(r)) => {
+            let plan = neowon_sdr::survey::SurveyPlan {
+                start_hz: r.start_hz,
+                stop_hz: r.stop_hz,
+                sample_rate: sdr.config.sample_rate,
+                peak_cap: r.peak_cap,
+                skip: r.skip,
+                ..Default::default()
+            };
+            return super::scan::start(sdr, plan);
+        }
         SdrAction::Detect(on) => {
             sdr.detect_on = on;
             if !on {
@@ -266,6 +318,19 @@ mod tests {
             SdrAction::Modulation(None)
         );
         assert!(parse(&mut words("modulation fm")).is_err());
+        assert_eq!(
+            parse(&mut words("survey 97M 101M cap 8 skip 99M:99.5M")).unwrap(),
+            SdrAction::Survey(Some(SurveyRequest {
+                start_hz: 97e6,
+                stop_hz: 101e6,
+                peak_cap: 8,
+                skip: vec![(99e6, 99.5e6)],
+            }))
+        );
+        assert_eq!(
+            parse(&mut words("survey stop")).unwrap(),
+            SdrAction::Survey(None)
+        );
         assert!(parse(&mut words("warp 9")).is_err());
         assert_eq!(
             parse_sim(&mut words("iq --seed 7")).unwrap(),
