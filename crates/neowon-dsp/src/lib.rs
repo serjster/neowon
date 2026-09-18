@@ -3,6 +3,7 @@
 //! must match these within tolerance.
 
 pub mod acq;
+pub mod classify;
 pub mod decode;
 pub mod detect;
 pub mod fft;
