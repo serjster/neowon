@@ -4101,6 +4101,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "neowon-catalog"
+version = "0.1.0"
+dependencies = [
+ "neowon-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "neowon-cli"
 version = "0.1.0"
 dependencies = [
