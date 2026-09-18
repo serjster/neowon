@@ -12,11 +12,11 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TryRecvError, bounde
 use neowon_core::{AcqMode, CaptureFrame, SharedFrame, Sweep};
 use tracing::{info, warn};
 
-use crate::{Backend, BackendError, Capabilities, MultiMode, ScopeConfig};
+use crate::{Backend, BackendError, Capabilities, InstrumentConfig, MultiMode};
 
 #[derive(Debug, Clone)]
 pub enum Command {
-    Apply(ScopeConfig),
+    Apply(InstrumentConfig),
     ForceTrigger,
     AutoSet,
     Multi(MultiMode),
@@ -33,7 +33,7 @@ pub enum Event {
     Frame(SharedFrame),
     /// The effective config changed on the backend side (single-sweep stop,
     /// autoset); the UI should adopt it.
-    ConfigUpdated(ScopeConfig),
+    ConfigUpdated(InstrumentConfig),
     Error(String),
 }
 
@@ -49,8 +49,8 @@ pub struct Supervisor {
 }
 
 impl Supervisor {
-    pub fn apply(&self, cfg: ScopeConfig) {
-        let _ = self.commands.send(Command::Apply(cfg));
+    pub fn apply(&self, cfg: impl Into<InstrumentConfig>) {
+        let _ = self.commands.send(Command::Apply(cfg.into()));
     }
 }
 
@@ -138,13 +138,21 @@ impl Averager {
     }
 }
 
+/// The host-side averaging depth `cfg` asks for; only scopes average.
+fn averaging(cfg: &InstrumentConfig) -> Option<u8> {
+    match cfg.scope()?.acq {
+        AcqMode::Average(n) => Some(n),
+        _ => None,
+    }
+}
+
 fn run(
     factory: &mut dyn FnMut() -> Result<Box<dyn Backend>, String>,
     commands: Receiver<Command>,
     events: Sender<Event>,
     dropped: std::sync::Arc<std::sync::atomic::AtomicU64>,
 ) {
-    let mut wanted: Option<ScopeConfig> = None;
+    let mut wanted: Option<InstrumentConfig> = None;
     let mut averager = Averager::default();
     'outer: loop {
         // (Re)connect, absorbing commands while we wait.
@@ -164,7 +172,7 @@ fn run(
             }
         };
         let caps = backend.capabilities().clone();
-        info!(name = %caps.name, serial = %caps.serial, "backend connected");
+        info!(name = %caps.name(), serial = %caps.serial(), "backend connected");
         let _ = events.send(Event::Connected(caps));
 
         if let Some(cfg) = &wanted
@@ -177,7 +185,7 @@ fn run(
 
         loop {
             // Drain pending commands; only the newest config matters.
-            let mut newest: Option<ScopeConfig> = None;
+            let mut newest: Option<InstrumentConfig> = None;
             let mut do_force = false;
             let mut do_autoset = false;
             let mut multi: Option<MultiMode> = None;
@@ -197,12 +205,9 @@ fn run(
                 }
             }
             if let Some(cfg) = newest {
-                if let AcqMode::Average(n) = cfg.acq {
-                    if averager.n != n {
-                        averager.reset(n);
-                    }
-                } else {
-                    averager.reset(0);
+                match averaging(&cfg) {
+                    Some(n) if averager.n == n => {}
+                    n => averager.reset(n.unwrap_or(0)),
                 }
                 wanted = Some(cfg.clone());
                 match backend.apply(&cfg) {
@@ -243,11 +248,8 @@ fn run(
             if do_autoset {
                 match backend.autoset() {
                     Ok(Some(cfg)) => {
-                        if let AcqMode::Average(n) = cfg.acq {
-                            averager.reset(n);
-                        } else {
-                            averager.reset(0);
-                        }
+                        let cfg = InstrumentConfig::Scope(cfg);
+                        averager.reset(averaging(&cfg).unwrap_or(0));
                         wanted = Some(cfg.clone());
                         let _ = events.send(Event::ConfigUpdated(cfg));
                     }
@@ -264,13 +266,13 @@ fn run(
                 }
             }
 
-            let running = wanted.as_ref().is_none_or(|c| c.running);
+            let running = wanted.as_ref().is_none_or(|c| c.running());
             if running {
                 match backend.poll_frame(Duration::from_millis(100)) {
                     Ok(Some(frame)) => {
-                        let frame = match wanted.as_ref().map(|c| c.acq) {
-                            Some(AcqMode::Average(_)) => Arc::new(averager.fold(&frame)),
-                            _ => frame,
+                        let frame = match wanted.as_ref().and_then(averaging) {
+                            Some(_) => Arc::new(averager.fold(&frame)),
+                            None => frame,
                         };
                         // Prefer dropping frames over blocking acquisition.
                         // Prefer dropping frames over blocking acquisition,
@@ -280,12 +282,12 @@ fn run(
                         }
 
                         // Single sweep: one record, then stop.
-                        if let Some(cfg) = &mut wanted
+                        if let Some(InstrumentConfig::Scope(cfg)) = &mut wanted
                             && cfg.trigger.sweep == Sweep::Single
                             && cfg.running
                         {
                             cfg.running = false;
-                            let cfg = cfg.clone();
+                            let cfg = InstrumentConfig::Scope(cfg.clone());
                             if let Err(e) = backend.apply(&cfg) {
                                 let _ = events.try_send(Event::Error(e.to_string()));
                             }

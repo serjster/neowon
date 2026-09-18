@@ -5,7 +5,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use neowon_backend::{Backend, BackendError, Capabilities, MultiMode, ScopeConfig};
+use neowon_backend::{
+    Acquisition, Backend, BackendError, Capabilities, InstrumentConfig, MultiMode, ScopeCaps,
+    ScopeConfig, scope_config,
+};
 use neowon_core::SharedFrame;
 
 use crate::consts;
@@ -38,7 +41,7 @@ impl Vds1022Backend {
 
     pub fn open(fpga_dir: Option<&std::path::Path>) -> Result<Self, Error> {
         let dev = Vds1022::open(fpga_dir)?;
-        let caps = Capabilities {
+        let caps = Capabilities::Scope(ScopeCaps {
             name: "OWON VDS1022".into(),
             serial: dev.cal.serial.clone(),
             channels: 2,
@@ -48,11 +51,11 @@ impl Vds1022Backend {
                 .map(|&mv| mv as f64 / 1000.0)
                 .collect(),
             probes: vec![1.0, 10.0, 20.0, 50.0, 100.0, 500.0, 1000.0],
-            acquisition: neowon_backend::Acquisition::Record {
+            acquisition: Acquisition::Record {
                 samples: consts::SAMPLES,
             },
             hardware_trigger: true,
-        };
+        });
         Ok(Self {
             dev,
             caps,
@@ -70,7 +73,8 @@ impl Backend for Vds1022Backend {
         &self.caps
     }
 
-    fn apply(&mut self, cfg: &ScopeConfig) -> Result<(), BackendError> {
+    fn apply(&mut self, cfg: &InstrumentConfig) -> Result<(), BackendError> {
+        let cfg = scope_config(cfg)?;
         let prev = self.applied.take();
         let same = |f: fn(&ScopeConfig) -> ScopeConfigPart| prev.as_ref().map(f) == Some(f(cfg));
 

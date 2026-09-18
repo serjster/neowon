@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::AcqMode;
+use crate::{AcqMode, Acquisition};
 
 /// Sample domain of a frame's channel data (D1b: the one layout home is the
 /// frame, so every consumer can read it without guessing from channel
@@ -49,8 +49,8 @@ impl IqCal {
 /// Why a frame could not be constructed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameError {
-    /// `Complex` data only makes sense for sampled streams; a record or a
-    /// peak/average acquisition cannot be complex.
+    /// `Complex` data only makes sense for sampled streams (D6): a record,
+    /// or a peak/average acquisition, cannot be complex.
     ComplexRecordRejected,
 }
 
@@ -98,18 +98,23 @@ pub struct CaptureFrame {
 pub type SharedFrame = Arc<CaptureFrame>;
 
 impl CaptureFrame {
-    /// Construct a frame, rejecting the invalid `Complex` × record/peak or
-    /// average cell (D6). Direct struct-literal construction remains possible
-    /// but skips this check.
+    /// Construct a frame, rejecting the invalid cells (D6): `Complex` is
+    /// only valid on a `Stream` delivered in `AcqMode::Sample`. `delivery` is
+    /// the producing instrument's `Acquisition`; it is checked, not stored.
+    /// Direct struct-literal construction remains possible but skips this
+    /// check.
     pub fn new(
         seq: u64,
         t_capture: Option<f64>,
         sample_rate: f64,
         acq: AcqMode,
+        delivery: Acquisition,
         layout: SampleLayout,
         channels: Vec<ChannelCapture>,
     ) -> Result<Self, FrameError> {
-        if layout == SampleLayout::Complex && !matches!(acq, AcqMode::Sample) {
+        if layout == SampleLayout::Complex
+            && (!matches!(acq, AcqMode::Sample) || !delivery.is_stream())
+        {
             return Err(FrameError::ComplexRecordRejected);
         }
         Ok(Self {
@@ -195,6 +200,8 @@ impl ChannelCapture {
 mod tests {
     use super::*;
 
+    const STREAM: Acquisition = Acquisition::Stream { chunk: 1 };
+
     fn real_cap(data: Vec<f32>) -> ChannelCapture {
         ChannelCapture {
             ch: 0,
@@ -206,13 +213,14 @@ mod tests {
     }
 
     #[test]
-    fn complex_requires_sample_acquisition() {
+    fn complex_requires_sampled_stream() {
         assert_eq!(
             CaptureFrame::new(
                 1,
                 None,
                 1.0,
                 AcqMode::Peak,
+                STREAM,
                 SampleLayout::Complex,
                 vec![real_cap(vec![1.0, 2.0])],
             )
@@ -225,6 +233,7 @@ mod tests {
                 None,
                 1.0,
                 AcqMode::Average(4),
+                STREAM,
                 SampleLayout::Complex,
                 vec![real_cap(vec![1.0, 2.0])],
             )
@@ -237,10 +246,24 @@ mod tests {
                 None,
                 1.0,
                 AcqMode::Sample,
+                STREAM,
                 SampleLayout::Complex,
                 vec![real_cap(vec![1.0, 2.0])],
             )
             .is_ok()
+        );
+        assert_eq!(
+            CaptureFrame::new(
+                1,
+                None,
+                1.0,
+                AcqMode::Sample,
+                Acquisition::Record { samples: 1 },
+                SampleLayout::Complex,
+                vec![real_cap(vec![1.0, 2.0])],
+            )
+            .unwrap_err(),
+            FrameError::ComplexRecordRejected
         );
     }
 
@@ -252,6 +275,7 @@ mod tests {
             None,
             10.0,
             AcqMode::Sample,
+            STREAM,
             SampleLayout::Real,
             vec![cap.clone()],
         )
@@ -262,6 +286,7 @@ mod tests {
             None,
             10.0,
             AcqMode::Sample,
+            STREAM,
             SampleLayout::Complex,
             vec![cap],
         )

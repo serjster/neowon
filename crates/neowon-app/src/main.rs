@@ -46,7 +46,10 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, T
 use bevy_egui::input::EguiWantsInput;
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
 use gpu::{PLOT_H, PLOT_W, Persistence, Phosphor, PhosphorPlugin, TraceMode};
-use neowon_backend::{Backend, Capabilities, Command, Event, MultiMode, ScopeConfig, Supervisor};
+use neowon_backend::{
+    Backend, Capabilities, Command, Event, InstrumentConfig, MultiMode, ScopeCaps, ScopeConfig,
+    Supervisor,
+};
 use neowon_core::{AcqMode, Coupling, SharedFrame, Slope, Sweep, TriggerKind};
 /// Screen geometry follows the reference scope: 10 horizontal x 8
 /// vertical divisions (docs/ui-ux-research.md §6), computed at runtime
@@ -56,7 +59,9 @@ use ui::layout::{H_DIVS, Layout, V_DIVS};
 #[derive(Resource)]
 pub struct Link {
     pub sup: Supervisor,
-    pub caps: Option<Capabilities>,
+    /// The scope's capabilities; `None` while disconnected, or while an
+    /// SDR is attached (the app has no SDR mode yet).
+    pub caps: Option<ScopeCaps>,
     pub status: String,
     pub latest: Option<SharedFrame>,
     pub config: ScopeConfig,
@@ -459,9 +464,13 @@ fn ingest(time: Res<Time>, mut link: ResMut<Link>) {
     link.arrived.clear();
     while let Ok(event) = link.sup.events.try_recv() {
         match event {
-            Event::Connected(caps) => {
+            Event::Connected(Capabilities::Scope(caps)) => {
                 link.status = format!("{} {}", caps.name, caps.serial);
                 link.caps = Some(caps);
+            }
+            Event::Connected(Capabilities::Sdr(caps)) => {
+                link.status = format!("{} {}: SDR mode not supported yet", caps.name, caps.serial);
+                link.caps = None;
             }
             Event::Disconnected(e) => {
                 link.status = format!("disconnected: {e}");
@@ -476,9 +485,10 @@ fn ingest(time: Res<Time>, mut link: ResMut<Link>) {
                 }
                 link.latest = Some(f);
             }
-            Event::ConfigUpdated(cfg) => {
+            Event::ConfigUpdated(InstrumentConfig::Scope(cfg)) => {
                 link.config = cfg;
             }
+            Event::ConfigUpdated(InstrumentConfig::Sdr(_)) => {}
             Event::Error(e) => link.status = format!("error: {e}"),
         }
     }

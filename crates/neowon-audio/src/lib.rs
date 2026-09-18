@@ -24,7 +24,10 @@
 use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use neowon_backend::{Acquisition, Backend, BackendError, Capabilities, ScopeConfig};
+use neowon_backend::{
+    Acquisition, Backend, BackendError, Capabilities, InstrumentConfig, ScopeCaps, ScopeConfig,
+    scope_config,
+};
 use neowon_core::{
     AcqMode, CaptureFrame, ChannelCapture, IqCal, SampleLayout, SharedFrame, Slope, Sweep,
     TriggerKind,
@@ -118,7 +121,7 @@ impl AudioBackend {
 
         tracing::info!(device = %name, rate, channels, "audio input open");
         Ok(Self {
-            caps: Capabilities {
+            caps: Capabilities::Scope(ScopeCaps {
                 name: "Audio input".into(),
                 serial: name,
                 channels,
@@ -129,7 +132,7 @@ impl AudioBackend {
                 probes: vec![1.0],
                 acquisition: Acquisition::Stream { chunk: CHUNK },
                 hardware_trigger: false,
-            },
+            }),
             cfg: ScopeConfig::default(),
             shared,
             _stream: stream,
@@ -239,7 +242,8 @@ impl Backend for AudioBackend {
         &self.caps
     }
 
-    fn apply(&mut self, cfg: &ScopeConfig) -> Result<(), BackendError> {
+    fn apply(&mut self, cfg: &InstrumentConfig) -> Result<(), BackendError> {
+        let cfg = scope_config(cfg)?;
         // Nothing to drive: the device has one rate and one input range, so
         // the config only changes how the host interprets the stream.
         self.cfg = cfg.clone();

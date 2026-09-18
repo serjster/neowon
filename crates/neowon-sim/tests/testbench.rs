@@ -327,7 +327,7 @@ fn armed_backend(stim: &str, level: f64, sweep: Sweep) -> SimBackend {
         position: 0.5,
         ..Default::default()
     };
-    b.apply(&cfg).unwrap();
+    b.apply(&cfg.clone().into()).unwrap();
     b
 }
 
