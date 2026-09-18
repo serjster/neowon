@@ -26,6 +26,10 @@ pub enum SdrAction {
     Run(bool),
     Seed(u64),
     Detect(bool),
+    /// Run the modulation lab on the signal nearest the tuned frequency.
+    Analyse(bool),
+    /// The modulation the lab assumes; `None` picks it from cumulants.
+    Modulation(Option<neowon_core::Modulation>),
     /// Detection threshold over the floor, dB.
     Threshold(f64),
 }
@@ -72,6 +76,14 @@ pub fn parse<'a>(next: &mut dyn FnMut() -> Result<&'a str, String>) -> Result<Sd
         },
         "run" => SdrAction::Run(on_off(next()?)?),
         "detect" => SdrAction::Detect(on_off(next()?)?),
+        "analyse" | "analyze" => SdrAction::Analyse(on_off(next()?)?),
+        "modulation" => match next()? {
+            "auto" => SdrAction::Modulation(None),
+            m => SdrAction::Modulation(Some(
+                neowon_core::Modulation::parse(m)
+                    .ok_or_else(|| format!("unknown modulation {m:?}"))?,
+            )),
+        },
         "threshold" => SdrAction::Threshold(num(next()?)?),
         other => return Err(format!("unknown sdr verb {other:?}")),
     })
@@ -161,6 +173,18 @@ pub fn apply(a: SdrAction, sdr: &mut SdrState, link: &Link) -> Result<(), String
             (sdr.ref_db, sdr.range_db) = (ref_db, range_db);
             return Ok(());
         }
+        SdrAction::Analyse(on) => {
+            sdr.analyse_on = on;
+            if !on {
+                sdr.analysis = None;
+            }
+            return Ok(());
+        }
+        SdrAction::Modulation(m) => {
+            sdr.modulation = m;
+            sdr.analysis = None;
+            return Ok(());
+        }
         SdrAction::Detect(on) => {
             sdr.detect_on = on;
             if !on {
@@ -233,6 +257,15 @@ mod tests {
             parse(&mut words("threshold 9")).unwrap(),
             SdrAction::Threshold(9.0)
         );
+        assert_eq!(
+            parse(&mut words("modulation 16qam")).unwrap(),
+            SdrAction::Modulation(Some(neowon_core::Modulation::Qam16))
+        );
+        assert_eq!(
+            parse(&mut words("modulation auto")).unwrap(),
+            SdrAction::Modulation(None)
+        );
+        assert!(parse(&mut words("modulation fm")).is_err());
         assert!(parse(&mut words("warp 9")).is_err());
         assert_eq!(
             parse_sim(&mut words("iq --seed 7")).unwrap(),

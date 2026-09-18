@@ -170,6 +170,57 @@ pub fn controls(ui: &mut egui::Ui, sdr: &SdrState, link: &Link, script: &mut Scr
     if ui.button("Catalog…").clicked() {
         script.inject(Action::Catalog(crate::catalog::CatalogAction::Window(true)));
     }
+    ui.separator();
+    lab(ui, sdr, script);
+}
+
+/// The modulation lab: on/off, the assumed modulation, and its results
+/// for the signal nearest the tuned frequency.
+fn lab(ui: &mut egui::Ui, sdr: &SdrState, script: &mut Script) {
+    ui.horizontal(|ui| {
+        let mut on = sdr.analyse_on;
+        if ui
+            .checkbox(&mut on, "Analyse")
+            .on_hover_text("modulation lab on the signal nearest the tuned frequency")
+            .changed()
+        {
+            inject(script, SdrAction::Analyse(on));
+        }
+        let label = sdr.modulation.map_or("auto", |m| m.label());
+        egui::ComboBox::from_id_salt("lab-modulation")
+            .selected_text(label)
+            .show_ui(ui, |ui| {
+                if ui
+                    .selectable_label(sdr.modulation.is_none(), "auto")
+                    .clicked()
+                {
+                    inject(script, SdrAction::Modulation(None));
+                }
+                for m in neowon_core::Modulation::ALL {
+                    if ui
+                        .selectable_label(sdr.modulation == Some(m), m.label())
+                        .clicked()
+                    {
+                        inject(script, SdrAction::Modulation(Some(m)));
+                    }
+                }
+            });
+    });
+    if let Some(a) = &sdr.analysis {
+        ui.monospace(format!(
+            "#{} {}{}  {:.1} ksym/s\nEVM {:.2} %  MER {:.1} dB\nC42 {:+.3}  |C40| {:.3}",
+            a.track,
+            a.modulation.label(),
+            if a.auto { " (auto)" } else { "" },
+            a.symbol_rate_hz / 1e3,
+            a.evm_rms_pct,
+            a.mer_db,
+            a.cumulants.c42,
+            a.cumulants.c40.norm()
+        ));
+    } else if sdr.analyse_on {
+        ui.weak("no signal near the tuned frequency");
+    }
 }
 
 /// Detection controls and the active tracks, strongest first.
@@ -220,6 +271,9 @@ fn signals(ui: &mut egui::Ui, sdr: &SdrState, script: &mut Script) {
 /// full-scale box shows a dot); the zoom factor is printed, and 1× means
 /// the box edge is full scale.
 pub fn constellation(ui: &mut egui::Ui, sdr: &SdrState) {
+    if let Some(a) = &sdr.analysis {
+        return recovered(ui, a);
+    }
     let peak = sdr
         .iq
         .iter()
@@ -258,5 +312,30 @@ pub fn constellation(ui: &mut egui::Ui, sdr: &SdrState) {
             0.0,
             TRACE,
         );
+    }
+}
+
+/// The lab's recovered decision points (unit energy) over the ideal
+/// constellation.
+fn recovered(ui: &mut egui::Ui, a: &crate::sdr::analysis::Analysis) {
+    ui.label(format!("recovered {}", a.modulation.label()));
+    let side = ui.available_width().min(220.0);
+    let (r, _) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
+    let p = ui.painter_at(r);
+    p.rect_filled(r, 0.0, BG);
+    // ±1.6 of unit-energy constellation fills the box (64QAM's corners
+    // sit at ±1.08).
+    let half = side / 2.0 / 1.6;
+    for [i, q] in &a.symbols {
+        let pos = r.center() + egui::vec2(i * half, -q * half);
+        p.rect_filled(
+            egui::Rect::from_center_size(pos, egui::vec2(1.5, 1.5)),
+            0.0,
+            TRACE,
+        );
+    }
+    for (i, q) in a.modulation.points() {
+        let c = r.center() + egui::vec2(i as f32 * half, -(q as f32) * half);
+        p.circle_stroke(c, 3.0, (1.0, egui::Color32::YELLOW));
     }
 }
