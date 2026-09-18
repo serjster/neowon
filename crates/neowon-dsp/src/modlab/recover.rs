@@ -16,6 +16,8 @@ use super::cyclo::carrier_offset;
 
 /// Symbols the matched filter spans either side of its centre.
 pub const SPAN: i64 = 12;
+/// Symbols per timing estimate.
+pub const TIMING_BLOCK: usize = 256;
 
 #[derive(Debug, Clone)]
 pub struct Recovered {
@@ -24,7 +26,7 @@ pub struct Recovered {
     /// The Gray labels they sliced to.
     pub labels: Vec<u32>,
     pub carrier_offset_hz: f64,
-    /// Chosen timing phase, symbol periods.
+    /// Timing phase of the first block, symbol periods.
     pub timing: f64,
     pub phase_rad: f64,
     pub evm_rms_pct: f64,
@@ -55,8 +57,24 @@ fn symmetry(m: Modulation) -> (u32, f64) {
     }
 }
 
-/// Linear interpolation of `y` at fractional index `t`.
+/// Least-squares line `y = a + b·x` through `pts`; flat for one point.
+fn line_fit(pts: &[(f64, f64)]) -> (f64, f64) {
+    let n = pts.len() as f64;
+    let (sx, sy) = pts.iter().fold((0.0, 0.0), |(a, b), p| (a + p.0, b + p.1));
+    let (mx, my) = (sx / n, sy / n);
+    let (sxx, sxy) = pts.iter().fold((0.0, 0.0), |(a, b), p| {
+        (a + (p.0 - mx).powi(2), b + (p.0 - mx) * (p.1 - my))
+    });
+    if sxx <= 0.0 {
+        return (my, 0.0);
+    }
+    let slope = sxy / sxx;
+    (my - slope * mx, slope)
+}
+
+/// Linear interpolation of `y` at fractional index `t` (clamped).
 fn at(y: &[Complex64], t: f64) -> Complex64 {
+    let t = t.clamp(0.0, (y.len() - 1) as f64);
     let i = t.floor() as usize;
     let f = t - i as f64;
     y[i] * (1.0 - f) + y[(i + 1).min(y.len() - 1)] * f
@@ -108,17 +126,37 @@ pub fn recover(
     // Symbols clear of the filter's start-up and tail.
     let first = SPAN as f64 * sps;
     let count = ((n as f64 - 2.0 * first) / sps).floor() as usize - 1;
-    let sample = |phase: f64| -> Vec<Complex64> {
-        (0..count)
-            .map(|i| at(&y, first + (i as f64 + phase) * sps))
-            .collect()
-    };
-    // Timing: the phase (in 1/32 symbol) with the most output energy.
-    let timing = (0..32).map(|k| k as f64 / 32.0).max_by(|&a, &b| {
-        let e = |p| sample(p).iter().map(|z| z.norm_sqr()).sum::<f64>();
-        e(a).total_cmp(&e(b))
-    })?;
-    let mut s = sample(timing);
+    let energy_at = |i: usize, phase: f64| at(&y, first + (i as f64 + phase) * sps).norm_sqr();
+    // Timing: per block of TIMING_BLOCK symbols, the energy-maximising
+    // phase (32 steps, refined by a parabola through the peak), unwrapped
+    // across the symbol boundary; then one straight line through all
+    // blocks. The line follows the drift an inexact symbol-rate estimate
+    // causes, while every block's noise is averaged away by the fit.
+    let mut pts: Vec<(f64, f64)> = Vec::new();
+    for b in (0..count).step_by(TIMING_BLOCK) {
+        let end = (b + TIMING_BLOCK).min(count);
+        let e: Vec<f64> = (0..32)
+            .map(|k| (b..end).map(|i| energy_at(i, k as f64 / 32.0)).sum())
+            .collect();
+        let k = (0..32).max_by(|&a, &c| e[a].total_cmp(&e[c]))?;
+        let (l, c, r) = (e[(k + 31) % 32], e[k], e[(k + 1) % 32]);
+        let d = l - 2.0 * c + r;
+        let frac = if d.abs() > 1e-300 {
+            0.5 * (l - r) / d
+        } else {
+            0.0
+        };
+        let mut phase = (k as f64 + frac) / 32.0;
+        if let Some(&(_, prev)) = pts.last() {
+            phase += (prev - phase).round(); // unwrap
+        }
+        pts.push(((b + end) as f64 / 2.0, phase));
+    }
+    let (a0, drift) = line_fit(&pts);
+    let timing = a0.rem_euclid(1.0);
+    let mut s: Vec<Complex64> = (0..count)
+        .map(|i| at(&y, first + (i as f64 + a0 + drift * i as f64) * sps))
+        .collect();
 
     // Blind phase and gain.
     let mom = s.iter().map(|z| z.powu(m)).sum::<Complex64>();
@@ -127,19 +165,36 @@ pub fn recover(
     let rot = Complex64::from_polar(1.0 / energy.sqrt(), -phase);
     s.iter_mut().for_each(|z| *z *= rot);
 
-    // Decision-directed refinement: least-squares complex gain onto the
-    // decided points, twice.
+    // Decision-directed refinement: fit a line to the phase error against
+    // the decided points and remove it (a residual carrier offset of even a
+    // fraction of a hertz leaves a phase ramp no single rotation removes),
+    // then a least-squares gain; three rounds.
     let mut total_phase = phase;
-    for _ in 0..2 {
-        let (mut num, mut den) = (Complex64::new(0.0, 0.0), 0.0);
-        for z in &s {
-            let (a, b) = modulation.point(modulation.slice((z.re, z.im)));
-            let d = Complex64::new(a, b);
-            num += *z * d.conj();
+    for _ in 0..3 {
+        let decided: Vec<Complex64> = s
+            .iter()
+            .map(|z| {
+                let (a, b) = modulation.point(modulation.slice((z.re, z.im)));
+                Complex64::new(a, b)
+            })
+            .collect();
+        let errs: Vec<(f64, f64)> = s
+            .iter()
+            .zip(&decided)
+            .enumerate()
+            .map(|(i, (z, d))| (i as f64, (z * d.conj()).arg()))
+            .collect();
+        let (p0, slope) = line_fit(&errs);
+        total_phase += p0;
+        for (i, z) in s.iter_mut().enumerate() {
+            *z *= Complex64::from_polar(1.0, -(p0 + slope * i as f64));
+        }
+        let (mut num, mut den) = (0.0, 0.0);
+        for (z, d) in s.iter().zip(&decided) {
+            num += (z * d.conj()).re;
             den += d.norm_sqr();
         }
         let g = num / den;
-        total_phase += g.arg();
         s.iter_mut().for_each(|z| *z /= g);
     }
 
