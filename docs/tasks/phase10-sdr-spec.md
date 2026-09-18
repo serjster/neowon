@@ -408,6 +408,20 @@ assets/models/<m>.json --split heldout_freq,cross_day --out <dir>` regenerates t
 **precision** curve and asserts D9; `cargo test -p neowon-ml --features ort --test
 gates` re-checks D9. If D9 fails, the record says the learned path is abandoned.
 
+**Status 2026-09-19: 10.5 partial.**
+- Done: C1 (`neowon_dsp::classify`), C3 (unknown, top-2, trust) and C7
+  (preset labels). `cargo test -p neowon-dsp --test classify_golden --
+  --nocapture` (statistical, seed 42, N 500/class) gives macro precision
+  1.0 at 10 and 20 dB on the simulator.
+- Blocked on a D9 corpus: C2 (`MlClassifier` on `ort`), C5 (precision
+  curves from a checked-in harness), C6 (held-out frequency), C9 (corpus
+  rotation), and SDR-G2. Choosing and collecting that corpus (a public
+  over-the-air dataset, and/or in-house captures across days) is the
+  operator's decision.
+- Every DSP class stays `unproven` until then. The on-air run in
+  docs/protocol-rtlsdr.md is why: broadcast FM once read 64QAM at
+  confidence 0.95, and now reads `unknown`.
+
 ### 10.6 — Protocol & source identification
 
 In-tree decoders; demod→bits; frequency/emission DB (ITU designators); source

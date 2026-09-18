@@ -487,7 +487,16 @@ Auto-cal port (compensation pass descending ranges @ DC, amplitude pass ascendin
 > stronger/weaker/same/unknown, never gone/new where a survey could not
 > have seen); `--test survey_diff` fixed-order on the sim; in the app `sdr
 > survey …`, `get survey|surveydiff`, `catalog survey`, MCP `sdr_survey*`
-> (`--test sdr_survey`). Next: 10.5 classification (gated by SDR-G2). neowon becomes one instrument in two modes —
+> (`--test sdr_survey`). **10.5 partial:** the DSP classifier (C1/C3/C7:
+> noise/cw/am/fm/5 constellations, confidence, runner-up, margin, honest
+> `unknown` via absolute cumulant fit + a "none of these" score, trust
+> `unproven`); `--test classify_golden` N=500/class macro precision 1.0 at
+> 10/20 dB on sim; `get classify`, MCP `sdr_classify`. On air, broadcast FM
+> reads `unknown` (it once read 64QAM @0.95). **Blocked on the operator:**
+> C2 learned path (`ort`), C5/C6/C9 evaluation, and gate SDR-G2 all need a
+> D9 corpus (over-the-air, held-out-frequency + cross-day); 10.6 needs
+> independent reference vectors (external files); 10.7 waits on SDR-G2.
+> Next without the operator: 10.8 dataset pipeline, 10.9 UX parity. neowon becomes one instrument in two modes —
 > **Scope** and **SDR** — riding `Acquisition::Stream` and the shared engine
 > (recorder/timeline, phosphor, decode, control socket, MCP). RTL-SDR drives
 > through librtlsdr bindings *presumed* for V3 compatibility; the exact crate is
