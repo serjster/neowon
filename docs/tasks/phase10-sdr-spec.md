@@ -370,6 +370,14 @@ synchroniser + slicer → bits.
 (class tolerance): 16-QAM EVM at 30 dB = closed form ±0.5%; QPSK symbol rate 100
 ksym/s within 1%; BPSK/QPSK C42 = published values ±0.02 (N=8192).
 
+**Status 2026-09-19: 10.3 DONE.** `cargo test -p neowon-dsp --test
+mod_estimators -- --nocapture`:
+- 16QAM EVM 3.156% against the 3.162% closed form (±0.5 is read as
+  percentage points);
+- QPSK Rs 100 001.9 Hz;
+- C42 −2.0000 (BPSK) and −1.0000 (QPSK) over 8192 recovered symbols.
+In-app: `cargo test -p neowon-app --test sdr_modlab -- --ignored`.
+
 ### 10.4 — Scanning & survey
 
 `Survey.coverage: Vec<BandCoverage>` with `BandCoverage{band, scanned: bool, bins,
@@ -556,6 +564,23 @@ criterion.
     field, and the collision only showed on WAL replay.
   - Deleting a signal also drops redirects that pointed at it (the
     merged-away ids keep their own tombstones).
+- **10.3 modulation lab (2026-09-19).**
+  - C40 and C41 are orientation-dependent: the published +1 for QPSK is
+    axis-aligned, and the shared Gray QPSK sits at 45° (C40 = −1).
+    `get modmeas` therefore reports complex cumulants as magnitudes. The
+    spec's C42 row is rotation-invariant and unaffected.
+  - SNR in the lab rows is symbol Es/N0 at the matched-filter output. The
+    simulator's digital `amplitude` is defined there, which makes the EVM
+    closed form exact (10^(−SNR/20)).
+  - The QPSK symbol-rate row (no N in the table) uses 65 536 samples at
+    20 dB.
+  - The app lab assumes roll-off 0.35, analyses 32 Ki pairs of every 8th
+    frame, and does not decimate. Blind phase leaves the constellation's
+    rotational ambiguity: EVM and cumulant magnitudes are unaffected, but
+    bits need a reference (M6 slices to Gray labels; resolving the
+    ambiguity waits on 10.6 framing).
+  - Modulation "auto" is nearest-(C42, |C40|): parameter estimation (M5),
+    not the 10.5 classifier, and it carries no confidence.
 - **D8, CLI vs. the hardware rule.** AGENTS.md says "no `neowon-cli`" for
   automated runs; `neowon sim …` never opens a device (dispatch opens USB per
   hardware subcommand), so the spec's two-process `cmp` criterion is safe to

@@ -75,8 +75,11 @@ impl Scope {
     }
 
     #[tool(
-        description = "Measurements of the strongest tracked signal: occupied \
-        bandwidth, channel power, SNR, spectral flatness."
+        description = "Measurements of the strongest tracked signal (occupied \
+        bandwidth, channel power, SNR, spectral flatness) and, once `sdr analyse \
+        on` has run, the modulation lab's results for the signal nearest the \
+        tuned frequency: modulation (auto or set with `sdr modulation`), symbol \
+        rate, EVM, MER and cumulants C20–C63."
     )]
     async fn sdr_modmeas(&self) -> Result<String, ErrorData> {
         self.req("get modmeas")

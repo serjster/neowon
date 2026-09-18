@@ -472,8 +472,17 @@ Auto-cal port (compensation pass descending ranges @ DC, amplitude pass ascendin
 > in the app (`catalog add|observe|rename|alias|tag|pin|edit|merge|delete|
 > purge|bulk|undo|export|import|window`, `get catalog`, `get history`,
 > Catalog window) and MCP (`catalog`, `catalog_list`, `catalog_history`,
-> `sdr_*`); `--test catalog_flow` survives an app restart. Next: 10.3
-> modulation lab. neowon becomes one instrument in two modes —
+> `sdr_*`); `--test catalog_flow` survives an app restart. **10.3 DONE:**
+> shared Gray constellations in core; an RRC-shaped digital source in the
+> sim (exact, table-accelerated; scene `rf-digital`); `neowon_dsp::modlab`
+> (cumulants C20–C63 via set partitions, cyclic symbol-rate/carrier-offset
+> lines, channel selection, recovery with line-fitted timing and phase-ramp
+> removal, Gray slicer, EVM/MER). `--test mod_estimators`: 16QAM EVM 3.156%
+> vs 3.162% closed form, QPSK Rs within 0.002%, C42 −2.0000/−1.0000. In the
+> app: `sdr analyse on`, `sdr modulation auto|<m>`, `get modmeas` lab
+> block, recovered constellation; `--test sdr_modlab` auto-identifies QPSK
+> and 16QAM and matches closed-form EVM. Next: 10.4 scanning & survey.
+> neowon becomes one instrument in two modes —
 > **Scope** and **SDR** — riding `Acquisition::Stream` and the shared engine
 > (recorder/timeline, phosphor, decode, control socket, MCP). RTL-SDR drives
 > through librtlsdr bindings *presumed* for V3 compatibility; the exact crate is
