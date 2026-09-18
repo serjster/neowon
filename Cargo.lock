@@ -4150,6 +4150,7 @@ dependencies = [
  "crossbeam-channel",
  "neowon-backend",
  "neowon-core",
+ "neowon-dsp",
  "nusb",
  "thiserror 2.0.20",
  "tracing",

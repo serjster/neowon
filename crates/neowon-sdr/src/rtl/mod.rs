@@ -9,7 +9,7 @@ mod r82xx_tables;
 mod stream;
 mod usb;
 
-pub use device::{DeviceInfo, DirectSampling, RtlSdr, TunerKind, list};
+pub use device::{DeviceInfo, DirectSampling, RtlSdr, TunerKind, list, resampler};
 pub use stream::Stream;
 
 /// Crystal of the RTL2832U (and of an R820T on the same clock).
