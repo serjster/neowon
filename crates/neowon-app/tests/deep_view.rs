@@ -115,6 +115,11 @@ fn timeline_spans_history_without_losing_sample_rate() {
             "vdiv 0 0.5",
             "timebase 0.002",
             "persist off",
+            // Page follow (the default since this test was written) starts
+            // an empty page at each quantised boundary, so a window read
+            // just after `deep on` may hold one record; this test is
+            // about stitching, so it follows the newest record instead.
+            "deepfollow slide",
         ] {
             conn.ok(cmd);
         }
