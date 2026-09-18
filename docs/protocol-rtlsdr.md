@@ -137,3 +137,14 @@ noted tolerances.
   leaves the device untuned (`center_freq() == 0`); the tuner's bandwidth
   and gain are restored. The next tune puts the carrier back (20–30 dB).
   librtlsdr's behaviour (retune and fail in the PLL) is documented above.
+
+## The `Backend` through the `Supervisor` (2026-09-18)
+
+`cargo run -p neowon-sdr --example backend` (hardware only) drives
+`RtlBackend` exactly as the app does. At 2.048 MS/s and 29.7 dB, frames are
+128 Ki pairs (64 ms), and timestamps advance by exactly each frame's
+duration (no chunk dropped; supervisor drops 0). The 99.4 MHz station peaks
+~29 dB over the floor. A +200 kHz retune moves it −196.5 kHz; the FM
+peak bin wanders ±5 kHz with modulation. Tuning to 9.74 MHz switches to
+direct sampling automatically (a peak 24–32 dB over the floor at
+9.64 MHz), and tuning back to 99.4 MHz restores the tuner path.
