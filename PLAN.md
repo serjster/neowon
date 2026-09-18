@@ -448,9 +448,17 @@ Auto-cal port (compensation pass descending ranges @ DC, amplitude pass ascendin
 > `librtlsdr-rs`). **Item 4 DONE:** it passes P0.1 plus ppm (0.3% of
 > 2·(f+IF)·ppm), RTL AGC, HF direct sampling (Q branch, V3) and a fixed HF
 > exit; ±0.002% rate, 0 overflows, 355 ms open (`cargo run -p neowon-sdr
-> --example p01`). `rs-rtl` removed. Next: the SDR `Backend` over this driver
-> + the sim SDR backend + first views (spectrum, waterfall, IQ scope).
-> neowon becomes one instrument in two modes —
+> --example p01`). `rs-rtl` removed. **10.0 DONE:** `RtlBackend` (auto HF
+> direct sampling below 24 MHz; `--example backend` through the Supervisor on
+> hardware), `SimSdrBackend` (RF scenes `rf-reference|rf-fm-band|rf-hf|
+> rf-noise`), `neowon_dsp::iq_spectrum` oracle, and an app SDR mode
+> (`--sdr-sim` / `--rtl`: spectrum + waterfall + IQ constellation, dock
+> controls; `sdr tune|step|rate|gain|agc|ppm|span|fft|level|run`,
+> `sim iq --seed`, `get sdr`, `get iq`; `--test sdr_mode`). Seen on the
+> dongle: the 99.4 MHz FM channel and 9.6 MHz shortwave. Deferred: `sdr
+> mode|squelch` (no demodulator until 10.3), IQ in the recorder (risk 4),
+> mode-aware menu bar/front panel (10.9). Next: 10.1 detection &
+> measurement. neowon becomes one instrument in two modes —
 > **Scope** and **SDR** — riding `Acquisition::Stream` and the shared engine
 > (recorder/timeline, phosphor, decode, control socket, MCP). RTL-SDR drives
 > through librtlsdr bindings *presumed* for V3 compatibility; the exact crate is
