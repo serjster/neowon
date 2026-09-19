@@ -5,6 +5,7 @@
 pub mod acq;
 pub mod classify;
 pub mod decode;
+pub mod demod;
 pub mod detect;
 pub mod fft;
 pub mod iq;
@@ -17,6 +18,7 @@ pub mod timeline;
 
 pub use acq::peak_advised;
 pub use decode::{DecodeError, Digital, Event, EventKind, Threshold, digitize};
+pub use demod::{DemodMode, Receiver, ReceiverConfig};
 pub use detect::{DetectConfig, Track, Tracker, TrackerConfig, detect, detect_spectrum};
 pub use fft::{Spectrum, Window, spectrum};
 pub use iq::{IqSpectrum, iq_spectrum};
