@@ -95,8 +95,9 @@ impl Scope {
 
     #[tool(description = "Tune the SDR's tuned frequency (the channel you \
         monitor) and optionally set rate and gain. The hardware window stays \
-        put; use `sdr centre <hz>` to move it and `sdr follow on` to keep it \
-        centred on the tuned frequency.")]
+        put while the target is inside the IQ band and recentres on it \
+        otherwise; `sdr centre <hz>` moves it by hand and `sdr follow on` keeps \
+        it centred on the tuned frequency.")]
     async fn sdr_tune(&self, p: Parameters<TuneParams>) -> Result<String, ErrorData> {
         let p = p.0;
         if let Some(r) = p.sample_rate {

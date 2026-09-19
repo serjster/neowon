@@ -16,6 +16,17 @@ fn survey_finds_diffs_and_files() {
     let (child, mut c) = launch(&["--sdr-sim"], &[("NEOWON_CATALOG", &dir_s)]);
     with_app(child, || {
         c.ok("stimulus rf-fm-band");
+        // The stimulus reaches the backend asynchronously: survey only once
+        // the new scene is on air, or a step can still see rf-reference's
+        // 100.1 MHz tone.
+        c.wait("get detections", 15, |r| {
+            let ids = items(r, "id");
+            ids.iter()
+                .any(|t| (field(t, "centre_hz") - 99.4e6).abs() < 5e3)
+                && !ids
+                    .iter()
+                    .any(|t| (field(t, "centre_hz") - 100.1e6).abs() < 5e3)
+        });
         c.ok("sdr survey 97M 101M");
         let s = c.wait("get survey", 30, |r| {
             r.contains(r#""running":false"#) && r.contains(r#""completed":1"#)

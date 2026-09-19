@@ -1,11 +1,21 @@
 //! The modulation lab in SDR mode: analyse the tracked signal nearest the
 //! tuned frequency — its symbol rate, modulation (set, or picked by nearest
 //! cumulants), recovered constellation, EVM and MER.
+//!
+//! The lab costs a channel filter, a symbol-rate search and two recoveries
+//! — tens of milliseconds — so it runs on its own thread (`Lab`), never on
+//! the frame loop: a result arrives a run later, and the display keeps its
+//! frame rate meanwhile.
 
-use neowon_core::{CaptureFrame, Modulation};
+use crossbeam_channel::{Receiver, Sender, TryRecvError};
+
+use neowon_core::{CaptureFrame, Modulation, SharedFrame};
 use neowon_dsp::Track;
 use neowon_dsp::classify::{Classification, classify as dsp_classify, features};
 use neowon_dsp::modlab::{Cumulants, cumulants, recover, select, symbol_rate};
+
+/// Frames between lab runs (a few runs a second at the sim's frame rate).
+const EVERY: u64 = 8;
 
 /// Roll-off the lab assumes (the common RRC choice; also the simulator's).
 pub const ROLLOFF: f64 = 0.35;
@@ -113,4 +123,103 @@ pub fn classify(frame: &CaptureFrame, centre_hz: f64, track: &Track) -> Option<C
         track.last.bandwidth_hz(),
     )?;
     Some(dsp_classify(&f))
+}
+
+/// One lab run: the frame, the hardware centre it was taken at (the
+/// spectrum's zero), the target and the user's modulation setting.
+struct Job {
+    frame: SharedFrame,
+    centre_hz: f64,
+    track: Track,
+    setting: Option<Modulation>,
+}
+
+/// What a run found, with the inputs it ran on so the caller can drop a
+/// result the operator has since moved away from.
+pub struct LabResult {
+    pub centre_hz: f64,
+    pub setting: Option<Modulation>,
+    pub analysis: Option<Analysis>,
+    pub classification: Option<Classification>,
+}
+
+/// The lab's worker thread. At most one run is in flight: a frame that
+/// arrives while one runs is skipped, not queued, so a slow run never
+/// builds a backlog. The thread ends when the `Lab` is dropped.
+pub struct Lab {
+    jobs: Sender<Job>,
+    done: Receiver<LabResult>,
+    busy: bool,
+    next_seq: u64,
+}
+
+impl Lab {
+    pub fn spawn() -> Self {
+        let (jobs, rx) = crossbeam_channel::bounded::<Job>(1);
+        let (tx, done) = crossbeam_channel::bounded(1);
+        std::thread::Builder::new()
+            .name("sdr-lab".into())
+            .spawn(move || {
+                for job in rx {
+                    let r = LabResult {
+                        centre_hz: job.centre_hz,
+                        setting: job.setting,
+                        classification: classify(&job.frame, job.centre_hz, &job.track),
+                        analysis: analyse(&job.frame, job.centre_hz, &job.track, job.setting),
+                    };
+                    if tx.send(r).is_err() {
+                        break;
+                    }
+                }
+            })
+            .expect("spawn the lab thread");
+        Self {
+            jobs,
+            done,
+            busy: false,
+            next_seq: 0,
+        }
+    }
+
+    /// Start a run on `frame` if none is in flight and `EVERY` frames have
+    /// passed since the last one. Returns whether it started.
+    pub fn submit(
+        &mut self,
+        frame: &SharedFrame,
+        centre_hz: f64,
+        track: Track,
+        setting: Option<Modulation>,
+    ) -> bool {
+        if self.busy || frame.seq < self.next_seq {
+            return false;
+        }
+        let job = Job {
+            frame: frame.clone(),
+            centre_hz,
+            track,
+            setting,
+        };
+        self.busy = self.jobs.try_send(job).is_ok();
+        if self.busy {
+            self.next_seq = frame.seq + EVERY;
+        }
+        self.busy
+    }
+
+    /// The finished run, if one finished. A worker that died (a panic in
+    /// the DSP) is replaced, so the lab recovers on the next submit.
+    pub fn poll(&mut self) -> Option<LabResult> {
+        match self.done.try_recv() {
+            Ok(r) => {
+                self.busy = false;
+                Some(r)
+            }
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => {
+                bevy::log::error!("sdr: the lab thread died; restarting it");
+                *self = Lab::spawn();
+                None
+            }
+        }
+    }
 }

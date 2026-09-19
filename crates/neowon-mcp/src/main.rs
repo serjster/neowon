@@ -23,7 +23,9 @@ use rmcp::{
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+mod refmap_tools;
 mod sdr_tools;
+mod ui_tools;
 
 /// What the client talks to; kept so a broken link can be re-established
 /// (the app restarting, or a spawned sim dying, must not strand the
@@ -106,6 +108,9 @@ impl ScopeClient {
                         .arg("--sim")
                         .env("NEOWON_CONTROL", default_port().to_string())
                         .env_remove("NEOWON_SCRIPT")
+                        // An agent-driven sim must not overwrite the operator's
+                        // saved setup (D13).
+                        .env("NEOWON_NO_STATE", "1")
                         .stdout(std::process::Stdio::null())
                         .stderr(std::process::Stdio::null())
                         .spawn()?,
@@ -453,7 +458,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let scope = Scope {
         client: std::sync::Arc::new(Mutex::new(client)),
-        tool_router: Scope::tool_router() + Scope::sdr_router(),
+        tool_router: Scope::tool_router()
+            + Scope::sdr_router()
+            + Scope::ui_router()
+            + Scope::refmap_router(),
     };
     let service = scope.serve(stdio()).await?;
     service.waiting().await?;

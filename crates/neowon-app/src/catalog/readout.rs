@@ -22,10 +22,20 @@ pub fn catalog_json(st: &CatalogState) -> String {
         .map(|s| {
             let tags: Vec<String> = s.tags.iter().map(|t| esc(t)).collect();
             let aliases: Vec<String> = s.aliases.iter().map(|a| esc(&a.name)).collect();
+            let kind = match s.provenance.kind {
+                neowon_catalog::ProvKind::User => "user",
+                neowon_catalog::ProvKind::Decoder => "decoder",
+                neowon_catalog::ProvKind::Classifier => "classifier",
+                neowon_catalog::ProvKind::Db => "db",
+                neowon_catalog::ProvKind::Import => "import",
+                neowon_catalog::ProvKind::Merge => "merge",
+                neowon_catalog::ProvKind::Fingerprint => "fingerprint",
+            };
             format!(
                 concat!(
                     r#"{{"id":{},"name":{},"centre_hz":{},"bandwidth_hz":{},"tags":[{}],"#,
-                    r#""aliases":[{}],"pinned":{},"observations":{}}}"#
+                    r#""aliases":[{}],"pinned":{},"observations":{},"#,
+                    r#""provenance":{{"kind":"{}","tool":{},"input_ref":{}}}}}"#
                 ),
                 s.id.0,
                 esc(&s.name),
@@ -34,7 +44,13 @@ pub fn catalog_json(st: &CatalogState) -> String {
                 tags.join(","),
                 aliases.join(","),
                 s.pinned,
-                st.observations_of(s.id)
+                st.observations_of(s.id),
+                kind,
+                esc(&s.provenance.tool),
+                s.provenance
+                    .input_ref
+                    .as_ref()
+                    .map_or("null".to_string(), |r| esc(r)),
             )
         })
         .collect();

@@ -52,8 +52,14 @@ pub fn launch(args: &[&str], env: &[(&str, &str)]) -> (std::process::Child, Conn
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_neowon-app"));
     cmd.args(args)
         .env("NEOWON_CONTROL", port.to_string())
-        .env_remove("NEOWON_SCRIPT");
+        .env_remove("NEOWON_SCRIPT")
+        // Tests never read or write the operator's saved state (D13);
+        // `NEOWON_STATE` in `env` opts a test back in.
+        .env("NEOWON_NO_STATE", "1");
     for (k, v) in env {
+        if *k == "NEOWON_STATE" {
+            cmd.env_remove("NEOWON_NO_STATE");
+        }
         cmd.env(k, v);
     }
     let mut child = cmd.spawn().expect("launch app");

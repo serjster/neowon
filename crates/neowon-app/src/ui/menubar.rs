@@ -46,7 +46,7 @@ pub fn show(
                 menus(ui, bar);
                 ui.separator();
                 if bar.sdr.active {
-                    return sdr_status(ui, bar.sdr, &link.status);
+                    return sdr_status(ui, bar.sdr, bar.refmap, &link.status);
                 }
                 // Run state badge (manual 8.5: Run = yellow, Stop = red).
                 let (label, color) = run_state(link, now);
@@ -130,11 +130,9 @@ pub fn show(
                              starving or the instrument stopped.",
                         );
                     if let Some(caps) = &link.caps {
-                        ui.label(
-                            egui::RichText::new(format!("{} · {}", caps.name, caps.serial)).small(),
-                        );
+                        ui.weak(format!("{} · {}", caps.name, caps.serial));
                     } else {
-                        ui.label(egui::RichText::new(link.status.clone()).small());
+                        ui.weak(link.status.clone());
                     }
                 });
             });
@@ -155,8 +153,14 @@ fn badge(ui: &mut egui::Ui, label: &str, color: egui::Color32) {
     );
 }
 
-/// The bar's readouts in SDR mode: run state, tuning, and the instrument.
-fn sdr_status(ui: &mut egui::Ui, sdr: &crate::sdr::SdrState, status: &str) {
+/// The bar's readouts in SDR mode: run state, tuning, the band it is in,
+/// and the instrument.
+fn sdr_status(
+    ui: &mut egui::Ui,
+    sdr: &crate::sdr::SdrState,
+    refmap: &crate::refmap::RefMap,
+    status: &str,
+) {
     let c = &sdr.config;
     if c.running {
         badge(ui, "RUN", RUN_COLOR);
@@ -175,11 +179,42 @@ fn sdr_status(ui: &mut egui::Ui, sdr: &crate::sdr::SdrState, status: &str) {
         ))
         .monospace(),
     );
+    // The band the tuned frequency is in (the most specific name), like
+    // SDR++'s band overlay, but where it is always in view.
+    let bands = refmap.at(sdr.tuned_hz);
+    match bands.first() {
+        Some(b) => {
+            let all: Vec<String> = bands
+                .iter()
+                .map(|b| {
+                    format!(
+                        "{} · {} · {}",
+                        b.name,
+                        crate::refmap::fmt_range(b.lo_hz, b.hi_hz),
+                        b.kind
+                    )
+                })
+                .collect();
+            ui.label(egui::RichText::new(&b.name).color(crate::refmap::colour(&b.kind)))
+                .on_hover_text(format!(
+                    "{}\n(band plan: {})",
+                    all.join("\n"),
+                    refmap.stem()
+                ));
+        }
+        None => {
+            ui.weak("no allocation")
+                .on_hover_text(format!("band plan: {}", refmap.stem()));
+        }
+    }
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         let n = format!("#{}", sdr.frames_seen);
         ui.label(egui::RichText::new(format!("{n:>8}")).monospace())
             .on_hover_text("IQ frames since the SDR connected.");
-        ui.label(egui::RichText::new(status).small());
+        match &sdr.caps {
+            Some(c) => ui.weak(format!("{} · {}", c.name, c.tuner)),
+            None => ui.weak(status),
+        };
     });
 }
 
@@ -192,6 +227,55 @@ pub struct BarState<'a> {
     pub wf: &'a mut crate::viz::waterfall::WaterfallState,
     pub viz: &'a mut crate::viz::three_d::Viz3dState,
     pub sdr: &'a crate::sdr::SdrState,
+    pub refmap: &'a crate::refmap::RefMap,
+}
+
+/// The workspace switch: SCOPE | SDR, first in the bar, the active one
+/// lit. Ctrl/⌘+1 and +2 do the same. One device claim at a time, so a
+/// switch releases one instrument and claims the other (`instrument`).
+fn mode_toggle(ui: &mut egui::Ui, bar: &mut BarState<'_>) {
+    use crate::script::Action;
+    let active = bar.sdr.active;
+    let key = |ui: &mut egui::Ui, k| ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, k));
+    let mut want = None;
+    if key(ui, egui::Key::Num1) {
+        want = Some(false);
+    }
+    if key(ui, egui::Key::Num2) {
+        want = Some(true);
+    }
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        for (label, sdr, keys, what) in [
+            ("SCOPE", false, "⌘/Ctrl+1", "oscilloscope"),
+            ("SDR", true, "⌘/Ctrl+2", "software-defined radio"),
+        ] {
+            let on = active == sdr;
+            let text = egui::RichText::new(label).strong().color(if on {
+                egui::Color32::BLACK
+            } else {
+                egui::Color32::from_gray(200)
+            });
+            let b = egui::Button::new(text)
+                .fill(if on {
+                    egui::Color32::from_rgb(120, 200, 255)
+                } else {
+                    egui::Color32::from_rgb(34, 37, 44)
+                })
+                .min_size(egui::vec2(62.0, 22.0));
+            if ui
+                .add(b)
+                .on_hover_text(format!("{what} workspace ({keys})"))
+                .clicked()
+            {
+                want = Some(sdr);
+            }
+        }
+    });
+    if let Some(sdr) = want.filter(|&s| s != active) {
+        bar.script
+            .inject(Action::Sdr(crate::sdr::SdrAction::Instrument(sdr)));
+    }
 }
 
 /// The drop-downs. Every item routes through a script action where one
@@ -202,6 +286,8 @@ fn menus(ui: &mut egui::Ui, bar: &mut BarState<'_>) {
     // `egui::MenuBar` claims the full available width, which pushes the
     // status readouts onto a second row that the fixed-height bar clips.
     {
+        mode_toggle(ui, bar);
+        ui.separator();
         ui.menu_button("File", |ui| {
             let dir = crate::record::export_dir();
             if ui.button("Save setup…").clicked() {
@@ -236,6 +322,9 @@ fn menus(ui: &mut egui::Ui, bar: &mut BarState<'_>) {
             }
         });
         ui.menu_button("View", |ui| {
+            if bar.sdr.active {
+                return sdr_view_menu(ui, bar);
+            }
             ui.checkbox(&mut bar.fft.enabled, "Spectrum");
             ui.checkbox(&mut bar.wf.on, "Waterfall");
             let mut viz_on = bar.viz.mode != crate::viz::three_d::Viz3d::Off;
@@ -259,17 +348,46 @@ fn menus(ui: &mut egui::Ui, bar: &mut BarState<'_>) {
                 }
             }
         });
-        ui.menu_button("Instrument", |ui| {
-            for (label, sdr) in [("Oscilloscope", false), ("SDR", true)] {
-                if ui.radio(bar.sdr.active == sdr, label).clicked() {
-                    bar.script
-                        .inject(Action::Sdr(crate::sdr::SdrAction::Instrument(sdr)));
-                    ui.close();
-                }
-            }
-        });
         if ui.button("Settings").clicked() {
             bar.settings.open = !bar.settings.open;
         }
+    }
+}
+
+/// The View menu in the SDR workspace: the RF reference views and the
+/// windows that belong to the radio.
+fn sdr_view_menu(ui: &mut egui::Ui, bar: &mut BarState<'_>) {
+    use crate::refmap::RefMapAction as R;
+    use crate::script::Action;
+    let rm = bar.refmap;
+    for (label, on, act) in [
+        ("RF map", rm.window, R::Window as fn(bool) -> R),
+        ("Band strip", rm.strip, R::Strip),
+        ("Minimap", rm.mini, R::Mini),
+    ] {
+        let mut v = on;
+        if ui.checkbox(&mut v, label).changed() {
+            bar.script.inject(Action::RefMap(act(v)));
+        }
+    }
+    ui.menu_button(format!("Band plan: {}", rm.stem()), |ui| {
+        for (stem, plan) in &rm.plans {
+            if ui
+                .radio(
+                    rm.stem() == stem,
+                    format!("{stem}  ({})", plan.country_name),
+                )
+                .clicked()
+            {
+                bar.script.inject(Action::RefMap(R::Plan(stem.clone())));
+                ui.close();
+            }
+        }
+    });
+    ui.separator();
+    if ui.button("Catalog").clicked() {
+        bar.script
+            .inject(Action::Catalog(crate::catalog::CatalogAction::Window(true)));
+        ui.close();
     }
 }

@@ -12,6 +12,9 @@ use crate::Link;
 use crate::script::{Action, Script};
 use crate::sdr::{SdrAction, SdrState, WF_H, WF_W};
 use crate::ui::layout::Layout;
+use crate::ui::sdr_bands;
+use crate::uitree;
+use bevy_egui::egui::accesskit::Role;
 
 pub(super) const BG: egui::Color32 = egui::Color32::from_rgb(10, 12, 16);
 pub(super) const GRID: egui::Color32 = egui::Color32::from_rgba_premultiplied(70, 80, 95, 90);
@@ -35,6 +38,7 @@ pub fn show(
     sdr: Res<SdrState>,
     link: Res<Link>,
     mut script: ResMut<Script>,
+    refmap: Res<crate::refmap::RefMap>,
     mut tex: Local<Option<egui::TextureHandle>>,
     mut uploaded: Local<u64>,
     mut width_drag: Local<bool>,
@@ -68,11 +72,36 @@ pub fn show(
         .order(egui::Order::Background)
         .fixed_pos(view.min)
         .show(&ctx, |ui| {
-            let (rect, resp) = ui.allocate_exact_size(view.size(), egui::Sense::click_and_drag());
-            ui.painter().rect_filled(rect, 0.0, BG);
+            let (full, _) = ui.allocate_exact_size(view.size(), egui::Sense::hover());
+            ui.painter().rect_filled(full, 0.0, BG);
+            uitree::name(ui, "SDR canvas");
+            // Top to bottom: minimap, spectrum, band strip, waterfall. The
+            // spectrum, strip and waterfall share one frequency axis.
+            let mut top = full.min.y;
+            let mini = refmap.mini.then(|| {
+                let r = egui::Rect::from_min_max(
+                    full.min,
+                    egui::pos2(full.max.x, full.min.y + sdr_bands::MINI_H),
+                );
+                top = r.max.y + 4.0;
+                r
+            });
+            let rect = egui::Rect::from_min_max(egui::pos2(full.min.x, top), full.max);
+            let resp = ui.interact(
+                rect,
+                ui.id().with("sdr-canvas"),
+                egui::Sense::click_and_drag(),
+            );
             let split = rect.min.y + rect.height() * 0.45;
             let spec = egui::Rect::from_min_max(rect.min, egui::pos2(rect.max.x, split));
-            let wf = egui::Rect::from_min_max(egui::pos2(rect.min.x, split + 2.0), rect.max);
+            let strip = refmap.strip.then(|| {
+                egui::Rect::from_min_max(
+                    egui::pos2(rect.min.x, split + 1.0),
+                    egui::pos2(rect.max.x, split + 1.0 + sdr_bands::STRIP_H),
+                )
+            });
+            let wf_top = strip.map_or(split + 2.0, |s| s.max.y + 1.0);
+            let wf = egui::Rect::from_min_max(egui::pos2(rect.min.x, wf_top), rect.max);
             draw_spectrum(ui.painter(), spec, &sdr);
             ui.painter().image(
                 tex_id,
@@ -80,8 +109,38 @@ pub fn show(
                 egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                 egui::Color32::WHITE,
             );
-            draw_channel(ui.painter(), rect, spec, &sdr);
-            pointer(ui, &resp, rect, spec, &sdr, &mut width_drag, &mut script);
+            uitree::node(
+                ui.ctx(),
+                ui.id().with("spectrum"),
+                Role::Image,
+                "spectrum",
+                spec,
+            );
+            uitree::node(
+                ui.ctx(),
+                ui.id().with("waterfall"),
+                Role::Image,
+                "waterfall",
+                wf,
+            );
+            draw_channel(ui.painter(), rect, wf, &sdr);
+            let stations = super::station_overlay::draw(ui.painter(), spec, &refmap, &sdr);
+            pointer(
+                ui,
+                &resp,
+                rect,
+                spec,
+                &sdr,
+                &stations,
+                &mut width_drag,
+                &mut script,
+            );
+            if let Some(r) = strip {
+                sdr_bands::strip(ui, r, &refmap, &sdr, &mut script);
+            }
+            if let Some(r) = mini {
+                sdr_bands::minimap(ui, r, &refmap, &sdr, &mut script);
+            }
         });
 
     let dock = layout.points(layout.dialog);
@@ -98,14 +157,12 @@ pub fn show(
                     .layout(egui::Layout::top_down(egui::Align::LEFT)),
             );
             inner.set_clip_rect(rect);
+            uitree::name(&inner, "SDR dock");
             egui::ScrollArea::vertical().show(&mut inner, |ui| {
-                super::sdr_dock::controls(ui, &sdr, &link, &mut script);
-                ui.add_space(8.0);
-                super::sdr_dock::constellation(ui, &sdr);
-                ui.separator();
-                super::sdr_dock::signals(ui, &sdr, &mut script);
+                super::sdr_dock::show(ui, &sdr, &link, &refmap, &mut script);
             });
         });
+    super::bandmap_window::show(&ctx, &refmap, &sdr, &mut script);
 }
 
 /// Frequency at x, Hz.
@@ -115,7 +172,7 @@ fn freq_at(sdr: &SdrState, r: egui::Rect, x: f32) -> f64 {
 }
 
 /// x of frequency `hz`.
-fn x_at(sdr: &SdrState, r: egui::Rect, hz: f64) -> f32 {
+pub(super) fn x_at(sdr: &SdrState, r: egui::Rect, hz: f64) -> f32 {
     r.min.x + ((hz - sdr.view_centre()) / sdr.span() + 0.5) as f32 * r.width()
 }
 
@@ -130,32 +187,50 @@ fn draw_spectrum(p: &egui::Painter, r: egui::Rect, sdr: &SdrState) {
             [egui::pos2(r.min.x, y), egui::pos2(r.max.x, y)],
             (1.0, GRID),
         );
+        // The top line carries the unit instead of a bare number.
+        let text = if i == 0 {
+            format!("{db:.0} dBFS")
+        } else {
+            format!("{db:.0}")
+        };
         p.text(
             egui::pos2(r.min.x + 4.0, y + 1.0),
             egui::Align2::LEFT_TOP,
-            format!("{db:.0}"),
+            text,
             font.clone(),
             TEXT,
         );
     }
-    // Ten frequency divisions, labelled at the bottom edge.
-    for i in 0..=10 {
-        let x = r.min.x + r.width() * i as f32 / 10.0;
+    // Frequency ticks on round 1-2-5 steps, 6–12 across the span.
+    let span = sdr.span();
+    let step = tick_step(span / 8.0);
+    let lo = sdr.view_centre() - span / 2.0;
+    let decimals = (-(step / 1e6).log10()).ceil().max(0.0) as usize;
+    let mut f = (lo / step).ceil() * step;
+    while f <= lo + span {
+        let x = x_at(sdr, r, f);
         p.line_segment(
             [egui::pos2(x, r.min.y), egui::pos2(x, r.max.y)],
             (1.0, GRID),
         );
-        if i % 2 == 0 && i < 10 {
-            let f = freq_at(sdr, r, x);
+        if x < r.max.x - 60.0 {
             p.text(
                 egui::pos2(x + 3.0, r.max.y - 2.0),
                 egui::Align2::LEFT_BOTTOM,
-                format!("{:.3}", f / 1e6),
+                format!("{:.*}", decimals, f / 1e6),
                 font.clone(),
                 TEXT,
             );
         }
+        f += step;
     }
+    p.text(
+        egui::pos2(r.max.x - 4.0, r.max.y - 2.0),
+        egui::Align2::RIGHT_BOTTOM,
+        "MHz",
+        font.clone(),
+        TEXT,
+    );
     // Active tracks: their occupied band, shaded, with the track id.
     let x_of = |hz: f64| x_at(sdr, r, hz);
     // The hardware window's centre, when it differs from the tuned
@@ -230,10 +305,45 @@ fn draw_spectrum(p: &egui::Painter, r: egui::Rect, sdr: &SdrState) {
     );
 }
 
+/// The 1-2-5 × 10^n step nearest above `raw` Hz.
+fn tick_step(raw: f64) -> f64 {
+    let mag = 10f64.powf(raw.max(1.0).log10().floor());
+    [1.0, 2.0, 5.0, 10.0]
+        .into_iter()
+        .map(|m| m * mag)
+        .find(|s| *s >= raw)
+        .unwrap_or(10.0 * mag)
+}
+
+/// Text on a dark plate, so a signal behind it cannot eat its digits.
+/// Flips to the left of `at` when it would run off `bounds`.
+fn plated(
+    p: &egui::Painter,
+    at: egui::Pos2,
+    bounds: egui::Rect,
+    text: String,
+    color: egui::Color32,
+) {
+    let galley = p.layout_no_wrap(text, egui::FontId::monospace(11.0), color);
+    let size = galley.size() + egui::vec2(8.0, 4.0);
+    let x = if at.x + 5.0 + size.x > bounds.max.x {
+        at.x - 5.0 - size.x
+    } else {
+        at.x + 5.0
+    };
+    let plate = egui::Rect::from_min_size(egui::pos2(x, at.y), size);
+    p.rect_filled(
+        plate,
+        3.0,
+        egui::Color32::from_rgba_unmultiplied(10, 12, 16, 220),
+    );
+    p.galley(plate.min + egui::vec2(4.0, 2.0), galley, color);
+}
+
 /// The tuned cursor and its channel: a shaded band spanning the channel
 /// width with solid filter edges, a red bar carrying the frequency, and an
 /// edge arrow when the tuned frequency is outside the view.
-fn draw_channel(p: &egui::Painter, rect: egui::Rect, spec: egui::Rect, sdr: &SdrState) {
+fn draw_channel(p: &egui::Painter, rect: egui::Rect, wf: egui::Rect, sdr: &SdrState) {
     let tuned = sdr.tuned_hz;
     let width = sdr.channel_width();
     let x = x_at(sdr, rect, tuned);
@@ -290,11 +400,11 @@ fn draw_channel(p: &egui::Painter, rect: egui::Rect, spec: egui::Rect, sdr: &Sdr
         (1.5, CURSOR),
     );
     // The frequency, at the top of the waterfall so it clears the header.
-    p.text(
-        egui::pos2(x + 5.0, spec.max.y + 4.0),
-        egui::Align2::LEFT_TOP,
+    plated(
+        p,
+        egui::pos2(x, wf.min.y + 4.0),
+        rect,
         format!("Tuned {}", fmt_mhz(tuned)),
-        egui::FontId::monospace(11.0),
         CURSOR,
     );
 }
@@ -307,12 +417,14 @@ fn draw_channel(p: &egui::Painter, rect: egui::Rect, spec: egui::Rect, sdr: &Sdr
 /// a channel filter edge sets the Width; elsewhere it pans. A left-click
 /// tunes to the frequency under the pointer and leaves the window alone.
 /// Every gesture injects script actions (`sdr tune|width|centre|span|pan|level`).
+#[allow(clippy::too_many_arguments)]
 fn pointer(
     ui: &egui::Ui,
     resp: &egui::Response,
     rect: egui::Rect,
     spec: egui::Rect,
     sdr: &SdrState,
+    stations: &[(egui::Rect, String)],
     width_drag: &mut bool,
     script: &mut Script,
 ) {
@@ -340,8 +452,16 @@ fn pointer(
     } else if resp.clicked()
         && let Some(pos) = resp.interact_pointer_pos()
     {
-        let hz = (freq_at(sdr, rect, pos.x) / 1e3).round() * 1e3;
-        inject(script, SdrAction::Tune(hz));
+        // A station under the pointer wins: tune to it and pick its
+        // demodulator (D21), rather than the bare frequency.
+        if let Some((_, key)) = stations.iter().find(|(r, _)| r.contains(pos)) {
+            script.inject(Action::RefMap(crate::refmap::RefMapAction::TuneStation(
+                key.clone(),
+            )));
+        } else {
+            let hz = (freq_at(sdr, rect, pos.x) / 1e3).round() * 1e3;
+            inject(script, SdrAction::Tune(hz));
+        }
     }
     // A drag that started on a filter edge resizes the width; shift keeps
     // the pan, so the band is still reachable when it fills the screen.
@@ -440,5 +560,18 @@ fn pointer(
                 range_db: range,
             },
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tick_step;
+
+    #[test]
+    fn ticks_land_on_round_steps() {
+        assert_eq!(tick_step(2.048e6 / 8.0), 500e3);
+        assert_eq!(tick_step(200e3 / 8.0), 50e3);
+        assert_eq!(tick_step(30e3), 50e3);
+        assert_eq!(tick_step(100e3), 100e3);
     }
 }

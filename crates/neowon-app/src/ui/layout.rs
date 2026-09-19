@@ -277,8 +277,8 @@ pub fn dump_json(l: &Layout, open_menu: Option<&str>, painted: &UiRects) -> Stri
         None => "null".into(),
     };
     format!(
-        "{{\n  \"window\": [{:.1}, {:.1}],\n  \"plot_center\": [{:.1}, {:.1}],\n  \"menu\": {menu},\n  \"rois\": {{{rois}\n  }},\n  \"painted\": {{{paint}\n  }},\n  \"floating\": {{{floating}\n  }}\n}}\n",
-        l.window.x, l.window.y, l.plot_center.x, l.plot_center.y,
+        "{{\n  \"scale\": {},\n  \"window\": [{:.1}, {:.1}],\n  \"plot_center\": [{:.1}, {:.1}],\n  \"menu\": {menu},\n  \"rois\": {{{rois}\n  }},\n  \"painted\": {{{paint}\n  }},\n  \"floating\": {{{floating}\n  }}\n}}\n",
+        l.scale, l.window.x, l.window.y, l.plot_center.x, l.plot_center.y,
     )
 }
 

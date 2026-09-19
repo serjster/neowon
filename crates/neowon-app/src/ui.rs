@@ -2,6 +2,7 @@
 //! §1). Composition lives here; each region is its own module. The old
 //! monolithic collapsible panel is gone.
 
+pub mod bandmap_window;
 pub mod catalog_window;
 pub mod descriptors;
 pub mod dialog_acquire;
@@ -22,9 +23,13 @@ pub mod layout;
 pub mod measure_window;
 pub mod menu;
 pub mod menubar;
+pub mod sdr_bands;
 pub mod sdr_dock;
+pub mod sdr_panel;
 pub mod sdr_view;
 pub mod settings;
+pub mod station_overlay;
+pub mod stations_window;
 pub mod touch;
 pub mod viz_windows;
 pub mod widgets;
@@ -54,6 +59,7 @@ type VizState<'w> = (
     ResMut<'w, crate::decode::DecodeState>,
     ResMut<'w, settings::Settings>,
     Res<'w, crate::sdr::SdrState>,
+    Res<'w, crate::refmap::RefMap>,
 );
 
 #[allow(clippy::too_many_arguments)]
@@ -96,6 +102,7 @@ pub fn panel(
         wf: &mut viz.0,
         viz: &mut viz.1,
         sdr: &viz.9,
+        refmap: &viz.10,
     };
     let r = menubar::show(&ctx, &layout, &mut link, now, &viz.6, &mut bar);
     rects.put("menu_bar", r);
@@ -108,15 +115,19 @@ pub fn panel(
         rects.put("descriptors", desc);
         rects.put("meas_overlay", overlay);
     }
-    let r = frontpanel::show(
-        &ctx,
-        &layout,
-        &mut link,
-        &mut phosphor,
-        &mut math,
-        &mut meas,
-        &mut menus,
-    );
+    let r = if sdr_mode {
+        sdr_panel::show(&ctx, &layout, &viz.9, &viz.10, &mut script)
+    } else {
+        frontpanel::show(
+            &ctx,
+            &layout,
+            &mut link,
+            &mut phosphor,
+            &mut math,
+            &mut meas,
+            &mut menus,
+        )
+    };
     rects.put("front_panel", r);
     if !sdr_mode {
         let r = menu::show(
