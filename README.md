@@ -150,7 +150,7 @@ on the simulator).*
 | Instrument | Status |
 | --- | --- |
 | OWON VDS1022 / VDS1022I | Working, hardware-verified (25 MHz, 2 ch, 100 MS/s) |
-| RTL-SDR (RTL2832U + R820T/R828D) | Working, hardware-verified on a V3 dongle: 24 MHz–1.766 GHz, ppm correction, tuner AGC, HF direct sampling below 24 MHz, realtime AM/FM audio |
+| RTL-SDR (RTL2832U + R820T/R828D) | Working, hardware-verified on a V3 dongle: 24 MHz–1.766 GHz, ppm correction, tuner AGC, HF direct sampling below 24 MHz, realtime AM/FM audio — **verified on macOS only so far** |
 | OWON VDS2052 | Untested; the driver's register-table design should make it a small port |
 | Flipper Zero | Planned (see `PLAN.md`) |
 
@@ -215,6 +215,11 @@ Only one process may use the scope at a time — close the vendor app first.
 The Instrument menu (or the `instrument scope|sdr` script action) switches
 between the two at run time within the launch's family: the simulators swap
 for each other, and the VDS1022 swaps for the RTL-SDR.
+
+**The RTL-SDR driver has only been tested on macOS.** Linux and Windows
+build the same pure-Rust `nusb` stack, and Linux ships
+`99-rtlsdr.rules`, but no dongle has been exercised there yet — treat `--rtl`
+on those platforms as unverified and report what you find.
 
 ### SDR
 
