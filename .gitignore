@@ -4,3 +4,6 @@
 *.cap
 /assets/demo/*.wav
 /docs/*.pdf
+.harness
+.critic/
+/tmp-inspiration/

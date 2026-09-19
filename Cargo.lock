@@ -4061,7 +4061,7 @@ dependencies = [
 
 [[package]]
 name = "neowon-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy",
  "bevy_egui",
@@ -4082,7 +4082,7 @@ dependencies = [
 
 [[package]]
 name = "neowon-audio"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cpal 0.16.0",
  "crossbeam-channel",
@@ -4093,7 +4093,7 @@ dependencies = [
 
 [[package]]
 name = "neowon-backend"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "crossbeam-channel",
  "neowon-core",
@@ -4103,7 +4103,7 @@ dependencies = [
 
 [[package]]
 name = "neowon-catalog"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "neowon-core",
  "serde",
@@ -4113,7 +4113,7 @@ dependencies = [
 
 [[package]]
 name = "neowon-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4128,14 +4128,14 @@ dependencies = [
 
 [[package]]
 name = "neowon-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "zstd",
 ]
 
 [[package]]
 name = "neowon-dsp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "neowon-core",
  "neowon-sim",
@@ -4144,7 +4144,7 @@ dependencies = [
 
 [[package]]
 name = "neowon-mcp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
  "rmcp",
@@ -4156,7 +4156,7 @@ dependencies = [
 
 [[package]]
 name = "neowon-sdr"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -4173,7 +4173,7 @@ dependencies = [
 
 [[package]]
 name = "neowon-sim"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "neowon-backend",
  "neowon-core",
@@ -4184,7 +4184,7 @@ dependencies = [
 
 [[package]]
 name = "neowon-vds1022"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "neowon-backend",
  "neowon-core",
