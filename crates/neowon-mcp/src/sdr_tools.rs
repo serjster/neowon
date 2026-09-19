@@ -11,9 +11,11 @@ use crate::Scope;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TuneParams {
-    /// Centre frequency, Hz (0.5 MHz – 1.766 GHz; below 24 MHz uses the
-    /// RTL-SDR V3's HF direct-sampling input).
-    centre_hz: f64,
+    /// Tuned frequency, Hz: the channel to monitor (0.5 MHz – 1.766 GHz;
+    /// below 24 MHz uses the RTL-SDR V3's HF direct-sampling input). The
+    /// hardware window does not move unless Follow is on; move it with
+    /// `sdr centre <hz>`, and set the channel width with `sdr width`.
+    tuned_hz: f64,
     /// IQ sample rate, pairs/s (one of the instrument's offered rates).
     sample_rate: Option<f64>,
     /// Manual tuner gain in dB; omit to leave it, or use `gain_auto`.
@@ -63,10 +65,23 @@ pub struct InstrumentParams {
     instrument: String,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DemodParams {
+    /// `off`, `am`, `nfm` or `wfm`.
+    demod: String,
+    /// Audio volume 0..1.
+    volume: Option<f32>,
+    /// Mute without changing the demodulator.
+    mute: Option<bool>,
+    /// Squelch threshold in dBFS; `null` leaves the gate open.
+    squelch_db: Option<f64>,
+}
+
 #[tool_router(router = sdr_router, vis = "pub(crate)")]
 impl Scope {
-    #[tool(description = "SDR mode status and settings: backend, tuner, centre, \
-        rate, gain, AGC, ppm, span, the strongest displayed peak and the noise floor.")]
+    #[tool(description = "SDR mode status and settings: backend, tuner, the \
+        tuned frequency and the hardware window centre, rate, gain, AGC, ppm, \
+        span, channel width, the strongest displayed peak and the noise floor.")]
     async fn sdr_status(&self) -> Result<String, ErrorData> {
         self.req("get sdr")
     }
@@ -77,7 +92,10 @@ impl Scope {
         self.req(&format!("instrument {}", p.0.instrument.trim()))
     }
 
-    #[tool(description = "Tune the SDR (and optionally set rate and gain).")]
+    #[tool(description = "Tune the SDR's tuned frequency (the channel you \
+        monitor) and optionally set rate and gain. The hardware window stays \
+        put; use `sdr centre <hz>` to move it and `sdr follow on` to keep it \
+        centred on the tuned frequency.")]
     async fn sdr_tune(&self, p: Parameters<TuneParams>) -> Result<String, ErrorData> {
         let p = p.0;
         if let Some(r) = p.sample_rate {
@@ -88,7 +106,7 @@ impl Scope {
         } else if let Some(g) = p.gain_db {
             self.req(&format!("sdr gain {g}"))?;
         }
-        self.req(&format!("sdr tune {}", p.centre_hz))
+        self.req(&format!("sdr tune {}", p.tuned_hz))
     }
 
     #[tool(description = "Signals the detector is tracking now (debounced), \
@@ -143,6 +161,31 @@ impl Scope {
     )]
     async fn sdr_classify(&self) -> Result<String, ErrorData> {
         self.req("get classify")
+    }
+
+    #[tool(description = "Audio: the demodulator (off/am/nfm/wfm), the output \
+        device, and the one-line state — playing, muted, squelched, no device, \
+        starting or off — with volume, squelch, channel power and RMS.")]
+    async fn sdr_audio(&self) -> Result<String, ErrorData> {
+        self.req("get audio")
+    }
+
+    #[tool(description = "Set the audio demodulator and optionally volume, mute \
+        and squelch. `off` stops demodulation. The channel is D10's tuned \
+        frequency with its Width.")]
+    async fn sdr_demod(&self, p: Parameters<DemodParams>) -> Result<String, ErrorData> {
+        let p = p.0;
+        self.req(&format!("sdr demod {}", p.demod.trim()))?;
+        if let Some(v) = p.volume {
+            self.req(&format!("sdr volume {v}"))?;
+        }
+        if let Some(m) = p.mute {
+            self.req(&format!("sdr mute {}", if m { "on" } else { "off" }))?;
+        }
+        if let Some(db) = p.squelch_db {
+            self.req(&format!("sdr squelch {db}"))?;
+        }
+        self.req("get audio")
     }
 
     #[tool(description = "List catalogued signals (id, name, frequency, \

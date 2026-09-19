@@ -17,6 +17,8 @@ pub(super) const BG: egui::Color32 = egui::Color32::from_rgb(10, 12, 16);
 pub(super) const GRID: egui::Color32 = egui::Color32::from_rgba_premultiplied(70, 80, 95, 90);
 pub(super) const TRACE: egui::Color32 = egui::Color32::from_rgb(120, 220, 255);
 const TEXT: egui::Color32 = egui::Color32::from_rgb(170, 180, 195);
+/// The tuned cursor and its channel band.
+pub(super) const CURSOR: egui::Color32 = egui::Color32::from_rgb(255, 80, 80);
 
 pub fn fmt_mhz(hz: f64) -> String {
     format!("{:.4} MHz", hz / 1e6)
@@ -35,6 +37,7 @@ pub fn show(
     mut script: ResMut<Script>,
     mut tex: Local<Option<egui::TextureHandle>>,
     mut uploaded: Local<u64>,
+    mut width_drag: Local<bool>,
 ) {
     if !sdr.active {
         return;
@@ -62,7 +65,7 @@ pub fn show(
 
     let view = layout.points(layout.plot.union(layout.descriptors));
     egui::Area::new(egui::Id::new("sdr-view"))
-        .order(egui::Order::Foreground)
+        .order(egui::Order::Background)
         .fixed_pos(view.min)
         .show(&ctx, |ui| {
             let (rect, resp) = ui.allocate_exact_size(view.size(), egui::Sense::click_and_drag());
@@ -77,12 +80,13 @@ pub fn show(
                 egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                 egui::Color32::WHITE,
             );
-            pointer(ui, &resp, rect, spec, &sdr, &mut script);
+            draw_channel(ui.painter(), rect, spec, &sdr);
+            pointer(ui, &resp, rect, spec, &sdr, &mut width_drag, &mut script);
         });
 
     let dock = layout.points(layout.dialog);
     egui::Area::new(egui::Id::new("sdr-dock"))
-        .order(egui::Order::Foreground)
+        .order(egui::Order::Background)
         .fixed_pos(dock.min)
         .show(&ctx, |ui| {
             let (rect, _) = ui.allocate_exact_size(dock.size(), egui::Sense::hover());
@@ -98,6 +102,8 @@ pub fn show(
                 super::sdr_dock::controls(ui, &sdr, &link, &mut script);
                 ui.add_space(8.0);
                 super::sdr_dock::constellation(ui, &sdr);
+                ui.separator();
+                super::sdr_dock::signals(ui, &sdr, &mut script);
             });
         });
 }
@@ -105,7 +111,12 @@ pub fn show(
 /// Frequency at x, Hz.
 fn freq_at(sdr: &SdrState, r: egui::Rect, x: f32) -> f64 {
     let t = ((x - r.min.x) / r.width()) as f64;
-    sdr.config.centre_hz + (t - 0.5) * sdr.span()
+    sdr.view_centre() + (t - 0.5) * sdr.span()
+}
+
+/// x of frequency `hz`.
+fn x_at(sdr: &SdrState, r: egui::Rect, hz: f64) -> f32 {
+    r.min.x + ((hz - sdr.view_centre()) / sdr.span() + 0.5) as f32 * r.width()
 }
 
 fn draw_spectrum(p: &egui::Painter, r: egui::Rect, sdr: &SdrState) {
@@ -135,7 +146,7 @@ fn draw_spectrum(p: &egui::Painter, r: egui::Rect, sdr: &SdrState) {
             (1.0, GRID),
         );
         if i % 2 == 0 && i < 10 {
-            let f = sdr.config.centre_hz + (i as f64 / 10.0 - 0.5) * sdr.span();
+            let f = freq_at(sdr, r, x);
             p.text(
                 egui::pos2(x + 3.0, r.max.y - 2.0),
                 egui::Align2::LEFT_BOTTOM,
@@ -146,8 +157,20 @@ fn draw_spectrum(p: &egui::Painter, r: egui::Rect, sdr: &SdrState) {
         }
     }
     // Active tracks: their occupied band, shaded, with the track id.
-    let x_of =
-        |hz: f64| r.min.x + ((hz - sdr.config.centre_hz) / sdr.span() + 0.5) as f32 * r.width();
+    let x_of = |hz: f64| x_at(sdr, r, hz);
+    // The hardware window's centre, when it differs from the tuned
+    // frequency (or the view is panned off it).
+    let xc = x_of(sdr.config.centre_hz);
+    let hard_differs = (sdr.config.centre_hz - sdr.tuned_hz).abs() > 1.0 || sdr.pan_hz != 0.0;
+    if hard_differs && (r.min.x..=r.max.x).contains(&xc) {
+        p.line_segment(
+            [egui::pos2(xc, r.min.y), egui::pos2(xc, r.max.y)],
+            (
+                1.0,
+                egui::Color32::from_rgba_unmultiplied(255, 200, 80, 120),
+            ),
+        );
+    }
     for t in sdr.tracker.active() {
         let (x0, x1) = (x_of(t.last.lo_hz), x_of(t.last.hi_hz));
         let (x0, x1) = (x0.max(r.min.x), (x1.max(x0 + 2.0)).min(r.max.x));
@@ -183,7 +206,7 @@ fn draw_spectrum(p: &egui::Painter, r: egui::Rect, sdr: &SdrState) {
         p.add(egui::Shape::line(pts, (1.2, TRACE)));
     }
     if let Some((hz, db)) = sdr.peak() {
-        let x = r.min.x + ((hz - sdr.config.centre_hz) / sdr.span() + 0.5) as f32 * r.width();
+        let x = x_of(hz);
         let y = r.max.y - sdr.level(db) * r.height();
         p.circle_filled(egui::pos2(x, y), 3.0, egui::Color32::YELLOW);
         p.text(
@@ -198,31 +221,183 @@ fn draw_spectrum(p: &egui::Painter, r: egui::Rect, sdr: &SdrState) {
         egui::pos2(r.center().x, r.min.y + 4.0),
         egui::Align2::CENTER_TOP,
         format!(
-            "{}   span {:.0} kHz",
-            fmt_mhz(sdr.config.centre_hz),
-            sdr.span() / 1e3
+            "span {:.1} kHz   width {:.1} kHz",
+            sdr.span() / 1e3,
+            sdr.channel_width() / 1e3
         ),
         egui::FontId::monospace(13.0),
         egui::Color32::WHITE,
     );
 }
 
-/// Hover readout, click to tune, wheel to zoom the span.
+/// The tuned cursor and its channel: a shaded band spanning the channel
+/// width with solid filter edges, a red bar carrying the frequency, and an
+/// edge arrow when the tuned frequency is outside the view.
+fn draw_channel(p: &egui::Painter, rect: egui::Rect, spec: egui::Rect, sdr: &SdrState) {
+    let tuned = sdr.tuned_hz;
+    let width = sdr.channel_width();
+    let x = x_at(sdr, rect, tuned);
+    if x < rect.min.x || x > rect.max.x {
+        // Off screen: an edge arrow with the frequency.
+        let right = tuned > sdr.view_centre();
+        let (ax, tri) = if right {
+            (rect.max.x - 4.0, -1.0)
+        } else {
+            (rect.min.x + 4.0, 1.0)
+        };
+        p.add(egui::Shape::convex_polygon(
+            vec![
+                egui::pos2(ax, rect.min.y + 4.0),
+                egui::pos2(ax + 10.0 * tri, rect.min.y + 4.0),
+                egui::pos2(ax + 5.0 * tri, rect.min.y + 12.0),
+            ],
+            CURSOR,
+            egui::Stroke::NONE,
+        ));
+        p.text(
+            egui::pos2(ax + 4.0 * tri, rect.min.y + 14.0),
+            if right {
+                egui::Align2::RIGHT_TOP
+            } else {
+                egui::Align2::LEFT_TOP
+            },
+            format!("tuned {}", fmt_mhz(tuned)),
+            egui::FontId::monospace(11.0),
+            CURSOR,
+        );
+        return;
+    }
+    let half = (width / sdr.span() * rect.width() as f64 / 2.0) as f32;
+    p.rect_filled(
+        egui::Rect::from_min_max(
+            egui::pos2(x - half, rect.min.y),
+            egui::pos2(x + half, rect.max.y),
+        )
+        .intersect(rect),
+        0.0,
+        egui::Color32::from_rgba_unmultiplied(255, 80, 80, 28),
+    );
+    for e in [x - half, x + half] {
+        if (rect.min.x..=rect.max.x).contains(&e) {
+            p.line_segment(
+                [egui::pos2(e, rect.min.y), egui::pos2(e, rect.max.y)],
+                (1.0, CURSOR),
+            );
+        }
+    }
+    p.line_segment(
+        [egui::pos2(x, rect.min.y), egui::pos2(x, rect.max.y)],
+        (1.5, CURSOR),
+    );
+    // The frequency, at the top of the waterfall so it clears the header.
+    p.text(
+        egui::pos2(x + 5.0, spec.max.y + 4.0),
+        egui::Align2::LEFT_TOP,
+        format!("Tuned {}", fmt_mhz(tuned)),
+        egui::FontId::monospace(11.0),
+        CURSOR,
+    );
+}
+
+/// The spectrum and waterfall under the mouse, the way the scope's
+/// Spectrum window works: scroll zooms the span at the pointer,
+/// shift+scroll (or a 2-D wheel's x axis) zooms the dB range, left-drag
+/// pans the view (vertically it moves the reference level), right-drag
+/// moves the hardware window, double-click resets the view. A left-drag on
+/// a channel filter edge sets the Width; elsewhere it pans. A left-click
+/// tunes to the frequency under the pointer and leaves the window alone.
+/// Every gesture injects script actions (`sdr tune|width|centre|span|pan|level`).
 fn pointer(
     ui: &egui::Ui,
     resp: &egui::Response,
     rect: egui::Rect,
     spec: egui::Rect,
     sdr: &SdrState,
+    width_drag: &mut bool,
     script: &mut Script,
 ) {
+    let rate = sdr.config.sample_rate;
+    let half_w = sdr.channel_width() / 2.0;
+    // The two filter edges are grabbable handles.
+    let edge_hit = |x: f32| -> bool {
+        let (e0, e1) = (
+            x_at(sdr, rect, sdr.tuned_hz - half_w),
+            x_at(sdr, rect, sdr.tuned_hz + half_w),
+        );
+        (x - e0).abs() <= 6.0 || (x - e1).abs() <= 6.0
+    };
+    let shift = ui.input(|i| i.modifiers.shift);
+    if resp.double_clicked() {
+        inject(script, SdrAction::Span(0.0));
+        inject(script, SdrAction::Pan(0.0));
+        inject(
+            script,
+            SdrAction::Level {
+                ref_db: 0.0,
+                range_db: 100.0,
+            },
+        );
+    } else if resp.clicked()
+        && let Some(pos) = resp.interact_pointer_pos()
+    {
+        let hz = (freq_at(sdr, rect, pos.x) / 1e3).round() * 1e3;
+        inject(script, SdrAction::Tune(hz));
+    }
+    // A drag that started on a filter edge resizes the width; shift keeps
+    // the pan, so the band is still reachable when it fills the screen.
+    if resp.drag_started_by(egui::PointerButton::Primary) {
+        *width_drag = !shift && resp.interact_pointer_pos().is_some_and(|p| edge_hit(p.x));
+    }
+    if resp.drag_stopped() {
+        *width_drag = false;
+    }
+    if resp.dragged_by(egui::PointerButton::Secondary) {
+        // Right-drag moves the hardware window: the band follows the
+        // pointer, and the tuned frequency rides inside it.
+        let d = resp.drag_delta();
+        let hz = sdr.config.centre_hz - (d.x / rect.width()) as f64 * sdr.span();
+        inject(script, SdrAction::Centre(hz));
+    } else if resp.dragged_by(egui::PointerButton::Primary) {
+        if *width_drag {
+            if let Some(pos) = resp.interact_pointer_pos() {
+                let w = (2.0 * (freq_at(sdr, rect, pos.x) - sdr.tuned_hz).abs()).clamp(200.0, rate);
+                inject(script, SdrAction::Width(Some(w)));
+            }
+        } else {
+            let d = resp.drag_delta();
+            // Content follows the pointer, but the window stays put: the pan
+            // only slides the view inside the IQ band.
+            let want = sdr.pan_hz - (d.x / rect.width()) as f64 * sdr.span();
+            let room = (rate - sdr.span()).max(0.0) / 2.0;
+            let pan = want.clamp(-room, room);
+            if pan != sdr.pan_hz {
+                inject(script, SdrAction::Pan(pan));
+            }
+            if d.y != 0.0 {
+                let ddb = (d.y / spec.height()) as f64 * sdr.range_db;
+                inject(
+                    script,
+                    SdrAction::Level {
+                        ref_db: (sdr.ref_db + ddb).clamp(-150.0, 30.0),
+                        range_db: sdr.range_db,
+                    },
+                );
+            }
+        }
+    }
     let Some(pos) = resp.hover_pos() else { return };
+    if edge_hit(pos.x) {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+    }
     let hz = freq_at(sdr, rect, pos.x);
     ui.painter().line_segment(
         [egui::pos2(pos.x, rect.min.y), egui::pos2(pos.x, rect.max.y)],
         (1.0, egui::Color32::from_white_alpha(60)),
     );
-    let label = if spec.contains(pos) {
+    let label = if *width_drag {
+        let w = 2.0 * (hz - sdr.tuned_hz).abs();
+        format!("Width {:.1} kHz", w / 1e3)
+    } else if spec.contains(pos) {
         let db = sdr.ref_db - (1.0 - ((spec.max.y - pos.y) / spec.height()) as f64) * sdr.range_db;
         format!("{}  {db:.1} dBFS", fmt_mhz(hz))
     } else {
@@ -235,17 +410,35 @@ fn pointer(
         egui::FontId::monospace(12.0),
         egui::Color32::WHITE,
     );
-    if resp.clicked() {
-        inject(script, SdrAction::Tune((hz / 1e3).round() * 1e3));
-    }
-    let scroll = ui.input(|i| i.smooth_scroll_delta.y);
-    if scroll.abs() > 0.5 {
-        let rate = sdr.config.sample_rate;
-        let factor = if scroll > 0.0 { 0.8 } else { 1.25 };
-        let span = (sdr.span() * factor).clamp(rate / 64.0, rate);
+    let (scroll, shift) = ui.input(|i| (i.smooth_scroll_delta, i.modifiers.shift));
+    let zf = if shift { 0.0 } else { -scroll.y / 240.0 };
+    let zdb = if shift {
+        -scroll.y / 240.0
+    } else {
+        scroll.x / 240.0
+    };
+    if zf.abs() > 1e-3 {
+        // Keep the frequency under the pointer where it is.
+        let t = ((pos.x - rect.min.x) / rect.width()) as f64 - 0.5;
+        let span = (sdr.span() * 2f64.powf(zf as f64)).clamp(rate / 256.0, rate);
+        let centre = hz - t * span;
         inject(
             script,
             SdrAction::Span(if span >= rate { 0.0 } else { span }),
+        );
+        inject(script, SdrAction::Pan(centre - sdr.config.centre_hz));
+    }
+    if zdb.abs() > 1e-3 && spec.contains(pos) {
+        // Zoom the dB range around the level under the pointer.
+        let at = sdr.ref_db - (1.0 - ((spec.max.y - pos.y) / spec.height()) as f64) * sdr.range_db;
+        let range = (sdr.range_db * 2f64.powf(zdb as f64)).clamp(10.0, 200.0);
+        let k = range / sdr.range_db;
+        inject(
+            script,
+            SdrAction::Level {
+                ref_db: (at + (sdr.ref_db - at) * k).clamp(-150.0, 30.0),
+                range_db: range,
+            },
         );
     }
 }

@@ -34,8 +34,10 @@ fn lab_identifies_and_measures_digital_signals() {
                     && raw_str(r, "modulation") == label
             });
             println!("{label}: {m}");
+            // One frame can be an honest `unknown` (low margin); the
+            // verdict must settle to a confident one.
             let k = c.wait("get classify", 10, |r| {
-                raw_str(r, "label") == label.to_lowercase()
+                raw_str(r, "label") == label.to_lowercase() && r.contains(r#""unknown":false"#)
             });
             assert!(
                 k.contains(r#""trust":"unproven""#) && k.contains(r#""unknown":false"#),

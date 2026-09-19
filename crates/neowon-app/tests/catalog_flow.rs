@@ -20,10 +20,13 @@ fn catalog_files_manages_and_persists() {
     let mut kept = 0u64;
     with_app(child, || {
         c.ok("stimulus rf-fm-band");
-        c.ok("sdr tune 99M");
+        // The window sees 98.3 and 99.4; the tuned cursor sits on the FM
+        // station. Tuning alone will not move the window (D10).
+        c.ok("sdr centre 99M");
+        c.ok("sdr tune 99.4M");
         c.wait("get detections", 10, |r| items(r, "id").len() == 2);
 
-        // The strongest detection (99.4 MHz), then one by hand.
+        // The channel at the FM station (99.4 MHz), then one by hand.
         c.ok("catalog add");
         c.ok("catalog add 98.3M Station B");
         let cat = c.wait("get catalog", 5, |r| items(r, "id").len() == 2);

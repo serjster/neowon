@@ -106,10 +106,11 @@ fn sdr_mode_tunes_measures_and_stays_deterministic() {
             "{s}"
         );
 
-        // Retune into the FM-band scene: its strongest in-band emitter at
-        // 99 MHz ± 1.024 MHz is 99.4 MHz at 0.3 FS.
+        // Move the hardware window into the FM-band scene (D10: `sdr tune`
+        // would move only the tuned cursor): its strongest in-band emitter
+        // at 99 MHz ± 1.024 MHz is 99.4 MHz at 0.3 FS.
         assert!(conn.request("stimulus rf-fm-band").contains(r#""ok":true"#));
-        assert!(conn.request("sdr tune 99M").contains(r#""ok":true"#));
+        assert!(conn.request("sdr centre 99M").contains(r#""ok":true"#));
         let s = conn.wait("get sdr", 10, |r| {
             (field(r, "peak_hz") - 99.4e6).abs() <= 250.0 && field(r, "centre_hz") == 99e6
         });
@@ -159,7 +160,7 @@ fn sdr_mode_tunes_measures_and_stays_deterministic() {
             conn.request("stimulus rf-reference")
                 .contains(r#""ok":true"#)
         );
-        assert!(conn.request("sdr tune 100M").contains(r#""ok":true"#));
+        assert!(conn.request("sdr centre 100M").contains(r#""ok":true"#));
         assert!(conn.request("sim iq --seed 7").contains(r#""ok":true"#));
         std::thread::sleep(Duration::from_millis(500));
         // Freeze so the frame cannot change between reading it and checking.

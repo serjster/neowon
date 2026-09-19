@@ -34,6 +34,26 @@ pub enum SdrAction {
     Modulation(Option<neowon_core::Modulation>),
     /// Detection threshold over the floor, dB.
     Threshold(f64),
+    /// Display centre, Hz from the hardware centre (display only).
+    Pan(f64),
+    /// The hardware window centre, Hz (`sdr centre`); `sdr tune` moves the
+    /// tuned frequency instead unless `follow` is on.
+    Centre(f64),
+    /// The hardware window follows the tuned frequency (`sdr follow`).
+    Follow(bool),
+    /// Channel width, Hz, around the tuned frequency; `None` takes it from
+    /// the nearest detection's occupied bandwidth (`sdr width auto`).
+    Width(Option<f64>),
+    /// Audio demodulator; `None` is off (`sdr demod am|nfm|wfm|off`).
+    Demod(Option<neowon_dsp::DemodMode>),
+    /// Audio volume, 0..=1 (`sdr volume`).
+    Volume(f32),
+    /// Mute without dropping the demodulator (`sdr mute`).
+    Mute(bool),
+    /// Squelch threshold in dBFS, or `None` to open the gate (`sdr squelch`).
+    Squelch(Option<f64>),
+    /// Height of the dock's signal list, points.
+    List(f32),
     /// `instrument sdr` (true) or `instrument scope`: switch instrument.
     Instrument(bool),
 }
@@ -124,6 +144,27 @@ pub fn parse<'a>(next: &mut dyn FnMut() -> Result<&'a str, String>) -> Result<Sd
             )),
         },
         "threshold" => SdrAction::Threshold(num(next()?)?),
+        "pan" => SdrAction::Pan(parse_hz(next()?)?),
+        "centre" | "center" => SdrAction::Centre(parse_hz(next()?)?),
+        "follow" => SdrAction::Follow(on_off(next()?)?),
+        "width" => match next()? {
+            "auto" => SdrAction::Width(None),
+            w => SdrAction::Width(Some(parse_hz(w)?)),
+        },
+        "demod" => match next()? {
+            "off" => SdrAction::Demod(None),
+            m => SdrAction::Demod(Some(
+                neowon_dsp::DemodMode::parse(m)
+                    .ok_or_else(|| format!("unknown demod {m:?}; use am|nfm|wfm|off"))?,
+            )),
+        },
+        "volume" => SdrAction::Volume(num(next()?)? as f32),
+        "mute" => SdrAction::Mute(on_off(next()?)?),
+        "squelch" => match next()? {
+            "off" => SdrAction::Squelch(None),
+            db => SdrAction::Squelch(Some(num(db)?)),
+        },
+        "list" => SdrAction::List(next()?.parse().map_err(|_| "bad height".to_string())?),
         other => return Err(format!("unknown sdr verb {other:?}")),
     })
 }
@@ -187,6 +228,18 @@ impl std::fmt::Display for SdrAction {
             SdrAction::Modulation(None) => write!(f, "sdr modulation auto"),
             SdrAction::Modulation(Some(m)) => write!(f, "sdr modulation {}", m.label()),
             SdrAction::Threshold(db) => write!(f, "sdr threshold {db}"),
+            SdrAction::Pan(hz) => write!(f, "sdr pan {hz}"),
+            SdrAction::Centre(hz) => write!(f, "sdr centre {hz}"),
+            SdrAction::Follow(b) => write!(f, "sdr follow {}", on(*b)),
+            SdrAction::Width(None) => write!(f, "sdr width auto"),
+            SdrAction::Width(Some(hz)) => write!(f, "sdr width {hz}"),
+            SdrAction::Demod(None) => write!(f, "sdr demod off"),
+            SdrAction::Demod(Some(m)) => write!(f, "sdr demod {}", m.verb()),
+            SdrAction::Volume(v) => write!(f, "sdr volume {v}"),
+            SdrAction::Mute(b) => write!(f, "sdr mute {}", on(*b)),
+            SdrAction::Squelch(None) => write!(f, "sdr squelch off"),
+            SdrAction::Squelch(Some(db)) => write!(f, "sdr squelch {db}"),
+            SdrAction::List(px) => write!(f, "sdr list {px}"),
             SdrAction::Instrument(sdr) => {
                 write!(f, "instrument {}", if *sdr { "sdr" } else { "scope" })
             }
@@ -215,8 +268,20 @@ pub fn apply(a: SdrAction, sdr: &mut SdrState, link: &mut Link) -> Result<(), St
         _ => Ok(hz),
     };
     match a {
-        SdrAction::Tune(hz) => sdr.config.centre_hz = in_range(hz)?,
-        SdrAction::Step(hz) => sdr.config.centre_hz = in_range(sdr.config.centre_hz + hz)?,
+        SdrAction::Tune(hz) => {
+            let hz = in_range(hz)?;
+            let before = sdr.config.centre_hz;
+            sdr.set_tuned(hz);
+            sdr.dirty |= sdr.config.centre_hz != before;
+            return Ok(());
+        }
+        SdrAction::Step(hz) => {
+            let hz = in_range(sdr.tuned_hz + hz)?;
+            let before = sdr.config.centre_hz;
+            sdr.set_tuned(hz);
+            sdr.dirty |= sdr.config.centre_hz != before;
+            return Ok(());
+        }
         SdrAction::Rate(r) => {
             if let Some(c) = &caps
                 && !c.sample_rates.iter().any(|&x| (x - r).abs() < 0.5)
@@ -227,6 +292,7 @@ pub fn apply(a: SdrAction, sdr: &mut SdrState, link: &mut Link) -> Result<(), St
                 return Err("rate must be positive".into());
             }
             sdr.config.sample_rate = r;
+            sdr.clamp_pan();
         }
         SdrAction::Gain(None) => sdr.config.gain = SdrGain::Auto,
         SdrAction::Gain(Some(db)) => {
@@ -250,6 +316,7 @@ pub fn apply(a: SdrAction, sdr: &mut SdrState, link: &mut Link) -> Result<(), St
                 return Err("span must be >= 0".into());
             }
             sdr.span_hz = hz;
+            sdr.clamp_pan();
             return Ok(());
         }
         SdrAction::Fft(n) => {
@@ -305,6 +372,79 @@ pub fn apply(a: SdrAction, sdr: &mut SdrState, link: &mut Link) -> Result<(), St
                 return Err(format!("threshold {db} dB outside 3..=60"));
             }
             sdr.threshold_db = db;
+            return Ok(());
+        }
+        SdrAction::Pan(hz) => {
+            sdr.pan_hz = hz;
+            sdr.clamp_pan();
+            return Ok(());
+        }
+        SdrAction::Centre(hz) => sdr.set_centre(in_range(hz)?),
+        SdrAction::Follow(on) => {
+            sdr.follow = on;
+            if on {
+                let before = sdr.config.centre_hz;
+                sdr.set_centre(sdr.tuned_hz);
+                sdr.dirty |= sdr.config.centre_hz != before;
+            }
+            return Ok(());
+        }
+        SdrAction::Width(None) => {
+            sdr.width_auto = true;
+            return Ok(());
+        }
+        SdrAction::Width(Some(hz)) => {
+            if !(1.0..=sdr.config.sample_rate).contains(&hz) {
+                return Err(format!(
+                    "width {hz} Hz outside 1..={} Hz",
+                    sdr.config.sample_rate
+                ));
+            }
+            sdr.width_hz = hz;
+            sdr.width_auto = false;
+            return Ok(());
+        }
+        SdrAction::Demod(m) => {
+            if sdr.demod != m {
+                // A mode change starts the channel clean; switching off
+                // drops any queued audio rather than letting it finish.
+                sdr.receiver = None;
+                sdr.audio_buf.clear();
+                sdr.audio_rms = 0.0;
+                sdr.audio_squelched = false;
+                if let Some(out) = &sdr.audio {
+                    out.clear();
+                }
+            }
+            sdr.demod = m;
+            return Ok(());
+        }
+        SdrAction::Volume(v) => {
+            if !(0.0..=1.0).contains(&v) {
+                return Err(format!("volume {v} outside 0..=1"));
+            }
+            sdr.volume = v;
+            if let Some(out) = &sdr.audio {
+                out.set_volume(v);
+            }
+            return Ok(());
+        }
+        SdrAction::Mute(on) => {
+            sdr.mute = on;
+            if let Some(out) = &sdr.audio {
+                out.set_mute(on);
+            }
+            return Ok(());
+        }
+        SdrAction::Squelch(db) => {
+            sdr.squelch_db = db.unwrap_or(-120.0);
+            return Ok(());
+        }
+        SdrAction::List(px) => {
+            if !(40.0..=2000.0).contains(&px) {
+                return Err(format!("list height {px} outside 40..=2000"));
+            }
+            sdr.list_px = px;
             return Ok(());
         }
         SdrAction::Instrument(to_sdr) => return super::instrument::switch(to_sdr, sdr, link),
@@ -367,6 +507,44 @@ mod tests {
             SdrAction::Threshold(9.0)
         );
         assert_eq!(
+            parse(&mut words("centre 99M")).unwrap(),
+            SdrAction::Centre(99e6)
+        );
+        assert_eq!(
+            parse(&mut words("follow on")).unwrap(),
+            SdrAction::Follow(true)
+        );
+        assert_eq!(
+            parse(&mut words("width auto")).unwrap(),
+            SdrAction::Width(None)
+        );
+        assert_eq!(
+            parse(&mut words("width 15k")).unwrap(),
+            SdrAction::Width(Some(15e3))
+        );
+        assert_eq!(
+            parse(&mut words("demod nfm")).unwrap(),
+            SdrAction::Demod(Some(neowon_dsp::DemodMode::Nfm))
+        );
+        assert_eq!(
+            parse(&mut words("demod off")).unwrap(),
+            SdrAction::Demod(None)
+        );
+        assert!(parse(&mut words("demod ssb")).is_err());
+        assert_eq!(
+            parse(&mut words("volume 0.5")).unwrap(),
+            SdrAction::Volume(0.5)
+        );
+        assert_eq!(parse(&mut words("mute on")).unwrap(), SdrAction::Mute(true));
+        assert_eq!(
+            parse(&mut words("squelch off")).unwrap(),
+            SdrAction::Squelch(None)
+        );
+        assert_eq!(
+            parse(&mut words("squelch -30")).unwrap(),
+            SdrAction::Squelch(Some(-30.0))
+        );
+        assert_eq!(
             parse(&mut words("modulation 16qam")).unwrap(),
             SdrAction::Modulation(Some(neowon_core::Modulation::Qam16))
         );
@@ -422,6 +600,15 @@ mod tests {
             SdrAction::Modulation(_) => 14,
             SdrAction::Threshold(_) => 15,
             SdrAction::Instrument(_) => 16,
+            SdrAction::Pan(_) => 17,
+            SdrAction::List(_) => 18,
+            SdrAction::Centre(_) => 19,
+            SdrAction::Follow(_) => 20,
+            SdrAction::Width(_) => 21,
+            SdrAction::Demod(_) => 22,
+            SdrAction::Volume(_) => 23,
+            SdrAction::Mute(_) => 24,
+            SdrAction::Squelch(_) => 25,
         }
     }
 
@@ -459,6 +646,18 @@ mod tests {
             SdrAction::Threshold(9.5),
             SdrAction::Instrument(true),
             SdrAction::Instrument(false),
+            SdrAction::Pan(-250e3),
+            SdrAction::List(212.5),
+            SdrAction::Centre(100e6),
+            SdrAction::Follow(true),
+            SdrAction::Width(None),
+            SdrAction::Width(Some(15e3)),
+            SdrAction::Demod(None),
+            SdrAction::Demod(Some(neowon_dsp::DemodMode::Nfm)),
+            SdrAction::Volume(0.85),
+            SdrAction::Mute(true),
+            SdrAction::Squelch(None),
+            SdrAction::Squelch(Some(-30.0)),
         ];
         let mut seen = std::collections::BTreeSet::new();
         for a in all {
@@ -474,6 +673,6 @@ mod tests {
             };
             assert_eq!(back.unwrap(), a, "{line}");
         }
-        assert_eq!(seen.len(), 17, "a variant has no round-trip sample");
+        assert_eq!(seen.len(), 26, "a variant has no round-trip sample");
     }
 }

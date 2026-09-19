@@ -169,8 +169,8 @@ fn sdr_status(ui: &mut egui::Ui, sdr: &crate::sdr::SdrState, status: &str) {
     };
     ui.label(
         egui::RichText::new(format!(
-            "{:.4} MHz   {}   {gain}",
-            c.centre_hz / 1e6,
+            "Tuned {:.4} MHz   {}   {gain}",
+            sdr.tuned_hz / 1e6,
             fmt_si(c.sample_rate, "S/s")
         ))
         .monospace(),
