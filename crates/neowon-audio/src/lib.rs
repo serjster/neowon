@@ -23,6 +23,8 @@
 
 use std::sync::{Arc, Mutex};
 
+pub mod sink;
+
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use neowon_backend::{
     Acquisition, Backend, BackendError, Capabilities, InstrumentConfig, ScopeCaps, ScopeConfig,
