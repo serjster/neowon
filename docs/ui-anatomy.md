@@ -82,10 +82,28 @@ In SDR mode the regions keep their names and change their content:
   gain (or AGC); on the right, the SDR's name and the **IQ frame counter**.
 - **Spectrum** and **waterfall** (`ui/sdr_view.rs`) — drawn where the grid
   and descriptor bar sit: the spectrum on top, the waterfall below, newest
-  row at the top. Clicking tunes to that frequency.
-- **SDR dock** (`ui/sdr_dock.rs`) — drawn over the dock: tuning, rate, gain,
-  ppm, span, FFT size, level; **Detect** and the **signal list**; the
-  **modulation lab**; the **constellation**.
+  row at the top. A red vertical bar with a triangle tip is the **tuned
+  cursor**, labelled with its frequency at the top of the waterfall; the
+  translucent band around it is the **channel width**, with solid filter
+  edges. The mouse works as in the scope's Spectrum window: *left-click*
+  tunes to the frequency under the pointer (the window does not move),
+  *left-drag on a filter edge* resizes the width, *left-drag* elsewhere pans
+  the view inside the IQ band (vertically it moves the reference level),
+  *right-drag* moves the **hardware window** (the band follows the pointer),
+  *scroll* zooms the span at the pointer, *shift+scroll* (or a 2-D wheel's
+  x axis) zooms the dB range, and *double-click* resets the view. A tuned
+  frequency outside the view shows an edge arrow with its frequency; the
+  hardware centre is a faint amber line when it differs from the tuned
+  frequency.
+- **SDR dock** (`ui/sdr_dock.rs`) — drawn in the dock's place: the
+  **Tuned** frequency (primary) with its step buttons and the **Follow**
+  checkbox, the dim **Centre** (the hardware window), the **Width** (auto
+  from the nearest detection, or manual), rate, gain, ppm, span, FFT size,
+  level; the **Audio** section (demod, volume, mute, squelch, state); the
+  **modulation lab**; the **constellation**; last, **Detect** and the
+  **signal list**. Every block keeps a constant height so nothing jumps.
+  The list is a fixed-height scroll area, and you resize it by dragging the
+  handle under it.
 - **Catalog window** (`ui/catalog_window.rs`) — the persistent signal
   catalog.
 - **Front panel** — still the scope's. While the SDR is the instrument,
@@ -94,9 +112,29 @@ In SDR mode the regions keep their names and change their content:
 
 SDR vocabulary:
 
-- **Centre** — the tuned frequency, the middle of the displayed band.
-- **Span** — how much of the IQ band is displayed, centred on the centre.
-  *Full* means the whole sample rate.
+- **Centre** — the hardware window's centre: the DC bin of the IQ stream,
+  which sets what RF the band covers (`sdr centre`). It is not where you
+  listen.
+- **Tuned** — the channel the operator monitors, an absolute frequency
+  inside (or beyond) the IQ band (`sdr tune`, `sdr step`). Tuning moves
+  this and leaves the window alone, so two in-band signals stay visible.
+- **Follow** — when on, the hardware window keeps the tuned frequency at
+  its centre (`sdr follow`); off by default. Right-drag moves the window
+  by hand.
+- **Width** — the channel bandwidth around the tuned frequency (`sdr
+  width`, or the nearest detection's measured OBW with `sdr width auto`).
+  Distinct from a track's **OBW**; it is what a demodulator would filter.
+- **Demod** — the audio demodulator (`sdr demod am|nfm|wfm|off`), applied
+  to the tuned channel at the current Width. Host-side, not hardware.
+- **Squelch** — mutes the demodulated audio when the channel power falls
+  below the threshold (`sdr squelch`); `off` leaves the gate open.
+- **Audio state** — `playing`, `muted`, `squelched`, `no device`,
+  `starting` or `off`. All but the first mean silence, so the dock names
+  which one applies.
+- **Span** — how much of the IQ band is displayed. *Full* means the whole
+  sample rate.
+- **Pan** — where the span sits, as an offset from the hardware centre
+  (`sdr pan`). It stays inside the IQ band and is display only.
 - **Frame** — one block of IQ pairs from the SDR (the scope's *record*).
 - **Floor** — the noise level the detector measures each bin against: the
   lower quartile over a quarter of the band.
@@ -104,8 +142,8 @@ SDR vocabulary:
   floor. A *track* is the same signal followed across frames under a stable
   id. It becomes active after 0.25 s and is forgotten after 1 s unseen.
 - **OBW** — occupied bandwidth: the band holding 99% of the signal's power.
-- **Lab** — the modulation lab. It measures the signal nearest the centre:
-  symbol rate, EVM/MER, cumulants, recovered constellation.
+- **Lab** — the modulation lab. It measures the signal nearest the tuned
+  frequency: symbol rate, EVM/MER, cumulants, recovered constellation.
 - **Class / trust** — the classifier's verdict and whether it has been
   proven on over-the-air data. It is `unproven` until the SDR-G2 evaluation.
 - **Survey** — a sweep of a frequency range in tuning **steps**. Its

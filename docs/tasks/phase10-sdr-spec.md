@@ -116,6 +116,61 @@ with the "G1/G2" gap labels in Phase 7.8.
   dataset** (provenance/licence recorded in `docs/protocol-rtlsdr.md`) and/or an
   **in-house capture starting in 10.0**; either supplies a cross-day split.
   Numbers are stated once, here; 10.5/10.7/phase-done reference D9.
+- **D10 — centre vs tuned (CHOSEN, operator 2026-09-19).** The hardware
+  window **Centre** and the operator's **Tuned** frequency are distinct and
+  must not share a field. `Tuned` lives in `SdrState` (host-side), not
+  `SdrConfig`: tuning inside the band must not mark the hardware config dirty.
+  `sdr tune`/`sdr step` move Tuned and leave the window alone; `sdr centre`
+  moves the window; `sdr follow on` pins the window to Tuned (off by default);
+  right-drag on the canvas moves the window by hand. The canvas shows a red
+  tuned cursor carrying the frequency and a shaded **Width** band (auto from
+  the nearest detection's OBW, or manual). `catalog add` with no argument files
+  the channel at the tuned frequency — the detection covering it measured, else
+  the tuned frequency with the manual width and operator provenance — never the
+  hardware centre. Rejected: `VFO` as vocabulary (scope-first audience), a
+  persistent follow in the default path (the UX critic's hidden-mode objection:
+  it is off by default, and the window has its own explicit gesture), and
+  recording the hardware centre. Audio (demod → cpal output) is its own
+  sub-phase **10.10**, AM/FM first.
+- **D12 — scope and SDR are separate workspaces (CHOSEN, operator
+  2026-09-19).** A `Workspace { Scope, Sdr }` owns the screen geometry. Shared
+  chrome is one app bar and one mode-aware front panel; the middle is per
+  workspace with its own named ROIs — `sdr_view`, `sdr_dock`, `sdr_spectrum`,
+  `sdr_waterfall` — and `sdr_view`/`sdr_dock` publish their own ROIs instead
+  of borrowing `plot`/`descriptors`/`dialog`. The layout dump carries a
+  `workspace` key and `Roi::for_workspace` gates the ROI set. Scope windows
+  (spectrum, waterfall, 3D, effects, Measure/Cursors/Decode/PF) are **not
+  constructed** in SDR; window and dock state is per workspace, so an SDR
+  window never reappears in scope. The View menu and front panel are
+  workspace-aware, and `ui_geometry` asserts the no-overlap invariant per
+  workspace (scope: chrome vs `plot`; SDR: chrome vs `sdr_view`, with
+  `sdr_spectrum`/`sdr_waterfall` tiling it).
+- **D13 — automatic state persistence (CHOSEN, operator 2026-09-19).** The app
+  auto-saves the existing NEOWON_SCRIPT session format to
+  `~/.neowon/state.nws` (atomic `.tmp` + rename), extended to carry the
+  workspace, UI scale, window size and position (new `windowpos X Y`), open
+  windows and dock sections, and both scope and SDR settings. Save is
+  debounced (~2 s after a change) and synchronous on graceful exit; restore
+  runs after the backend connects. **Precedence is env > saved state >
+  auto-fit**, and **auto-persistence is disabled when `NEOWON_SCRIPT` or
+  `NEOWON_NO_STATE` is set**, so regression and geometry runs stay
+  deterministic. Restored instrument values are validated against the
+  attached `caps`; invalid ones are dropped with a visible status line. One
+  global file, not per serial. File→Save setup stays a separate, named file.
+- **D14 — channel width by filter-edge handles (CHOSEN, operator 2026-09-19).**
+  Left-drag on a channel filter edge resizes Width symmetrically about the
+  tuned frequency (live width tag, `ResizeHorizontal` cursor, 3 px dead-zone
+  so a click never edits); left-drag elsewhere pans; shift+left-drag always
+  pans. No new mode and no new script action (`sdr width` already covers it).
+  **Landed 2026-09-19.**
+- **D15 — channel-relative visualizations (CHOSEN, operator 2026-09-19).** A
+  `sdr view wide|channel` selector (default wideband). Channel views are
+  computed from the channelised, decimated baseband — **not** a crop of the
+  wideband FFT — so the x-axis is offset from the tuned frequency, 0 Hz at
+  the carrier, extent ±Width/2, and every label is anchored
+  (`channel · 0 Hz @ <tuned>`), never a bare 0. Channel spectrum and
+  waterfall, plus 3D Terrain/Phase/Tunnel/XyTime fed the channel baseband.
+  Scope-only views are absent in SDR (D12).
 
 ## Existing code
 
@@ -459,6 +514,95 @@ vocabulary in `docs/ui-anatomy.md`.
 **Done when:** `cargo test -p neowon-app --test sdr_integration` — every UI
 control and catalog op has a script action, and a scripted sim run drives tune →
 detect → analyse → classify → decode → catalog → export. Class fixed-order.
+
+### 10.10 — Demodulation & audio
+
+The workspace's first cpal **output** sink and a streaming demod chain, so the
+tuned channel is audible. Scope: **AM, NFM, WFM (mono)** first; SSB/CW after.
+
+**D11 — receiver shape (CHOSEN, operator 2026-09-19).**
+- `neowon_dsp::demod` is the engine-free oracle: a streaming `Receiver` takes
+  interleaved complex IQ at the hardware rate and emits f32 audio at the sink
+  rate. It owns the NCO mixer, a decimating FIR channel filter, the mode
+  demodulator (AM envelope + slow AGC; FM quadrature discriminator + optional
+  de-emphasis), and a windowed-sinc resampler to the sound-card rate.
+- The tuned offset is `tuned_hz - centre_hz`; the filter uses D10's **Width**
+  (the module supplies per-mode defaults). De-emphasis is 75 µs in the app and
+  configurable (off in the deviation-golden tests, so the measurement is not
+  filtered).
+- `neowon-audio::sink` is the output. A thread owns the cpal stream (a
+  `cpal::Stream` is not `Send`); the app holds a `Send + Sync` handle and
+  pushes audio over a channel. Underruns are counted, never hidden; a missing
+  device is a state, not an error.
+- Demod/squelch/volume are host-side and do not enter `SdrConfig` (D6 note).
+- Squelch gates the channel power; the status line distinguishes
+  `playing | muted | squelched | no device | off`.
+
+Work items:
+1. `neowon-dsp/src/demod.rs`: `DemodMode`, `ReceiverConfig`, `Receiver`;
+   resampler unit-tested on tones.
+2. `neowon-audio/src/sink.rs`: `AudioOut` handle + thread; the buffer policy
+   and underrun counter unit-tested without a device.
+3. App: `SdrState.demod/volume/mute/squelch`, feed in `sdr::update`, dock
+   **Audio** section, `get audio`, actions `sdr demod|volume|mute|squelch`.
+4. MCP mirrors.
+
+**Done when (mechanical):**
+
+| quantity | unit | criterion | class | command |
+|---|---|---|---|---|
+| AM: 1 kHz tone, 30% depth | Hz / ratio | recovered tone ±1%; depth ±5% | tolerance | `cargo test -p neowon-dsp --test demod_golden` |
+| NFM: 1 kHz tone, ±3 kHz deviation | Hz / ratio | tone ±1%; deviation ±5% | tolerance | same |
+| WFM: 1 kHz tone, ±30 kHz deviation | Hz / ratio | tone ±1%; deviation ±5% | tolerance | same |
+| Resampler 227.5k→48k | Hz / dB | 1 kHz tone ±0.1%; 30 kHz tone rejected > 40 dB | tolerance | same |
+| Sink buffer | — | underrun counted; mute is exact zero; volume monotone | exact | `cargo test -p neowon-audio` |
+| App audio states | — | demod on → `playing` with rms > 0; mute → `muted`; squelch above the signal → `squelched`; bad mode refused | fixed-order | `cargo test -p neowon-app --test sdr_audio -- --ignored` |
+
+**Status 2026-09-19: 10.10 DONE.** `neowon_dsp::demod` (streaming NCO mixer +
+decimating FIR + AM/NFM/WFM + windowed-sinc resampler) passes
+`cargo test -p neowon-dsp --test demod_golden` and the in-module resampler
+test (227.5k→48k: 1 kHz within 1 Hz, 30 kHz rejected > 40 dB). The cpal sink's
+queue policy passes `cargo test -p neowon-audio`; the app path (`sdr
+demod|volume|mute|squelch`, `get audio`, dock Audio section, MCP
+`sdr_audio`/`sdr_demod`) passes `cargo test -p neowon-app --test sdr_audio --
+--ignored`. Sim scenes `rf-am`/`rf-fm` added. SSB/CW deferred.
+
+### 10.11 — Scope/SDR workspace split
+
+Per D12: `Workspace`; SDR ROIs and `put()`; `workspace` in the layout dump and
+`Roi::for_workspace`; workspace-aware View menu and front panel; scope windows
+not constructed in SDR; per-workspace window state; `ui_geometry` per workspace.
+
+**Done when:** `cargo test -p neowon-app --test ui_geometry`, extended to a
+`--sdr-sim` case, asserts for each window×scale×workspace that no painted
+chrome overlaps the workspace's primary view and every published ROI is
+painted. Class fixed-order.
+
+### 10.12 — Automatic state persistence
+
+Per D13: extend the session emitter/replay with workspace, UI scale, window
+size and position, open windows/dock, and SDR state; auto-save to
+`~/.neowon/state.nws` (atomic, debounced and on exit); restore after connect;
+env wins; off under `NEOWON_SCRIPT`/`NEOWON_NO_STATE`; validate against caps.
+
+**Done when:** `cargo test -p neowon-app --test state_persist -- --ignored`
+launches, changes scale/tune/demod/window, exits, relaunches and asserts the
+state restored (fixed-order); a run with `NEOWON_SCRIPT` set writes no state
+file (exact); an out-of-caps saved frequency is dropped with a status line
+(fixed-order).
+
+### 10.13 — Channel-relative visualizations
+
+Per D15: expose the channelised baseband (reuse the `demod::Receiver`'s
+mixer/filter/decimation) to the app; add `sdr view wide|channel`; channel
+spectrum and waterfall on the same canvas with the anchored 0 Hz axis; feed 3D
+Terrain/Phase/Tunnel/XyTime from the channel baseband; remove scope-only views
+from SDR (D12).
+
+**Done when:** `cargo test -p neowon-app --test sdr_channel_view -- --ignored`
+switches wide/channel, asserts `get sdr` reports the view, and pixel-checks
+that a tone at the tuned offset lands at the channel axis centre. Class
+fixed-order + pixel.
 
 ## Verification contract
 
