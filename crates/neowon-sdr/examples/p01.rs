@@ -280,7 +280,7 @@ fn spectrum(iq: &[f32]) -> Vec<f64> {
         .collect();
     let mut acc = vec![0.0; NFFT];
     let mut blocks = 0;
-    for chunk in iq.chunks_exact(2 * NFFT) {
+    for chunk in iq.as_chunks::<{ 2 * NFFT }>().0 {
         let mut re: Vec<f64> = (0..NFFT).map(|i| chunk[2 * i] as f64 * win[i]).collect();
         let mut im: Vec<f64> = (0..NFFT)
             .map(|i| chunk[2 * i + 1] as f64 * win[i])

@@ -142,7 +142,7 @@ fn metadata_is_the_truth() {
         if s.label == "cw" {
             let at = |f: f64| {
                 let (mut re, mut im) = (0.0, 0.0);
-                for (k, p) in clean.iq.chunks_exact(2).enumerate() {
+                for (k, p) in clean.iq.as_chunks::<2>().0.iter().enumerate() {
                     let (c, sn) = cos_sin_turns(-f * k as f64 / r.sample_rate);
                     re += p[0] as f64 * c - p[1] as f64 * sn;
                     im += p[0] as f64 * sn + p[1] as f64 * c;
@@ -160,7 +160,13 @@ fn metadata_is_the_truth() {
         let (c, sn) = cos_sin_turns(m.iq_phase_rad / std::f64::consts::TAU);
         let mut err = 0.0f64;
         let (mut mi, mut mq) = (0.0, 0.0);
-        for (f, u) in full.iq.chunks_exact(2).zip(noisy.iq.chunks_exact(2)) {
+        for (f, u) in full
+            .iq
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .zip(noisy.iq.as_chunks::<2>().0.iter())
+        {
             let i0 = (f[0] as f64 - m.dc_i) / m.iq_gain;
             let q0 = (f[1] as f64 - m.dc_q - sn * i0) / c;
             err = err.max((i0 - u[0] as f64).abs().max((q0 - u[1] as f64).abs()));
@@ -171,7 +177,9 @@ fn metadata_is_the_truth() {
         let (mi, mq) = (mi / r.samples as f64, mq / r.samples as f64);
         let (ci, cq) = clean
             .iq
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .fold((0.0, 0.0), |a, p| (a.0 + p[0] as f64, a.1 + p[1] as f64));
         let sig_dc = (ci / r.samples as f64).abs() + (cq / r.samples as f64).abs();
         let tol = 4.0 * r.noise_rms / (r.samples as f64).sqrt() + 2.0 * sig_dc;

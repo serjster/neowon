@@ -97,7 +97,9 @@ pub fn flatness(s: &IqSpectrum, band: Band) -> f64 {
 /// samples, so it has one fewer point.
 pub fn instantaneous(iq: &[f32], rate: f64) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
     let z: Vec<(f64, f64)> = iq
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|p| (p[0] as f64, p[1] as f64))
         .collect();
     let amp = z.iter().map(|(i, q)| (i * i + q * q).sqrt()).collect();

@@ -37,7 +37,9 @@ fn strongest_line(mut z: Vec<Complex64>, rate: f64, keep: impl Fn(f64) -> bool) 
 }
 
 fn complex(iq: &[f32]) -> impl Iterator<Item = Complex64> + '_ {
-    iq.chunks_exact(2)
+    iq.as_chunks::<2>()
+        .0
+        .iter()
         .map(|p| Complex64::new(p[0] as f64, p[1] as f64))
 }
 

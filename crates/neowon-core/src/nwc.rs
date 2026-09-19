@@ -172,8 +172,10 @@ pub fn read(path: &Path) -> io::Result<Vec<SharedFrame>> {
                 let mut raw = vec![0u8; n as usize * 4];
                 z.read_exact(&mut raw)?;
                 data = raw
-                    .chunks_exact(4)
-                    .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|b| f32::from_le_bytes(*b))
                     .collect();
                 cal = IqCal {
                     scale_i,

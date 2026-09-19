@@ -192,7 +192,7 @@ impl ChannelCapture {
     }
 
     pub fn iter_iq(&self) -> impl Iterator<Item = (f32, f32)> + '_ {
-        self.data.chunks_exact(2).map(|p| (p[0], p[1]))
+        self.data.as_chunks::<2>().0.iter().map(|p| (p[0], p[1]))
     }
 }
 

@@ -165,7 +165,9 @@ pub fn features(iq: &[f32], rate: f64, centre_hz: f64, obw_hz: f64) -> Option<Fe
     let chan = select(iq, rate, centre_hz, cutoff, taps);
     let iq = &chan[..];
     let env: Vec<f64> = iq
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|p| (p[0] as f64).hypot(p[1] as f64))
         .collect();
     let mean = env.iter().sum::<f64>() / n as f64;
@@ -173,8 +175,8 @@ pub fn features(iq: &[f32], rate: f64, centre_hz: f64, obw_hz: f64) -> Option<Fe
     let envelope_cv = var.sqrt() / mean.max(1e-30);
 
     let freq: Vec<f64> = iq
-        .chunks_exact(2)
-        .collect::<Vec<_>>()
+        .as_chunks::<2>()
+        .0
         .windows(2)
         .map(|w| {
             let (a, b) = (
@@ -228,7 +230,9 @@ fn line_strength(iq: &[f32], rate: f64, rs: f64, lo: f64, hi: f64) -> f64 {
     use rustfft::FftPlanner;
     use rustfft::num_complex::Complex64;
     let env: Vec<f64> = iq
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|p| (p[0] as f64).powi(2) + (p[1] as f64).powi(2))
         .collect();
     let m = env.iter().sum::<f64>() / env.len() as f64;

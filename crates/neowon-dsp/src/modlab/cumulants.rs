@@ -74,11 +74,16 @@ pub fn cumulants(iq: &[f32]) -> Option<Cumulants> {
     if n < 8 {
         return None;
     }
-    let mean = iq.chunks_exact(2).fold(Complex64::new(0.0, 0.0), |a, p| {
-        a + Complex64::new(p[0] as f64, p[1] as f64)
-    }) / n as f64;
+    let mean = iq
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .fold(Complex64::new(0.0, 0.0), |a, p| {
+            a + Complex64::new(p[0] as f64, p[1] as f64)
+        })
+        / n as f64;
     let mut m = [[Complex64::new(0.0, 0.0); 7]; 7];
-    for p in iq.chunks_exact(2) {
+    for p in iq.as_chunks::<2>().0 {
         let x = Complex64::new(p[0] as f64, p[1] as f64) - mean;
         let xc = x.conj();
         let mut pa = Complex64::new(1.0, 0.0);

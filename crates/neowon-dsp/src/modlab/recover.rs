@@ -99,7 +99,9 @@ pub fn recover(
 
     // Derotate, then matched-filter (taps at the sample rate).
     let x: Vec<Complex64> = iq
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .enumerate()
         .map(|(k, p)| {
             Complex64::new(p[0] as f64, p[1] as f64)

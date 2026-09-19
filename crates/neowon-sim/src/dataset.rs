@@ -339,7 +339,7 @@ pub fn build(r: &Recipe, index: usize, parts: Parts) -> Example {
     }
     if parts.impairments {
         let (c, s) = cos_sin_turns(applied.iq_phase_rad / std::f64::consts::TAU);
-        for p in iq.chunks_exact_mut(2) {
+        for p in iq.as_chunks_mut::<2>().0 {
             let (i, q) = (p[0] as f64, p[1] as f64);
             p[0] = (applied.iq_gain * i + applied.dc_i) as f32;
             p[1] = (s * i + c * q + applied.dc_q) as f32;

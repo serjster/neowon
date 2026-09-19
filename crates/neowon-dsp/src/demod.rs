@@ -228,7 +228,7 @@ impl Receiver {
         }
         // Mix to baseband and buffer.
         let phase_step = self.cfg.offset_hz / self.cfg.sample_rate;
-        for p in iq.chunks_exact(2) {
+        for p in iq.as_chunks::<2>().0 {
             let (s, c) = (TAU * self.nco).sin_cos();
             let (i, q) = (p[0] as f64, p[1] as f64);
             // (i + jq)·e^{-jθ}
