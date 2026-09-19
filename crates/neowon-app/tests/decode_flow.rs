@@ -51,6 +51,7 @@ fn decodes_uart_traffic_from_the_simulator() {
         .env("NEOWON_WINDOW", "1520x820")
         .env("NEOWON_UI_SCALE", "1.0")
         .env_remove("NEOWON_SCRIPT")
+        .env("NEOWON_NO_STATE", "1")
         .spawn()
         .expect("launch app");
 

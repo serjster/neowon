@@ -30,6 +30,25 @@ impl Mcp {
             .local_addr()
             .unwrap()
             .port();
+        // A throwaway reference store with one known station, and a
+        // throwaway location file: the spawned app must never read the
+        // operator's.
+        let dir = std::env::temp_dir().join(format!("neowon-mcp-ref-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("wikidata.json"),
+            r#"[{"source":"wikidata","id":"Q1001","name":"Antena 1","freq_hz":100300000.0,
+                 "modulation":"wfm","service":"broadcast","lat":38.7223,"lon":-9.1393,
+                 "country":"PT"}]"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("meta.json"),
+            r#"[{"source":"wikidata","count":1,"fetched_at":"2026-09-19T10:00:00Z",
+                 "origin":"fixture","licence":"CC0"}]"#,
+        )
+        .unwrap();
         let mut child = Command::new(env!("CARGO_BIN_EXE_neowon-mcp"))
             .arg("--spawn-sim")
             .env("NEOWON_MCP_PORT", port.to_string())
@@ -39,6 +58,8 @@ impl Mcp {
                 "NEOWON_CATALOG",
                 std::env::temp_dir().join(format!("neowon-mcp-cat-{}", std::process::id())),
             )
+            .env("NEOWON_REFDB", &dir)
+            .env("NEOWON_LOCATION", dir.join("location.json"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -111,6 +132,12 @@ fn mcp_tools_drive_the_sim() {
         "sdr_survey",
         "sdr_survey_result",
         "sdr_classify",
+        "ui_tree",
+        "rf_bands",
+        "stations",
+        "station_tune",
+        "refdb",
+        "location",
     ] {
         assert!(tools.contains(name), "missing tool {name}: {tools}");
     }
@@ -171,4 +198,21 @@ fn mcp_tools_drive_the_sim() {
         list.contains("Radio Two") && list.contains("99400000"),
         "list: {list}"
     );
+
+    // The reference store: the fixture station through the script grammar.
+    mcp.send(&call(910, "stations", r#"{"source":"wikidata"}"#));
+    let st = mcp.recv_id(910);
+    assert!(
+        st.contains("Antena 1") && st.contains("wikidata:Q1001"),
+        "stations: {st}"
+    );
+    mcp.send(&call(911, "refdb", r#"{"action":"status"}"#));
+    let db = mcp.recv_id(911);
+    assert!(
+        db.contains("wikidata") && db.contains(r#"count\":1"#),
+        "refdb: {db}"
+    );
+    mcp.send(&call(912, "location", r#"{"lat":38.7223,"lon":-9.1393}"#));
+    let loc = mcp.recv_id(912);
+    assert!(loc.contains("IM58kr"), "location: {loc}");
 }

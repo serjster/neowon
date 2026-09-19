@@ -55,6 +55,43 @@ impl Menu {
             Menu::Decode => "Decode",
         }
     }
+
+    /// Stable name: the `layout` dump and the `dock` action share it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Menu::Channel(0) => "channel0",
+            Menu::Channel(1) => "channel1",
+            Menu::Channel(_) => "channel",
+            Menu::Horizontal => "horizontal",
+            Menu::Trigger => "trigger",
+            Menu::Acquire => "acquire",
+            Menu::Display => "display",
+            Menu::Measure => "measure",
+            Menu::Math => "math",
+            Menu::Cursor => "cursor",
+            Menu::Utility => "utility",
+            Menu::Record => "record",
+            Menu::Decode => "decode",
+        }
+    }
+
+    pub fn from_name(s: &str) -> Option<Self> {
+        Some(match s {
+            "channel0" => Menu::Channel(0),
+            "channel1" => Menu::Channel(1),
+            "horizontal" => Menu::Horizontal,
+            "trigger" => Menu::Trigger,
+            "acquire" => Menu::Acquire,
+            "display" => Menu::Display,
+            "measure" => Menu::Measure,
+            "math" => Menu::Math,
+            "cursor" => Menu::Cursor,
+            "utility" => Menu::Utility,
+            "record" => Menu::Record,
+            "decode" => Menu::Decode,
+            _ => return None,
+        })
+    }
 }
 
 /// Which dock sections are expanded. Sections are independent — leave as
@@ -117,6 +154,11 @@ impl MenuState {
     /// so `layout` dumps stay deterministic.
     pub fn set_exclusive(&mut self, m: Option<Menu>) {
         self.open = m.into_iter().collect();
+    }
+
+    /// Open exactly these sections, in this order (`dock`).
+    pub fn set_open(&mut self, open: Vec<Menu>) {
+        self.open = open;
     }
 
     /// Open sections, in opening order (for the layout dump).

@@ -55,6 +55,16 @@
 //! pfcapture
 //! pfreset
 //! menu <channel <ch>|horizontal|trigger|acquire|display|measure|math|cursor|utility|none>
+//! bandplan <name> / bandmap <strip|mini|window> <on|off> / bandmap goto <band>
+//! location <lat> <lon>|<locator>|ip|clear   # the operator's fix (D18)
+//! refdb <fetch <source> [km]|import <source> <path>|clear <source>>
+//! stations window|overlay <on|off> / radius <km|auto> / find <text|->
+//! stations filter <source|service|mod> <value|-> / onair / scope / sort
+//! stations tune|catalog <source:id>     # tune + demod (D21) / copy (D20)
+//! uitree <path>                        # UI element tree (JSON), like a DOM
+//! measwin <on|off>                     # measurements window
+//! dock <section,section…|none>          # open exactly these dock sections
+//! windowpos <x> <y>                     # window position, physical px
 //! markers <0|1>                         # on-graph drag handles
 //! record <0|1> / recordclear
 //! export <wav|csv|raw> <path>           # write the recording
@@ -111,6 +121,8 @@ type ExtraState<'w> = (
     ResMut<'w, crate::ui::settings::Settings>,
     ResMut<'w, crate::sdr::SdrState>,
     ResMut<'w, crate::catalog::CatalogState>,
+    ResMut<'w, crate::uitree::UiTree>,
+    ResMut<'w, crate::refmap::RefMap>,
 );
 
 #[derive(Debug, Clone)]
@@ -217,6 +229,16 @@ pub enum Action {
     PfCapture,
     PfReset,
     Menu(Option<Menu>),
+    /// Band plan / RF map verbs (`bandplan`, `bandmap`).
+    RefMap(crate::refmap::RefMapAction),
+    /// Export the UI element tree to a JSON file (`uitree <path>`).
+    UiTree(String),
+    /// Measurements window on/off (`measwin`).
+    MeasWin(bool),
+    /// Open exactly these dock sections (`dock a,b|none`); `menu` opens one.
+    Dock(Vec<Menu>),
+    /// Window position, physical pixels (`windowpos X Y`).
+    WindowPos(i32, i32),
     Layout(String),
     Shot {
         path: String,
@@ -314,6 +336,9 @@ pub fn run_script(
         debug!("script: {action:?}");
         match action {
             Action::Sdr(a) => crate::sdr::run(a, &mut ext.11, &mut link),
+            Action::RefMap(a) => {
+                crate::refmap::run(a, &mut ext.14, &mut ext.11, &mut ext.12, &mut link)
+            }
             Action::Catalog(a) => crate::catalog::run(a, &mut ext.12, &ext.11, &mut link),
             Action::Stimulus(name) => {
                 let _ = link.sup.commands.send(Command::Stimulus(name.clone()));
@@ -560,8 +585,19 @@ pub fn run_script(
                 pf.fail = 0;
             }
             Action::Menu(m) => menus.set_exclusive(m),
+            Action::Dock(open) => menus.set_open(open),
+            Action::MeasWin(on) => meas.window = on,
+            Action::UiTree(path) => {
+                ext.13.on = true;
+                ext.13.pending.push(path);
+            }
+            Action::WindowPos(x, y) => {
+                if let Ok(mut window) = windows.single_mut() {
+                    window.position = bevy::window::WindowPosition::At(IVec2::new(x, y));
+                }
+            }
             Action::Layout(path) => {
-                let names: Vec<&str> = menus.open_list().iter().map(|m| menu_name(*m)).collect();
+                let names: Vec<&str> = menus.open_list().iter().map(|m| m.name()).collect();
                 let open = (!names.is_empty()).then(|| names.join(","));
                 let json = dump_json(&layout, open.as_deref(), rects);
                 match std::fs::write(&path, json) {
@@ -693,25 +729,6 @@ pub fn run_script(
                 });
             }
         }
-    }
-}
-
-/// Stable menu names for the `layout` JSON.
-fn menu_name(m: Menu) -> &'static str {
-    match m {
-        Menu::Channel(0) => "channel0",
-        Menu::Channel(1) => "channel1",
-        Menu::Channel(_) => "channel",
-        Menu::Horizontal => "horizontal",
-        Menu::Trigger => "trigger",
-        Menu::Acquire => "acquire",
-        Menu::Display => "display",
-        Menu::Measure => "measure",
-        Menu::Math => "math",
-        Menu::Cursor => "cursor",
-        Menu::Utility => "utility",
-        Menu::Record => "record",
-        Menu::Decode => "decode",
     }
 }
 

@@ -14,8 +14,8 @@ use super::layout::{Layout, Roi};
 use super::menu::{Menu, MenuState};
 use super::widgets::{RUN_COLOR, STOP_COLOR, channel_color};
 
-fn key(ui: &mut egui::Ui, label: &str, active: bool) -> bool {
-    let btn = egui::Button::new(egui::RichText::new(label).small())
+pub(super) fn key(ui: &mut egui::Ui, label: &str, active: bool) -> bool {
+    let btn = egui::Button::new(egui::RichText::new(label).size(12.0))
         .fill(if active {
             egui::Color32::from_rgb(60, 64, 74)
         } else {
@@ -158,11 +158,11 @@ pub fn show(
     l.pixels(resp.response.rect)
 }
 
-fn group(ui: &mut egui::Ui, name: &str, content: impl FnOnce(&mut egui::Ui)) {
+pub(super) fn group(ui: &mut egui::Ui, name: &str, content: impl FnOnce(&mut egui::Ui)) {
     ui.vertical(|ui| {
         ui.label(
             egui::RichText::new(name)
-                .size(9.0)
+                .size(11.0)
                 .color(egui::Color32::GRAY),
         );
         ui.horizontal(|ui| {
@@ -174,7 +174,7 @@ fn group(ui: &mut egui::Ui, name: &str, content: impl FnOnce(&mut egui::Ui)) {
 }
 
 /// Channel-colored key; lit while `on`.
-fn color_key(ui: &mut egui::Ui, label: String, color: egui::Color32, on: bool) -> bool {
+pub(super) fn color_key(ui: &mut egui::Ui, label: String, color: egui::Color32, on: bool) -> bool {
     let fill = if on {
         color.gamma_multiply(0.35)
     } else {
@@ -185,7 +185,7 @@ fn color_key(ui: &mut egui::Ui, label: String, color: egui::Color32, on: bool) -
     } else {
         egui::Color32::from_gray(70)
     };
-    let btn = egui::Button::new(egui::RichText::new(label).small().color(if on {
+    let btn = egui::Button::new(egui::RichText::new(label).size(12.0).color(if on {
         color
     } else {
         egui::Color32::LIGHT_GRAY

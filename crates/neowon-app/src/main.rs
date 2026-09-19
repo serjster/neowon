@@ -25,6 +25,7 @@
 //! level/offset/position (ui/touch.rs).
 
 mod autopeak;
+mod autostate;
 mod catalog;
 mod control;
 mod cursors;
@@ -35,11 +36,13 @@ mod effects;
 mod gpu;
 mod launch;
 mod record;
+mod refmap;
 mod refs;
 mod script;
 mod sdr;
 mod session;
 mod ui;
+mod uitree;
 mod view;
 mod viz;
 
@@ -179,6 +182,9 @@ fn main() {
         .insert_resource(sdr::SdrState::new(launch))
         .insert_resource(catalog::CatalogState::open_from_env())
         .insert_resource(script::load_from_env())
+        .insert_resource(autostate::AutoState::from_env())
+        .insert_resource(uitree::UiTree::from_env())
+        .insert_resource(refmap::RefMap::load())
         .insert_resource(control::start_from_env())
         .add_systems(
             PreStartup,
@@ -195,9 +201,22 @@ fn main() {
                 fit_display,
             ),
         )
+        // Last: it must see the frame's AppExit to save before quitting.
+        .add_systems(Last, autostate::tick)
+        .add_systems(PreUpdate, uitree::enable)
+        .add_systems(
+            PostUpdate,
+            uitree::capture.after(bevy_egui::EguiPostUpdateSet::ProcessOutput),
+        )
         .add_systems(
             EguiPrimaryContextPass,
-            (ui::panel, ui::sdr_view::show, ui::catalog_window::show).chain(),
+            (
+                ui::panel,
+                ui::sdr_view::show,
+                ui::catalog_window::show,
+                ui::stations_window::show,
+            )
+                .chain(),
         )
         .add_systems(
             Update,
@@ -217,6 +236,7 @@ fn main() {
                         ui::touch::plot_pointer,
                         control::poll,
                         script::run_script,
+                        refmap::tick,
                     )
                         .chain(),
                     (
@@ -294,17 +314,21 @@ pub struct PlotSprite;
 /// leaves 12 pt text 12 physical pixels tall, so the UI scale comes from the
 /// monitor unless `NEOWON_UI_SCALE` overrides it; the window grows to match
 /// so the chrome still leaves a usable grid. `NEOWON_WINDOW` pins the size
-/// for layout tests and wins over the fit.
+/// for layout tests and wins over the fit. The saved state (D13) sits
+/// between the two: env > saved > auto-fit, for the scale and the size
+/// alike; a saved position is used only while it is on a monitor.
 fn fit_display(
     monitors: Query<&bevy::window::Monitor>,
     mut windows: Query<&mut Window>,
     mut scale: ResMut<ui::UiScale>,
+    state: Res<autostate::AutoState>,
 ) {
+    let saved = state.geometry();
     let env_scale = std::env::var("NEOWON_UI_SCALE")
         .ok()
         .and_then(|v| v.parse::<f32>().ok());
     let Ok(mut window) = windows.single_mut() else {
-        if let Some(s) = env_scale {
+        if let Some(s) = env_scale.or(saved.scale) {
             scale.0 = s.clamp(ui::layout::UI_SCALE_RANGE.0, ui::layout::UI_SCALE_RANGE.1);
         }
         return;
@@ -314,6 +338,7 @@ fn fit_display(
         .map(|m| ui::layout::auto_scale(m.physical_height, m.scale_factor as f32))
         .unwrap_or(1.0);
     scale.0 = env_scale
+        .or(saved.scale)
         .unwrap_or(auto)
         .clamp(ui::layout::UI_SCALE_RANGE.0, ui::layout::UI_SCALE_RANGE.1);
 
@@ -322,14 +347,31 @@ fn fit_display(
     if std::env::var_os("NEOWON_WINDOW").is_some() {
         return;
     }
+    if let Some(p) = saved.pos
+        && monitors.iter().any(|m| {
+            let (lo, size) = (
+                m.physical_position,
+                IVec2::new(m.physical_width as i32, m.physical_height as i32),
+            );
+            // The title bar must land on a monitor, or the window cannot be
+            // grabbed back (a monitor unplugged since the save).
+            p.cmpge(lo).all() && p.cmplt(lo + size - IVec2::splat(40)).all()
+        })
+    {
+        window.position = WindowPosition::At(p);
+    }
     if let Some(m) = monitor {
-        // ~70% of the monitor, never below the scaled minimum.
+        // The saved size, else ~70% of the monitor; never below the scaled
+        // minimum nor beyond the monitor.
         let (mw, mh) = (
             m.physical_width as f32 / m.scale_factor as f32,
             m.physical_height as f32 / m.scale_factor as f32,
         );
-        let w = (mw * 0.7).max(ui::layout::MIN_W * scale.0).min(mw - 40.0);
-        let h = (mh * 0.7).max(ui::layout::MIN_H * scale.0).min(mh - 80.0);
+        let (w, h) = saved.size.unwrap_or((mw * 0.7, mh * 0.7));
+        let w = w.max(ui::layout::MIN_W * scale.0).min(mw - 40.0);
+        let h = h.max(ui::layout::MIN_H * scale.0).min(mh - 80.0);
+        window.resolution.set(w, h);
+    } else if let Some((w, h)) = saved.size {
         window.resolution.set(w, h);
     }
 }

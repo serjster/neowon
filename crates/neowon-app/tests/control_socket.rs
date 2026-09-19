@@ -36,6 +36,7 @@ fn socket_drives_and_queries_the_app() {
         .arg("--sim")
         .env("NEOWON_CONTROL", port.to_string())
         .env_remove("NEOWON_SCRIPT")
+        .env("NEOWON_NO_STATE", "1")
         .spawn()
         .expect("launch app");
 

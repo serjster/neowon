@@ -95,6 +95,10 @@ type ExtraState<'w> = (
     Res<'w, crate::decode::DecodeState>,
     Res<'w, crate::sdr::SdrState>,
     Res<'w, crate::catalog::CatalogState>,
+    Res<'w, crate::uitree::UiTree>,
+    Res<'w, crate::ui::layout::Layout>,
+    Res<'w, crate::ui::layout::UiRects>,
+    Res<'w, crate::refmap::RefMap>,
 );
 
 /// Drain pending requests. Runs before `run_script` so injected commands
@@ -138,6 +142,19 @@ pub fn poll(
             Some("survey") => crate::sdr::survey_json(sdr),
             Some("surveydiff") => crate::sdr::survey_diff_json(sdr),
             Some("catalog") => crate::catalog::catalog_json(cat),
+            Some("bands") => crate::refmap::bands_json(&extra.9, sdr),
+            Some("location") => crate::refmap::location_json(&extra.9),
+            Some("refdb") => crate::refmap::refdb_json(&extra.9),
+            Some(q) if q == "stations" || q.starts_with("stations ") => {
+                crate::refmap::stations_query(
+                    &extra.9,
+                    sdr,
+                    q.trim_start_matches("stations").trim(),
+                )
+            }
+            Some("uitree") => extra.6.json(&extra.7, &extra.8).unwrap_or_else(|| {
+                r#"{"ok":false,"error":"no UI tree yet (one frame after enabling)"}"#.into()
+            }),
             Some(q) if q.starts_with("history ") => {
                 crate::catalog::history_json(cat, q[8..].trim())
             }

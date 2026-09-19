@@ -71,6 +71,7 @@ fn sdr_mode_tunes_measures_and_stays_deterministic() {
         .arg("--sdr-sim")
         .env("NEOWON_CONTROL", port.to_string())
         .env_remove("NEOWON_SCRIPT")
+        .env("NEOWON_NO_STATE", "1")
         .spawn()
         .expect("launch app");
     let deadline = Instant::now() + Duration::from_secs(20);

@@ -70,6 +70,9 @@ pub(crate) fn parse(text: &str) -> Result<VecDeque<(f64, Action)>, String> {
             "instrument" => {
                 Action::Sdr(crate::sdr::parse_instrument(&mut rest).map_err(|e| err(&e))?)
             }
+            verb @ ("bandplan" | "bandmap" | "location" | "refdb" | "stations") => {
+                Action::RefMap(crate::refmap::parse(verb, &mut rest).map_err(|e| err(&e))?)
+            }
             "catalog" => Action::Catalog(crate::catalog::parse(&mut rest).map_err(|e| err(&e))?),
             "rate" => Action::Rate(rest()?.parse().map_err(|_| err("bad rate"))?),
             "vdiv" => Action::Vdiv(
@@ -280,6 +283,19 @@ pub(crate) fn parse(text: &str) -> Result<VecDeque<(f64, Action)>, String> {
                 "decode" => Some(Menu::Decode),
                 _ => return Err(err("bad menu")),
             }),
+            "uitree" => Action::UiTree(rest()?.to_string()),
+            "measwin" => Action::MeasWin(rest()? == "on"),
+            "dock" => Action::Dock(match rest()? {
+                "none" => Vec::new(),
+                list => list
+                    .split(',')
+                    .map(|n| Menu::from_name(n).ok_or_else(|| err("bad dock section")))
+                    .collect::<Result<_, _>>()?,
+            }),
+            "windowpos" => Action::WindowPos(
+                rest()?.parse().map_err(|_| err("bad x"))?,
+                rest()?.parse().map_err(|_| err("bad y"))?,
+            ),
             "uiscale" => Action::UiScaleSet(rest()?.parse().map_err(|_| err("bad scale"))?),
             "scrollback" => Action::Scrollback(rest()?.parse().map_err(|_| err("bad bytes"))?),
             "settings" => Action::SettingsOpen(rest()? == "on"),

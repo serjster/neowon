@@ -97,6 +97,7 @@ fn start(port: u16) -> (std::process::Child, Conn) {
         .env("NEOWON_WINDOW", "1520x820")
         .env("NEOWON_UI_SCALE", "1.0")
         .env_remove("NEOWON_SCRIPT")
+        .env("NEOWON_NO_STATE", "1")
         .spawn()
         .expect("launch app");
     let deadline = Instant::now() + Duration::from_secs(25);

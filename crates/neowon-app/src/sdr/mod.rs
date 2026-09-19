@@ -39,6 +39,15 @@ pub const DC_GUARD: usize = 4;
 /// sit and still count as inside: the band edges roll off, so the outer 10%
 /// of the IQ band retunes the hardware and of a zoomed view pans it.
 const TUNE_REACH: f64 = 0.45;
+/// Waterfall black sits this far under the measured noise floor, dB.
+const WF_UNDER_FLOOR_DB: f64 = 5.0;
+
+/// Waterfall intensity of `db`: 0 at `black`, 1 at `white` (the spectrum's
+/// reference level); a floor above the reference still gets 20 dB of room.
+fn wf_level(db: f64, black: f64, white: f64) -> f32 {
+    let white = white.max(black + 20.0);
+    ((db - black) / (white - black)).clamp(0.0, 1.0) as f32
+}
 
 #[derive(Resource)]
 pub struct SdrState {
@@ -119,6 +128,8 @@ pub struct SdrState {
     pub analysis: Option<analysis::Analysis>,
     /// The DSP classifier's verdict on the same signal.
     pub classification: Option<neowon_dsp::classify::Classification>,
+    /// The lab's worker thread, started on first use.
+    lab: Option<analysis::Lab>,
     /// A survey in progress, and the last completed ones (oldest first).
     pub survey: Option<neowon_sdr::survey::Survey>,
     pub surveys: Vec<neowon_sdr::survey::SurveyResult>,
@@ -179,6 +190,7 @@ impl Default for SdrState {
             modulation: None,
             analysis: None,
             classification: None,
+            lab: None,
             survey: None,
             surveys: Vec::new(),
             last_seq: None,
@@ -321,6 +333,7 @@ pub fn columns(s: &IqSpectrum, pan: f64, span: f64, cols: usize) -> Vec<f64> {
 
 /// Fold newly arrived frames into the displays.
 pub fn update(mut sdr: ResMut<SdrState>) {
+    take_lab_result(&mut sdr);
     let Some(frame) = sdr.latest.clone() else {
         return;
     };
@@ -333,10 +346,13 @@ pub fn update(mut sdr: ResMut<SdrState>) {
         return;
     };
     let cols = columns(&spec, sdr.pan_hz, sdr.span(), WF_W);
-    // Scroll down one row and paint the new one on top.
+    // Scroll down one row and paint the new one on top. Black sits just
+    // under the measured floor and white at the reference level, so the
+    // noise reads dark and a signal a few dB above it already shows.
     sdr.waterfall.copy_within(0..WF_W * (WF_H - 1), WF_W);
+    let black = spec.median_db() - WF_UNDER_FLOOR_DB;
     for (c, db) in cols.iter().enumerate() {
-        let px = thermal(sdr.level(*db));
+        let px = thermal(wf_level(*db, black, sdr.ref_db));
         sdr.waterfall[c] = px;
     }
     sdr.wf_rows += 1;
@@ -352,20 +368,42 @@ pub fn update(mut sdr: ResMut<SdrState>) {
     if sdr.detect_on {
         track(&mut sdr, &frame);
     }
-    // The lab is costly (a channel filter and two recoveries): every 8th
-    // frame, a few times a second.
-    if sdr.analyse_on && frame.seq % 8 == 0 {
-        // The lab runs on the signal nearest the tuned frequency; `centre`
-        // is still the hardware window, the spectrum's zero.
-        let centre = sdr.config.centre_hz;
-        let target = sdr.nearest_track().cloned();
-        sdr.classification = target
-            .as_ref()
-            .and_then(|t| analysis::classify(&frame, centre, t));
-        sdr.analysis = target.and_then(|t| analysis::analyse(&frame, centre, &t, sdr.modulation));
+    // The lab is costly (a channel filter and two recoveries), so it runs
+    // on its own thread, a few times a second, on the signal nearest the
+    // tuned frequency; `centre` is still the hardware window, the
+    // spectrum's zero.
+    if sdr.analyse_on {
+        let (centre, setting) = (sdr.config.centre_hz, sdr.modulation);
+        match sdr.nearest_track().cloned() {
+            Some(target) => {
+                sdr.lab
+                    .get_or_insert_with(analysis::Lab::spawn)
+                    .submit(&frame, centre, target, setting);
+            }
+            None => {
+                sdr.analysis = None;
+                sdr.classification = None;
+            }
+        }
     }
     if let Some(mode) = sdr.demod {
         feed_audio(&mut sdr, &frame, mode);
+    }
+}
+
+/// Adopt the lab's finished run, unless the operator has since turned the
+/// lab off, retuned the hardware or changed the modulation setting.
+fn take_lab_result(sdr: &mut SdrState) {
+    let Some(r) = sdr.lab.as_mut().and_then(|l| l.poll()) else {
+        return;
+    };
+    if sdr.active
+        && sdr.analyse_on
+        && r.centre_hz == sdr.config.centre_hz
+        && r.setting == sdr.modulation
+    {
+        sdr.analysis = r.analysis;
+        sdr.classification = r.classification;
     }
 }
 
@@ -520,5 +558,63 @@ mod tests {
         // A step that stays in view leaves the pan alone.
         s.set_tuned(100.62e6);
         assert_eq!(s.view_centre(), 100.6e6);
+    }
+
+    #[test]
+    fn the_lab_runs_off_thread_and_skips_while_busy() {
+        use neowon_backend::Backend;
+        let mut b = neowon_sim::SimSdrBackend::new();
+        b.apply(&InstrumentConfig::Sdr(SdrConfig::default()))
+            .unwrap();
+        assert!(b.set_stimulus("rf-digital").unwrap());
+        let mut sdr = SdrState {
+            tuned_hz: 100.3e6,
+            ..Default::default()
+        };
+        let next = |b: &mut neowon_sim::SimSdrBackend| loop {
+            if let Some(f) = b.poll_frame(std::time::Duration::from_millis(100)).unwrap() {
+                return f;
+            }
+        };
+        let mut frame = next(&mut b);
+        for _ in 0..100 {
+            track(&mut sdr, &frame);
+            if sdr.nearest_track().is_some() {
+                break;
+            }
+            frame = next(&mut b);
+        }
+        let target = sdr
+            .nearest_track()
+            .cloned()
+            .expect("the QPSK signal tracked");
+
+        let mut lab = analysis::Lab::spawn();
+        assert!(lab.submit(&frame, 100e6, target.clone(), None));
+        // In flight: the next frame is skipped, not queued.
+        assert!(!lab.submit(&frame, 100e6, target, None));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let r = loop {
+            if let Some(r) = lab.poll() {
+                break r;
+            }
+            assert!(std::time::Instant::now() < deadline, "no lab result");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        assert_eq!(r.centre_hz, 100e6);
+        let a = r.analysis.expect("analysed");
+        assert_eq!(a.modulation, neowon_core::Modulation::Qpsk);
+        assert!(r.classification.is_some());
+    }
+
+    #[test]
+    fn the_waterfall_floor_is_dark() {
+        // Floor at -60 dBFS: the noise lands near black, a signal 10 dB
+        // up is visibly lit, the reference level is white.
+        let black = -60.0 - WF_UNDER_FLOOR_DB;
+        assert!(wf_level(-60.0, black, 0.0) < 0.1);
+        assert!(wf_level(-50.0, black, 0.0) > 0.2);
+        assert_eq!(wf_level(0.0, black, 0.0), 1.0);
+        assert_eq!(wf_level(-80.0, black, -90.0), 0.0);
     }
 }
