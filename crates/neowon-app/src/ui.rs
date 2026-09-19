@@ -99,10 +99,15 @@ pub fn panel(
     };
     let r = menubar::show(&ctx, &layout, &mut link, now, &viz.6, &mut bar);
     rects.put("menu_bar", r);
-    let (desc, overlay) =
-        descriptors::show(&ctx, &layout, &mut link, &phosphor, &mut meas, &mut menus);
-    rects.put("descriptors", desc);
-    rects.put("meas_overlay", overlay);
+    // In SDR mode the SDR view and dock take the descriptor bar's and the
+    // dock's places (drawn underneath windows, so Settings stays reachable).
+    let sdr_mode = viz.9.active;
+    if !sdr_mode {
+        let (desc, overlay) =
+            descriptors::show(&ctx, &layout, &mut link, &phosphor, &mut meas, &mut menus);
+        rects.put("descriptors", desc);
+        rects.put("meas_overlay", overlay);
+    }
     let r = frontpanel::show(
         &ctx,
         &layout,
@@ -113,29 +118,31 @@ pub fn panel(
         &mut menus,
     );
     rects.put("front_panel", r);
-    let r = menu::show(
-        &ctx,
-        &layout,
-        &mut menus,
-        &mut link,
-        &mut phosphor,
-        &mut math,
-        &mut meas,
-        &mut fft,
-        &mut cur,
-        &mut pf,
-        &mut rec,
-        &mut hist,
-        &mut refs,
-        &mut script,
-        &mut viz.0,
-        &mut viz.1,
-        &viz.2,
-        &mut viz.5,
-        &mut viz.6,
-        &mut viz.7,
-    );
-    rects.put("dialog", r);
+    if !sdr_mode {
+        let r = menu::show(
+            &ctx,
+            &layout,
+            &mut menus,
+            &mut link,
+            &mut phosphor,
+            &mut math,
+            &mut meas,
+            &mut fft,
+            &mut cur,
+            &mut pf,
+            &mut rec,
+            &mut hist,
+            &mut refs,
+            &mut script,
+            &mut viz.0,
+            &mut viz.1,
+            &viz.2,
+            &mut viz.5,
+            &mut viz.6,
+            &mut viz.7,
+        );
+        rects.put("dialog", r);
+    }
     settings::window(&ctx, &mut viz.8, &mut rec, &viz.4, &mut script);
     crate::refs::overlay(&ctx, &layout, &refs);
 

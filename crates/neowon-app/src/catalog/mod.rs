@@ -3,7 +3,10 @@
 //! at `NEOWON_CATALOG` or `~/.neowon/catalog` and is the single writer's:
 //! a second app on the same directory is refused, not raced.
 //!
-//! `catalog add` with no arguments files the strongest live detection;
+//! `catalog add` with no arguments files the channel at the tuned
+//! frequency: the active detection covering it (its measured centre,
+//! occupied bandwidth and modulation) when there is one, else the tuned
+//! frequency itself with the manual channel width and no confidence.
 //! `catalog observe` files every active track against the catalogued
 //! signal whose band it overlaps.
 
@@ -104,24 +107,50 @@ fn user(at: &str) -> Provenance {
     Provenance::user(at)
 }
 
-/// A signal and its first observation from a detector track.
-fn from_track(cat: &mut Catalog, t: &neowon_dsp::Track, at: &str) -> Result<Id, String> {
-    let o = &t.last;
+/// A signal from the channel at the tuned frequency: the active detection
+/// covering it (measured centre, occupied bandwidth and modulation) when
+/// there is one, else the operator's tuned frequency with the manual
+/// channel width. The tuned frequency chooses the signal; the hardware
+/// window's centre is never the recorded value.
+fn from_tuned(cat: &mut Catalog, sdr: &SdrState, at: &str) -> Result<Id, String> {
+    let hit = sdr
+        .nearest_track()
+        .filter(|t| {
+            let half = (t.last.bandwidth_hz() / 2.0).max(1.0);
+            (sdr.tuned_hz - t.last.centre_hz).abs() <= half
+        })
+        .map(|t| (t.last.centre_hz, t.last.bandwidth_hz(), t.id));
+    let (centre_hz, bandwidth_hz, modulation, p) = match hit {
+        Some((centre_hz, bandwidth_hz, id)) => {
+            let mut p = Provenance::user(at);
+            p.kind = ProvKind::Decoder;
+            p.tool = "neowon detect".into();
+            p.input_ref = Some(format!("track:{id}"));
+            let modulation = sdr.modulation.map(|m| m.label().to_string()).or_else(|| {
+                sdr.classification
+                    .as_ref()
+                    .filter(|c| !c.unknown)
+                    .map(|c| c.class.label().to_string())
+            });
+            (centre_hz, bandwidth_hz, modulation, p)
+        }
+        None => {
+            let mut p = Provenance::user(at);
+            p.tool = "neowon sdr channel".into();
+            (sdr.tuned_hz, sdr.channel_width(), None, p)
+        }
+    };
     let id = cat.next_id();
-    let name = format!("{:.4} MHz", o.centre_hz / 1e6);
-    let mut p = Provenance::user(at);
-    p.kind = ProvKind::Decoder;
-    p.tool = "neowon detect".into();
-    p.input_ref = Some(format!("track:{}", t.id));
+    let name = format!("{:.4} MHz", centre_hz / 1e6);
     commit(
         cat,
         Op::Insert {
             entity: Entity::Signal(Signal {
                 id,
                 name,
-                centre_hz: o.centre_hz,
-                bandwidth_hz: o.bandwidth_hz(),
-                modulation: None,
+                centre_hz,
+                bandwidth_hz,
+                modulation,
                 source: None,
                 tags: Default::default(),
                 aliases: Vec::new(),
@@ -209,13 +238,7 @@ fn apply(a: CatalogAction, st: &mut CatalogState, sdr: &SdrState) -> Result<(), 
                 .ok_or_else(|| format!("no catalog open at {}", st.path.display()))?;
             match a {
                 CatalogAction::Add(None) => {
-                    let t = sdr
-                        .tracker
-                        .active()
-                        .max_by(|a, b| a.last.power_dbfs.total_cmp(&b.last.power_dbfs))
-                        .ok_or("no active detection to add")?
-                        .clone();
-                    let id = from_track(cat, &t, &at)?;
+                    let id = from_tuned(cat, sdr, &at)?;
                     st.selected = Some(id);
                 }
                 CatalogAction::Add(Some((hz, name))) => {

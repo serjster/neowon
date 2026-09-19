@@ -69,7 +69,7 @@ fn scope_to_sdr_chain_to_export_and_back() {
         c.ok(&format!("catalog export {}", export.display()));
         c.wait("get status", 5, |_| export.exists());
         let text = std::fs::read_to_string(&export).unwrap();
-        assert!(text.contains("100.3"), "{text}");
+        assert!((field(&text, "centre_hz") - 100.3e6).abs() < 5e3, "{text}");
 
         // Back to the scope, then the SDR again: tuning was kept.
         c.ok("instrument scope");
@@ -80,7 +80,40 @@ fn scope_to_sdr_chain_to_export_and_back() {
         let r = c.wait("get sdr", 10, |r| {
             r.contains(r#""active":true"#) && field(r, "frames_seen") > 0.0
         });
-        assert_eq!(field(&r, "centre_hz"), 100.3e6, "{r}");
+        assert_eq!(field(&r, "centre_hz"), 100e6, "{r}");
+        assert_eq!(field(&r, "tuned_hz"), 100.3e6, "{r}");
+
+        // D10: the tuned cursor is independent of the hardware window.
+        // Follow pins the window to the tuned frequency; centre moves it
+        // by itself; width is auto or manual.
+        c.ok("sdr follow on");
+        c.wait("get sdr", 5, |r| {
+            field(r, "centre_hz") == 100.3e6 && r.contains(r#""follow":true"#)
+        });
+        c.ok("sdr follow off");
+        c.ok("sdr centre 100M");
+        c.wait("get sdr", 5, |r| field(r, "centre_hz") == 100e6);
+        assert_eq!(field(&c.request("get sdr"), "tuned_hz"), 100.3e6);
+        c.ok("sdr width 15k");
+        c.wait("get sdr", 5, |r| {
+            field(r, "width_hz") == 15e3 && r.contains(r#""width_auto":false"#)
+        });
+        c.ok("sdr width auto");
+        c.wait("get sdr", 5, |r| r.contains(r#""width_auto":true"#));
+
+        // The view pans inside the IQ band (2.048 MS/s): a 200 kHz span
+        // can sit at most 924 kHz off the tuned centre; full span recentres.
+        c.ok("sdr span 200k");
+        c.ok("sdr pan 300k");
+        c.wait("get sdr", 5, |r| field(r, "pan_hz") == 300e3);
+        c.ok("sdr pan 5M");
+        c.wait("get sdr", 5, |r| field(r, "pan_hz") == 924e3);
+        c.ok("sdr span 0");
+        c.wait("get sdr", 5, |r| field(r, "pan_hz") == 0.0);
+        c.ok("sdr list 300");
+        c.wait("get sdr", 5, |r| field(r, "list_px") == 300.0);
+        c.ok("sdr list 5");
+        c.wait("get status", 5, |r| r.contains("list height"));
 
         // A refused instrument name reaches the status line, not a crash.
         let bad = c.request("instrument radar");

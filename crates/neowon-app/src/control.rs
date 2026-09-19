@@ -130,6 +130,7 @@ pub fn poll(
             Some("measure") => measure_json(&meas),
             Some("decode") => decode_json(dec),
             Some("sdr") => crate::sdr::sdr_json(sdr),
+            Some("audio") => crate::sdr::audio_json(sdr),
             Some("iq") => crate::sdr::iq_json(sdr),
             Some("detections") => crate::sdr::detections_json(sdr),
             Some("modmeas") => crate::sdr::modmeas_json(sdr),

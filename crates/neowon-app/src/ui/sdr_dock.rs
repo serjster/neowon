@@ -19,10 +19,13 @@ pub fn controls(ui: &mut egui::Ui, sdr: &SdrState, link: &Link, script: &mut Scr
     }
     ui.separator();
 
-    ui.label("Centre frequency (MHz)");
-    let mut mhz = c.centre_hz / 1e6;
+    ui.label("Tuned frequency (MHz)");
+    let mut mhz = sdr.tuned_hz / 1e6;
     if ui
         .add(egui::DragValue::new(&mut mhz).speed(0.01).max_decimals(6))
+        .on_hover_text(
+            "the channel you are monitoring; the hardware window does not move unless Follow is on",
+        )
         .changed()
     {
         inject(script, SdrAction::Tune(mhz * 1e6));
@@ -31,6 +34,54 @@ pub fn controls(ui: &mut egui::Ui, sdr: &SdrState, link: &Link, script: &mut Scr
         for (label, step) in [("−1M", -1e6), ("−100k", -1e5), ("+100k", 1e5), ("+1M", 1e6)] {
             if ui.small_button(label).clicked() {
                 inject(script, SdrAction::Step(step));
+            }
+        }
+        let mut follow = sdr.follow;
+        if ui
+            .checkbox(&mut follow, "Follow")
+            .on_hover_text("keep the hardware window centred on the tuned frequency")
+            .changed()
+        {
+            inject(script, SdrAction::Follow(follow));
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.weak("Centre");
+        let mut cmhz = c.centre_hz / 1e6;
+        if ui
+            .add(egui::DragValue::new(&mut cmhz).speed(0.01).max_decimals(6))
+            .on_hover_text("the hardware window's centre; right-drag the canvas to move it")
+            .changed()
+        {
+            inject(script, SdrAction::Centre(cmhz * 1e6));
+        }
+        ui.weak("MHz");
+    });
+    ui.horizontal(|ui| {
+        let mut auto = sdr.width_auto;
+        if ui
+            .checkbox(&mut auto, "Width auto")
+            .on_hover_text("take the width from the nearest detected signal's occupied bandwidth")
+            .changed()
+        {
+            inject(
+                script,
+                SdrAction::Width(if auto { None } else { Some(sdr.width_hz) }),
+            );
+        }
+        if sdr.width_auto {
+            ui.weak(format!("{:.1} kHz", sdr.channel_width() / 1e3));
+        } else {
+            let mut khz = sdr.width_hz / 1e3;
+            if ui
+                .add(
+                    egui::DragValue::new(&mut khz)
+                        .speed(0.1)
+                        .range(0.001..=(c.sample_rate / 1e3)),
+                )
+                .changed()
+            {
+                inject(script, SdrAction::Width(Some((khz * 1e3).max(1.0))));
             }
         }
     });
@@ -154,24 +205,93 @@ pub fn controls(ui: &mut egui::Ui, sdr: &SdrState, link: &Link, script: &mut Scr
         inject(script, SdrAction::Run(!c.running));
     }
     ui.separator();
-    if let Some((hz, db)) = sdr.peak() {
-        ui.monospace(format!("peak  {}\n      {db:.1} dBFS", fmt_mhz(hz)));
-    }
-    if let Some(s) = &sdr.spectrum {
-        ui.monospace(format!(
-            "floor {:.1} dBFS\nbin   {:.0} Hz",
-            s.median_db(),
-            s.bin_hz
-        ));
-    }
+    // Fixed line count, like the lab below.
+    ui.monospace(match sdr.peak() {
+        Some((hz, db)) => format!("peak  {}\n      {db:.1} dBFS", fmt_mhz(hz)),
+        None => "peak  -\n".into(),
+    });
+    ui.monospace(match &sdr.spectrum {
+        Some(s) => format!("floor {:.1} dBFS\nbin   {:.0} Hz", s.median_db(), s.bin_hz),
+        None => "floor -\n".into(),
+    });
     ui.monospace(format!("frames {}", sdr.frames_seen));
-    ui.separator();
-    signals(ui, sdr, script);
     if ui.button("Catalog…").clicked() {
         script.inject(Action::Catalog(crate::catalog::CatalogAction::Window(true)));
     }
+    ui.label(
+        egui::RichText::new(
+            "click tune · drag edge width · drag pan · right-drag window · scroll span",
+        )
+        .weak()
+        .small(),
+    );
+    audio(ui, sdr, script);
     ui.separator();
     lab(ui, sdr, script);
+}
+
+/// The audio section: demodulator, volume, mute, squelch and the one-line
+/// state. Every silent state is named (`off`, `no device`, `muted`,
+/// `squelched`), because they all sound the same.
+fn audio(ui: &mut egui::Ui, sdr: &SdrState, script: &mut Script) {
+    ui.separator();
+    ui.label("Audio");
+    ui.horizontal(|ui| {
+        let label = sdr.demod.map_or("Off", |m| m.label());
+        egui::ComboBox::from_id_salt("sdr-demod")
+            .selected_text(label)
+            .show_ui(ui, |ui| {
+                if ui.selectable_label(sdr.demod.is_none(), "Off").clicked() {
+                    inject(script, SdrAction::Demod(None));
+                }
+                for m in neowon_dsp::DemodMode::ALL {
+                    if ui
+                        .selectable_label(sdr.demod == Some(m), m.label())
+                        .clicked()
+                    {
+                        inject(script, SdrAction::Demod(Some(m)));
+                    }
+                }
+            });
+        let mut mute = sdr.mute;
+        if ui.checkbox(&mut mute, "Mute").changed() {
+            inject(script, SdrAction::Mute(mute));
+        }
+    });
+    ui.horizontal(|ui| {
+        let mut v = sdr.volume;
+        if ui
+            .add(egui::Slider::new(&mut v, 0.0..=1.0).text("vol"))
+            .changed()
+        {
+            inject(script, SdrAction::Volume(v));
+        }
+    });
+    ui.horizontal(|ui| {
+        // -120 dBFS is "off" for the gate.
+        let mut db = sdr.squelch_db.max(-120.0);
+        ui.label("squelch dB");
+        if ui
+            .add(egui::DragValue::new(&mut db).speed(0.5).range(-120.0..=0.0))
+            .changed()
+        {
+            inject(
+                script,
+                SdrAction::Squelch(if db <= -120.0 { None } else { Some(db) }),
+            );
+        }
+    });
+    let ch = if sdr.audio_channel_dbfs.is_finite() {
+        format!("{:.0}", sdr.audio_channel_dbfs)
+    } else {
+        "-".into()
+    };
+    ui.monospace(format!(
+        "{:<10} ch {:>5} dBFS  rms {:.2}",
+        sdr.audio_state(),
+        ch,
+        sdr.audio_rms
+    ));
 }
 
 /// The modulation lab: on/off, the assumed modulation, and its results
@@ -206,8 +326,10 @@ fn lab(ui: &mut egui::Ui, sdr: &SdrState, script: &mut Script) {
                 }
             });
     });
-    if let Some(a) = &sdr.analysis {
-        ui.monospace(format!(
+    // Always five lines, so the constellation and signal list below never
+    // jump as results come and go.
+    let results = match &sdr.analysis {
+        Some(a) => format!(
             "#{} {}{}  {:.1} ksym/s\nEVM {:.2} %  MER {:.1} dB\nC42 {:+.3}  |C40| {:.3}",
             a.track,
             a.modulation.label(),
@@ -217,28 +339,32 @@ fn lab(ui: &mut egui::Ui, sdr: &SdrState, script: &mut Script) {
             a.mer_db,
             a.cumulants.c42,
             a.cumulants.c40.norm()
-        ));
-    } else if sdr.analyse_on {
-        ui.weak("no signal near the tuned frequency");
-    }
-    if let Some(c) = &sdr.classification {
-        let label = if c.unknown {
-            "unknown"
-        } else {
-            c.class.label()
-        };
-        ui.monospace(format!(
-            "class {label}  {:.2} ({})\n  next {} (margin {:.2})",
+        ),
+        None if sdr.analyse_on => "no signal near the tuned frequency\n\n".into(),
+        None => "\n\n".into(),
+    };
+    let class = match &sdr.classification {
+        Some(c) => format!(
+            "class {}  {:.2} ({})\n  next {} (margin {:.2})",
+            if c.unknown {
+                "unknown"
+            } else {
+                c.class.label()
+            },
             c.confidence,
             c.trust.label(),
             c.runner_up.label(),
             c.margin
-        ));
-    }
+        ),
+        None => "\n".into(),
+    };
+    ui.monospace(format!("{results}\n{class}"));
 }
 
-/// Detection controls and the active tracks, strongest first.
-fn signals(ui: &mut egui::Ui, sdr: &SdrState, script: &mut Script) {
+/// Detection controls and the active tracks, strongest first. The list
+/// holds a fixed height whatever its length (so nothing around it jumps);
+/// drag the handle under it to resize it (`sdr list <px>`).
+pub fn signals(ui: &mut egui::Ui, sdr: &SdrState, script: &mut Script) {
     ui.horizontal(|ui| {
         let mut on = sdr.detect_on;
         if ui.checkbox(&mut on, "Detect").changed() {
@@ -255,7 +381,41 @@ fn signals(ui: &mut egui::Ui, sdr: &SdrState, script: &mut Script) {
     });
     let mut tracks: Vec<_> = sdr.tracker.active().collect();
     tracks.sort_by(|a, b| b.last.power_dbfs.total_cmp(&a.last.power_dbfs));
-    for t in tracks.iter().take(8) {
+    egui::ScrollArea::vertical()
+        .id_salt("sdr-signals")
+        .min_scrolled_height(sdr.list_px)
+        .max_height(sdr.list_px)
+        .auto_shrink([false, false])
+        .show(ui, |ui| track_rows(ui, sdr, &tracks, script));
+    // Resize handle.
+    let (r, resp) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 8.0), egui::Sense::drag());
+    let color = if resp.hovered() || resp.dragged() {
+        egui::Color32::from_gray(160)
+    } else {
+        egui::Color32::from_gray(80)
+    };
+    ui.painter().line_segment(
+        [
+            egui::pos2(r.center().x - 20.0, r.center().y),
+            egui::pos2(r.center().x + 20.0, r.center().y),
+        ],
+        (2.0, color),
+    );
+    let resp = resp.on_hover_cursor(egui::CursorIcon::ResizeVertical);
+    if resp.dragged() && resp.drag_delta().y != 0.0 {
+        let px = (sdr.list_px + resp.drag_delta().y).clamp(40.0, 2000.0);
+        inject(script, SdrAction::List(px.round()));
+    }
+}
+
+fn track_rows(
+    ui: &mut egui::Ui,
+    sdr: &SdrState,
+    tracks: &[&neowon_dsp::Track],
+    script: &mut Script,
+) {
+    for t in tracks {
         let o = &t.last;
         let text = format!(
             "#{:<3} {:>10.4} MHz {:>7.1} kHz\n     {:>6.1} dBFS  SNR {:>5.1} dB",

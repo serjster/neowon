@@ -23,7 +23,7 @@ pub mod scan;
 
 use crate::viz::waterfall::thermal;
 pub use actions::{SdrAction, parse, parse_hz, parse_instrument, parse_sim, run};
-pub use readout::{classify_json, detections_json, iq_json, modmeas_json, sdr_json};
+pub use readout::{audio_json, classify_json, detections_json, iq_json, modmeas_json, sdr_json};
 pub use scan::{diff_json as survey_diff_json, survey_json};
 
 /// Waterfall texture: display columns × history rows (newest on top).
@@ -48,9 +48,46 @@ pub struct SdrState {
     pub latest: Option<SharedFrame>,
     pub frames_seen: u64,
     pub fft_size: usize,
-    /// Displayed span, Hz, centred on the tuned frequency; 0 = the whole
-    /// sample rate.
+    /// Displayed span, Hz; 0 = the whole sample rate. The view sits
+    /// `pan_hz` off the hardware centre, which is also where it sits by
+    /// default.
     pub span_hz: f64,
+    /// Where the displayed span sits, Hz from the hardware centre: the
+    /// view pans inside the IQ band without retuning (`sdr pan`).
+    pub pan_hz: f64,
+    /// The tuned frequency: the channel the operator monitors, absolute
+    /// Hz. Distinct from `config.centre_hz`, the hardware window that sets
+    /// what the IQ band covers; tuning inside the band moves this and
+    /// leaves the hardware alone (`sdr tune`).
+    pub tuned_hz: f64,
+    /// The hardware window follows the tuned frequency (`sdr follow`).
+    pub follow: bool,
+    /// Channel width, Hz, used when it is not taken from a detection
+    /// (`sdr width <hz>`).
+    pub width_hz: f64,
+    /// Channel width follows the nearest detection's occupied bandwidth
+    /// (`sdr width auto`).
+    pub width_auto: bool,
+    /// Audio demodulation; `None` is off (`sdr demod`).
+    pub demod: Option<neowon_dsp::DemodMode>,
+    pub volume: f32,
+    pub mute: bool,
+    /// Squelch threshold on the channel power, dBFS (`sdr squelch`); a very
+    /// low value leaves the gate open.
+    pub squelch_db: f64,
+    /// The streaming demodulator, built while a mode is on.
+    receiver: Option<neowon_dsp::Receiver>,
+    /// Output device, opened on first use.
+    pub audio: Option<neowon_audio::sink::AudioOut>,
+    /// Scratch audio buffer, kept to avoid a per-frame allocation.
+    audio_buf: Vec<f32>,
+    /// Audio of the last frame: RMS, channel power, and whether the squelch
+    /// held it back.
+    pub audio_rms: f32,
+    pub audio_channel_dbfs: f64,
+    pub audio_squelched: bool,
+    /// Height of the dock's signal list, points (`sdr list`).
+    pub list_px: f32,
     /// Top of the display and its depth, dBFS / dB.
     pub ref_db: f64,
     pub range_db: f64,
@@ -106,6 +143,22 @@ impl Default for SdrState {
             frames_seen: 0,
             fft_size: 4096,
             span_hz: 0.0,
+            pan_hz: 0.0,
+            tuned_hz: 100e6,
+            follow: false,
+            width_hz: 12.5e3,
+            width_auto: true,
+            demod: None,
+            volume: 0.7,
+            mute: false,
+            squelch_db: -120.0,
+            receiver: None,
+            audio: None,
+            audio_buf: Vec::new(),
+            audio_rms: 0.0,
+            audio_channel_dbfs: f64::NEG_INFINITY,
+            audio_squelched: false,
+            list_px: 160.0,
             ref_db: 0.0,
             range_db: 100.0,
             spectrum: None,
@@ -149,6 +202,58 @@ impl SdrState {
         }
     }
 
+    /// Centre of the display, Hz.
+    pub fn view_centre(&self) -> f64 {
+        self.config.centre_hz + self.pan_hz
+    }
+
+    /// Keep the displayed span inside the IQ band.
+    pub fn clamp_pan(&mut self) {
+        let room = (self.config.sample_rate - self.span()).max(0.0) / 2.0;
+        self.pan_hz = self.pan_hz.clamp(-room, room);
+    }
+
+    /// The active detection nearest the tuned frequency, if any.
+    pub fn nearest_track(&self) -> Option<&neowon_dsp::Track> {
+        self.tracker.active().min_by(|a, b| {
+            let d = |t: &&neowon_dsp::Track| (t.last.centre_hz - self.tuned_hz).abs();
+            d(a).total_cmp(&d(b))
+        })
+    }
+
+    /// The channel width shown and filed: the nearest detection's measured
+    /// 99% bandwidth when auto and one is present, else the manual value.
+    pub fn channel_width(&self) -> f64 {
+        if self.width_auto {
+            self.nearest_track()
+                .map(|t| t.last.bandwidth_hz())
+                .filter(|w| *w > 0.0)
+                .unwrap_or(self.width_hz)
+        } else {
+            self.width_hz
+        }
+    }
+
+    /// Tune: move the channel cursor. The hardware window follows only
+    /// when `follow` is on (`sdr tune`, `sdr follow`).
+    pub fn set_tuned(&mut self, hz: f64) {
+        self.tuned_hz = hz;
+        if self.follow {
+            self.set_centre(hz);
+        }
+    }
+
+    /// Move the hardware window to `hz` and drop the display pan (`sdr
+    /// centre`, right-drag on the canvas). With `follow` on the tuned
+    /// cursor rides along, so the window still holds it centred.
+    pub fn set_centre(&mut self, hz: f64) {
+        self.config.centre_hz = hz;
+        self.pan_hz = 0.0;
+        if self.follow {
+            self.tuned_hz = hz;
+        }
+    }
+
     /// Strongest displayed signal: `(absolute Hz, dBFS)`.
     pub fn peak(&self) -> Option<(f64, f64)> {
         let s = self.spectrum.as_ref()?;
@@ -157,7 +262,9 @@ impl SdrState {
         s.power_db
             .iter()
             .enumerate()
-            .filter(|(k, _)| k.abs_diff(dc) > DC_GUARD && s.offset_hz(*k).abs() <= half)
+            .filter(|(k, _)| {
+                k.abs_diff(dc) > DC_GUARD && (s.offset_hz(*k) - self.pan_hz).abs() <= half
+            })
             .max_by(|a, b| a.1.total_cmp(b.1))
             .map(|(k, &p)| (self.config.centre_hz + s.offset_hz(k), p))
     }
@@ -166,16 +273,32 @@ impl SdrState {
     pub fn level(&self, db: f64) -> f32 {
         (1.0 - (self.ref_db - db) / self.range_db).clamp(0.0, 1.0) as f32
     }
+
+    /// The audio state the UI and `get audio` report. All of `off`,
+    /// `no device`, `starting`, `muted` and `squelched` mean silence, so
+    /// they are told apart by name.
+    pub fn audio_state(&self) -> &'static str {
+        if self.demod.is_none() {
+            return "off";
+        }
+        match &self.audio {
+            None => "starting",
+            Some(a) if !a.available() => "no device",
+            Some(_) if self.mute => "muted",
+            Some(_) if self.audio_squelched => "squelched",
+            Some(_) => "playing",
+        }
+    }
 }
 
-/// `cols` display columns across `span` Hz centred on DC, each the peak of
+/// `cols` display columns across `span` Hz centred `pan` Hz from DC, each the peak of
 /// the bins it covers (peak-preserving: a narrow carrier never vanishes
 /// between columns).
-pub fn columns(s: &IqSpectrum, span: f64, cols: usize) -> Vec<f64> {
+pub fn columns(s: &IqSpectrum, pan: f64, span: f64, cols: usize) -> Vec<f64> {
     (0..cols)
         .map(|c| {
-            let lo = (c as f64 / cols as f64 - 0.5) * span;
-            let hi = ((c + 1) as f64 / cols as f64 - 0.5) * span;
+            let lo = pan + (c as f64 / cols as f64 - 0.5) * span;
+            let hi = pan + ((c + 1) as f64 / cols as f64 - 0.5) * span;
             let (a, b) = (s.bin_of(lo), s.bin_of(hi));
             s.power_db[a.min(b)..=a.max(b)]
                 .iter()
@@ -198,7 +321,7 @@ pub fn update(mut sdr: ResMut<SdrState>) {
     let Some(spec) = iq_spectrum(data, frame.sample_rate, Window::Hann, sdr.fft_size) else {
         return;
     };
-    let cols = columns(&spec, sdr.span(), WF_W);
+    let cols = columns(&spec, sdr.pan_hz, sdr.span(), WF_W);
     // Scroll down one row and paint the new one on top.
     sdr.waterfall.copy_within(0..WF_W * (WF_H - 1), WF_W);
     for (c, db) in cols.iter().enumerate() {
@@ -221,20 +344,61 @@ pub fn update(mut sdr: ResMut<SdrState>) {
     // The lab is costly (a channel filter and two recoveries): every 8th
     // frame, a few times a second.
     if sdr.analyse_on && frame.seq % 8 == 0 {
+        // The lab runs on the signal nearest the tuned frequency; `centre`
+        // is still the hardware window, the spectrum's zero.
         let centre = sdr.config.centre_hz;
-        let target = sdr
-            .tracker
-            .active()
-            .min_by(|a, b| {
-                let d = |t: &&neowon_dsp::Track| (t.last.centre_hz - centre).abs();
-                d(a).total_cmp(&d(b))
-            })
-            .cloned();
+        let target = sdr.nearest_track().cloned();
         sdr.classification = target
             .as_ref()
             .and_then(|t| analysis::classify(&frame, centre, t));
         sdr.analysis = target.and_then(|t| analysis::analyse(&frame, centre, &t, sdr.modulation));
     }
+    if let Some(mode) = sdr.demod {
+        feed_audio(&mut sdr, &frame, mode);
+    }
+}
+
+/// Demodulate the tuned channel from `frame` and push it to the sink. The
+/// receiver and sink persist; only the config changes frame to frame.
+fn feed_audio(sdr: &mut SdrState, frame: &neowon_core::CaptureFrame, mode: neowon_dsp::DemodMode) {
+    let audio_rate = sdr
+        .audio
+        .get_or_insert_with(neowon_audio::sink::AudioOut::spawn)
+        .rate();
+    let cfg = neowon_dsp::ReceiverConfig {
+        mode,
+        offset_hz: sdr.tuned_hz - sdr.config.centre_hz,
+        width_hz: sdr.channel_width().clamp(200.0, 0.9 * frame.sample_rate),
+        sample_rate: frame.sample_rate,
+        audio_rate,
+        deemphasis_tau_s: matches!(
+            mode,
+            neowon_dsp::DemodMode::Nfm | neowon_dsp::DemodMode::Wfm
+        )
+        .then_some(75e-6),
+    };
+    let mut audio = std::mem::take(&mut sdr.audio_buf);
+    {
+        let rx = sdr
+            .receiver
+            .get_or_insert_with(|| neowon_dsp::Receiver::new(cfg));
+        rx.configure(cfg);
+        audio.clear();
+        rx.process(&frame.channels[0].data, &mut audio);
+        sdr.audio_channel_dbfs = rx.channel_dbfs();
+    }
+    sdr.audio_rms = if audio.is_empty() {
+        0.0
+    } else {
+        (audio.iter().map(|x| x * x).sum::<f32>() / audio.len() as f32).sqrt()
+    };
+    sdr.audio_squelched = sdr.audio_channel_dbfs < sdr.squelch_db;
+    if sdr.audio_squelched {
+        // Silence, but keep the receiver's filters warm (no reset).
+    } else if let Some(out) = &sdr.audio {
+        out.push(&audio);
+    }
+    sdr.audio_buf = audio;
 }
 
 /// Detect in the frame (one detection frame per SDR frame) and fold the
@@ -298,7 +462,7 @@ mod tests {
             noise_rms: 0.01,
         };
         let s = iq_spectrum(&scene.samples(1, 0, 8192), 2.048e6, Window::Hann, 4096).unwrap();
-        let cols = columns(&s, 2.048e6, WF_W);
+        let cols = columns(&s, 0.0, 2.048e6, WF_W);
         let (c, db) = cols
             .iter()
             .enumerate()

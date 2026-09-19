@@ -49,8 +49,8 @@ pub fn sdr_json(sdr: &SdrState) -> String {
     format!(
         concat!(
             r#"{{"ok":true,"active":{},"backend":"{}","serial":"{}","tuner":"{}","#,
-            r#""centre_hz":{},"sample_rate":{},"gain_db":{},"agc":{},"ppm":{},"running":{},"#,
-            r#""span_hz":{},"fft":{},"ref_db":{},"range_db":{},"frames_seen":{},"#,
+            r#""centre_hz":{},"tuned_hz":{},"follow":{},"width_hz":{},"width_auto":{},"sample_rate":{},"gain_db":{},"agc":{},"ppm":{},"running":{},"#,
+            r#""span_hz":{},"pan_hz":{},"list_px":{},"fft":{},"ref_db":{},"range_db":{},"frames_seen":{},"#,
             r#""peak_hz":{},"peak_dbfs":{},"floor_dbfs":{}}}"#
         ),
         sdr.active,
@@ -58,12 +58,18 @@ pub fn sdr_json(sdr: &SdrState) -> String {
         serial,
         tuner,
         num(c.centre_hz),
+        num(sdr.tuned_hz),
+        sdr.follow,
+        num(sdr.channel_width()),
+        sdr.width_auto,
         num(c.sample_rate),
         gain,
         c.agc,
         num(c.ppm),
         c.running,
         num(sdr.span()),
+        num(sdr.pan_hz),
+        num(sdr.list_px as f64),
         sdr.fft_size,
         num(sdr.ref_db),
         num(sdr.range_db),
@@ -71,6 +77,40 @@ pub fn sdr_json(sdr: &SdrState) -> String {
         num(peak_hz),
         num(peak_db),
         num(floor),
+    )
+}
+
+/// `get audio`: the demodulator and the output device, with the silent
+/// states named (`off | no device | starting | muted | squelched | playing`).
+pub fn audio_json(sdr: &SdrState) -> String {
+    let (device, rate, available, underruns, dropped) = match &sdr.audio {
+        Some(a) => (
+            a.device().to_string(),
+            a.rate(),
+            a.available(),
+            a.underruns(),
+            a.dropped(),
+        ),
+        None => (String::new(), 0.0, false, 0, 0),
+    };
+    format!(
+        concat!(
+            r#"{{"ok":true,"demod":"{}","state":"{}","device":"{}","rate":{},"available":{},"#,
+            r#""volume":{},"mute":{},"squelch_db":{},"rms":{},"channel_dbfs":{},"#,
+            r#""underruns":{},"dropped":{}}}"#
+        ),
+        sdr.demod.map_or("off", |m| m.verb()),
+        sdr.audio_state(),
+        crate::control::escape(&device),
+        num(rate),
+        available,
+        num(sdr.volume as f64),
+        sdr.mute,
+        num(sdr.squelch_db),
+        num(sdr.audio_rms as f64),
+        num(sdr.audio_channel_dbfs),
+        underruns,
+        dropped,
     )
 }
 
