@@ -5,7 +5,7 @@
 /// Whether `;`, tab or `,` separates the fields of a header line — the
 /// FMLIST export's delimiter is not fixed (D17).
 pub(crate) fn detect_delimiter(header: &str) -> u8 {
-    [b',', b';', b'\t']
+    (*b",;\t")
         .into_iter()
         .max_by_key(|d| header.matches(*d as char).count())
         .unwrap_or(b',')
