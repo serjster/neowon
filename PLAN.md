@@ -529,7 +529,8 @@ Auto-cal port (compensation pass descending ranges @ DC, amplitude pass ascendin
 > **10.12 DONE (2026-09-19, ahead of 10.11 at the operator's request):**
 > automatic state persistence — `~/.neowon/state.nws` saved debounced + on
 > exit, restored after connect, env > saved > auto-fit (`--test
-> state_persist`).
+> state_persist`); a later operator request made the workspace mode
+> (SCOPE | SDR) part of the file, restored within the launch's family.
 > **UI round (2026-09-19, operator):** the D12 workspace chrome landed
 > ahead of 10.11's full split. A SCOPE | SDR switch in the app bar
 > (⌘/Ctrl+1/2) replaces the Instrument menu. The SDR front panel and View

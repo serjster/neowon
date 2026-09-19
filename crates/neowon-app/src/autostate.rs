@@ -14,9 +14,11 @@
 //! regression runs stay deterministic; `NEOWON_STATE=<path>` moves the file.
 //!
 //! Left out on purpose: the sim stimulus and seed (test fixtures, and the
-//! instrument switch resets them), run/stop (an instrument that comes up
-//! stopped looks broken), and the instrument itself (the launch flags pick
-//! it).
+//! instrument switch resets them), and run/stop (an instrument that comes
+//! up stopped looks broken). The workspace mode (SCOPE | SDR) **is** saved:
+//! the launch flags still pick the family (simulators vs hardware), and the
+//! saved mode picks which of the family's two instruments comes up
+//! (operator, 2026-09-19).
 
 use std::path::{Path, PathBuf};
 
@@ -219,6 +221,14 @@ impl Snapshot<'_, '_> {
         for a in sdr_actions(&self.sdr) {
             s += &format!("{a}\n");
         }
+        // Last, after both modes' settings: the switch then hands the new
+        // instrument the config the lines above just restored. Within the
+        // launch's family, so a saved SDR mode cannot turn a `--sim` run
+        // into hardware or vice versa.
+        s += &format!(
+            "instrument {}\n",
+            if self.sdr.active { "sdr" } else { "scope" }
+        );
         use crate::refmap::RefMapAction as R;
         for a in [
             R::Plan(refmap.stem().to_string()),

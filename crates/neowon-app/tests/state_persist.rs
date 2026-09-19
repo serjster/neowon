@@ -94,6 +94,54 @@ fn state_survives_a_restart() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Operator request 2026-09-19: the workspace mode (SCOPE | SDR) is part
+/// of the saved state — the launch flags still pick the family, the file
+/// picks which of the family's two instruments comes up.
+#[test]
+#[ignore = "opens a window"]
+fn the_workspace_mode_survives_a_restart() {
+    let dir = tmp("workspace");
+    let state = dir.join("state.nws");
+    let st = state.to_str().unwrap();
+
+    // A scope launch (`--sim`) left in SDR mode.
+    let (child, mut c) = launch(&["--sim"], &[("NEOWON_STATE", st)]);
+    c.wait("get status", 15, |r| field(r, "frames_seen") > 0.0);
+    c.ok("instrument sdr");
+    c.wait("get sdr", 15, |r| {
+        r.contains(r#""active":true"#) && field(r, "frames_seen") > 0.0
+    });
+    c.ok("sdr tune 100.3M");
+    c.wait("get sdr", 5, |r| field(r, "tuned_hz") == 100.3e6);
+    quit(child, &mut c);
+    let text = std::fs::read_to_string(&state).expect("state written on exit");
+    assert!(text.lines().any(|l| l == "instrument sdr"), "{text}");
+
+    // The same scope launch comes back in SDR mode, with the tuning.
+    let (child, mut c) = launch(&["--sim"], &[("NEOWON_STATE", st)]);
+    c.wait("get sdr", 15, |r| {
+        r.contains(r#""active":true"#) && field(r, "frames_seen") > 0.0
+    });
+    let r = c.request("get sdr");
+    assert_eq!(field(&r, "tuned_hz"), 100.3e6, "{r}");
+    // Left in scope mode this time.
+    c.ok("instrument scope");
+    c.wait("get sdr", 10, |r| r.contains(r#""active":false"#));
+    c.wait("get status", 10, |r| field(r, "frames_seen") > 0.0);
+    quit(child, &mut c);
+    let text = std::fs::read_to_string(&state).expect("state written on exit");
+    assert!(text.lines().any(|l| l == "instrument scope"), "{text}");
+
+    // A launch on the other family member (`--sdr-sim`) honours the saved
+    // scope mode: the flag picks sim-vs-hardware, the file picks the mode.
+    let (child, mut c) = launch(&["--sdr-sim"], &[("NEOWON_STATE", st)]);
+    with_app(child, || {
+        c.wait("get sdr", 15, |r| r.contains(r#""active":false"#));
+        c.wait("get status", 10, |r| field(r, "frames_seen") > 0.0);
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 #[ignore = "opens a window"]
 fn env_wins_over_the_saved_scale() {
