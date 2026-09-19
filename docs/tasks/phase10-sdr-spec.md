@@ -120,7 +120,10 @@ with the "G1/G2" gap labels in Phase 7.8.
   window **Centre** and the operator's **Tuned** frequency are distinct and
   must not share a field. `Tuned` lives in `SdrState` (host-side), not
   `SdrConfig`: tuning inside the band must not mark the hardware config dirty.
-  `sdr tune`/`sdr step` move Tuned and leave the window alone; `sdr centre`
+  `sdr tune`/`sdr step` move Tuned and leave the window alone while Tuned is
+  inside the band (amended 2026-09-19, operator bug report: a target outside
+  the band — beyond 45% of the sample rate from Centre — recentres the window
+  on it, and one outside a zoomed view pans the view); `sdr centre`
   moves the window; `sdr follow on` pins the window to Tuned (off by default);
   right-drag on the canvas moves the window by hand. The canvas shows a red
   tuned cursor carrying the frequency and a shaded **Width** band (auto from

@@ -13,7 +13,8 @@ use crate::Scope;
 pub struct TuneParams {
     /// Tuned frequency, Hz: the channel to monitor (0.5 MHz – 1.766 GHz;
     /// below 24 MHz uses the RTL-SDR V3's HF direct-sampling input). The
-    /// hardware window does not move unless Follow is on; move it with
+    /// hardware window stays put while the target is inside the IQ band
+    /// and recentres on it otherwise (always with Follow on); move it with
     /// `sdr centre <hz>`, and set the channel width with `sdr width`.
     tuned_hz: f64,
     /// IQ sample rate, pairs/s (one of the instrument's offered rates).

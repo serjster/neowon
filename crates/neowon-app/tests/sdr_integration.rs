@@ -110,6 +110,16 @@ fn scope_to_sdr_chain_to_export_and_back() {
         c.wait("get sdr", 5, |r| field(r, "pan_hz") == 924e3);
         c.ok("sdr span 0");
         c.wait("get sdr", 5, |r| field(r, "pan_hz") == 0.0);
+
+        // Tuning outside the IQ band recentres the hardware on the target;
+        // inside it the window stays put.
+        c.ok("sdr tune 145.5M");
+        c.wait("get sdr", 5, |r| {
+            field(r, "centre_hz") == 145.5e6 && field(r, "tuned_hz") == 145.5e6
+        });
+        c.ok("sdr tune 145.9M");
+        c.wait("get sdr", 5, |r| field(r, "tuned_hz") == 145.9e6);
+        assert_eq!(field(&c.request("get sdr"), "centre_hz"), 145.5e6);
         c.ok("sdr list 300");
         c.wait("get sdr", 5, |r| field(r, "list_px") == 300.0);
         c.ok("sdr list 5");
