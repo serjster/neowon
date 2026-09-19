@@ -803,9 +803,13 @@ criterion.
 - **10.12 (2026-09-19, operator: "it should save last settings").** Landed
   ahead of 10.11 because the operator asked for it. `neowon-app/src/autostate.rs`.
   - Not persisted, on purpose: the sim stimulus and seed (test fixtures, and
-    the instrument switch resets them), run/stop (an instrument that comes up
-    stopped looks broken), and the instrument (the launch flags choose it).
-    The workspace is not saved yet, because it does not exist until 10.11.
+    the instrument switch resets them) and run/stop (an instrument that comes
+    up stopped looks broken).
+  - **Amendment (operator, 2026-09-19): the workspace mode is persisted.**
+    The file ends with `instrument scope|sdr`; the launch flags still pick
+    the family (simulators ↔ simulators, hardware ↔ hardware, `--audio` ↔
+    the simulated SDR), and the saved mode picks which instrument of that
+    family comes up. Asserted by `state_persist::the_workspace_mode_survives_a_restart`.
   - `NEOWON_STATE=<path>` moves the file (tests need their own), and
     `neowon-mcp --spawn-sim` sets `NEOWON_NO_STATE`, so an agent-driven sim
     cannot overwrite the operator's setup. Every automated app spawn in the
