@@ -214,7 +214,7 @@ survives restarts.
 It is fully scriptable like the scope, e.g.:
 
 ```sh
-sdr tune 99.4M        # tune the channel cursor (the window does not move)
+sdr tune 99.4M        # tune the channel cursor (the window moves only if 99.4M is outside it)
 sdr centre 99M        # move the hardware window
 sdr width auto        # channel width from the nearest detection
 sdr demod wfm         # realtime audio; am | nfm | wfm | off

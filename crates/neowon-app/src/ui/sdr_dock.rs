@@ -24,7 +24,7 @@ pub fn controls(ui: &mut egui::Ui, sdr: &SdrState, link: &Link, script: &mut Scr
     if ui
         .add(egui::DragValue::new(&mut mhz).speed(0.01).max_decimals(6))
         .on_hover_text(
-            "the channel you are monitoring; the hardware window does not move unless Follow is on",
+            "the channel you are monitoring; the hardware window moves only when the target is outside it, or Follow is on",
         )
         .changed()
     {

@@ -35,6 +35,10 @@ pub const IQ_POINTS: usize = 2048;
 /// Bins either side of DC ignored by the peak readout (the RTL2832's DC
 /// spike would win otherwise).
 pub const DC_GUARD: usize = 4;
+/// How far from a centre, as a fraction of its width, a tuned frequency may
+/// sit and still count as inside: the band edges roll off, so the outer 10%
+/// of the IQ band retunes the hardware and of a zoomed view pans it.
+const TUNE_REACH: f64 = 0.45;
 
 #[derive(Resource)]
 pub struct SdrState {
@@ -58,7 +62,8 @@ pub struct SdrState {
     /// The tuned frequency: the channel the operator monitors, absolute
     /// Hz. Distinct from `config.centre_hz`, the hardware window that sets
     /// what the IQ band covers; tuning inside the band moves this and
-    /// leaves the hardware alone (`sdr tune`).
+    /// leaves the hardware alone, tuning beyond it recentres the hardware
+    /// (`sdr tune`).
     pub tuned_hz: f64,
     /// The hardware window follows the tuned frequency (`sdr follow`).
     pub follow: bool,
@@ -234,12 +239,18 @@ impl SdrState {
         }
     }
 
-    /// Tune: move the channel cursor. The hardware window follows only
-    /// when `follow` is on (`sdr tune`, `sdr follow`).
+    /// Tune: move the channel cursor (`sdr tune`, `sdr follow`). Inside the
+    /// IQ band the hardware stays put and the view pans only if the cursor
+    /// left it; a target the band cannot see recentres the hardware on it,
+    /// as does `follow`.
     pub fn set_tuned(&mut self, hz: f64) {
         self.tuned_hz = hz;
-        if self.follow {
+        let reach = self.config.sample_rate * TUNE_REACH;
+        if self.follow || (hz - self.config.centre_hz).abs() > reach {
             self.set_centre(hz);
+        } else if (hz - self.view_centre()).abs() > self.span() * TUNE_REACH {
+            self.pan_hz = hz - self.config.centre_hz;
+            self.clamp_pan();
         }
     }
 
@@ -479,5 +490,35 @@ mod tests {
         assert_eq!(s.level(0.0), 1.0);
         assert_eq!(s.level(-50.0), 0.5);
         assert_eq!(s.level(-150.0), 0.0);
+    }
+
+    #[test]
+    fn tuning_outside_the_band_moves_the_hardware() {
+        let mut s = SdrState::default();
+        s.config.centre_hz = 100e6;
+        s.config.sample_rate = 2.048e6;
+        // Inside the band: the cursor moves, the hardware stays.
+        s.set_tuned(100.3e6);
+        assert_eq!((s.tuned_hz, s.config.centre_hz), (100.3e6, 100e6));
+        // Beyond it: the hardware recentres on the target.
+        s.set_tuned(145.5e6);
+        assert_eq!((s.tuned_hz, s.config.centre_hz), (145.5e6, 145.5e6));
+        // Into the rolled-off edge: recentred too.
+        s.set_tuned(145.5e6 + 0.95e6);
+        assert_eq!(s.config.centre_hz, 146.45e6);
+    }
+
+    #[test]
+    fn tuning_outside_a_zoomed_view_pans_it() {
+        let mut s = SdrState::default();
+        s.config.centre_hz = 100e6;
+        s.config.sample_rate = 2.048e6;
+        s.span_hz = 200e3;
+        s.set_tuned(100.6e6);
+        assert_eq!(s.config.centre_hz, 100e6);
+        assert_eq!(s.view_centre(), 100.6e6);
+        // A step that stays in view leaves the pan alone.
+        s.set_tuned(100.62e6);
+        assert_eq!(s.view_centre(), 100.6e6);
     }
 }

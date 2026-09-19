@@ -116,8 +116,10 @@ SDR vocabulary:
   which sets what RF the band covers (`sdr centre`). It is not where you
   listen.
 - **Tuned** — the channel the operator monitors, an absolute frequency
-  inside (or beyond) the IQ band (`sdr tune`, `sdr step`). Tuning moves
-  this and leaves the window alone, so two in-band signals stay visible.
+  inside (or beyond) the IQ band (`sdr tune`, `sdr step`). Tuning inside
+  the band moves this and leaves the window alone, so two in-band signals
+  stay visible; a target outside the band recentres the window on it, and a
+  target outside a zoomed view pans the view.
 - **Follow** — when on, the hardware window keeps the tuned frequency at
   its centre (`sdr follow`); off by default. Right-drag moves the window
   by hand.
