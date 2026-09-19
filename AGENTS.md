@@ -92,6 +92,10 @@ restart-with-script loops when iterating on behavior or diagnosing state:
   prefer its tools (`measurements`, `screenshot`, `exec_script`) over
   shelling out — the screenshot tool returns an image you can actually
   look at.
+- `get uitree` (MCP `ui_tree`, filterable) returns the UI element tree —
+  every widget and custom-painted element with role, label, state and rect,
+  like a browser DOM inspector. Use it to audit layout and to assert UI in
+  tests; screenshots are for looking, the tree is for checking.
 - Anything you can't reach this way is a missing script action — fix
   that first (script-parity rule), don't work around it.
 - Scripted end-to-end runs (`NEOWON_SCRIPT` + `quit`) remain the way to
