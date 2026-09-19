@@ -16,11 +16,12 @@ each with a deterministic simulated backend for development and testing.
 Prebuilt binaries for Linux, macOS (Intel and Apple Silicon) and Windows are
 attached to each [release](https://github.com/serjster/neowon/releases).
 Unpack and run `neowon-app`; the archive carries the display-effect shaders,
-the VDS1022 FPGA bitstreams (needed after the instrument is power-cycled) and,
-on Linux, the udev rule that makes the device reachable as a normal user:
+the SDR++ band plans, the VDS1022 FPGA bitstreams (needed after the
+instrument is power-cycled) and, on Linux, the udev rules that make the
+devices reachable as a normal user:
 
 ```sh
-sudo cp 99-vds1022.rules /etc/udev/rules.d/ && sudo udevadm control --reload
+sudo cp 99-vds1022.rules 99-rtlsdr.rules /etc/udev/rules.d/ && sudo udevadm control --reload
 ```
 
 Or build from source with `cargo build --release`.
@@ -41,6 +42,15 @@ Or build from source with `cargo build --release`.
   sound card with volume, mute and squelch, from the same streaming DSP that
   feeds the displays; the channel width is set by dragging the filter edges on
   the spectrum.
+- **RF reference**: the whole tunable range as a band chart (RF map window,
+  minimap, band strip under the spectrum) driven by SDR++-schema band plans —
+  21 shipped, plus your own in `~/.neowon/bandplans` — and a known-station
+  layer imported from public databases (Wikidata, EiBi, OurAirports, FCC
+  `fmq`/`amq`, FMLIST exports), ranked by distance from an opt-in location.
+  Click a station to tune it and pick the fitting demodulator; `+ cat` copies
+  a row into the catalog with `refdb:<source>:<id>` provenance. The reference
+  store (`~/.neowon/refdb`) is separate from the catalog, and nothing is
+  fetched unless you ask — no startup or background lookups.
 - **GPU digital-phosphor display**: compute-shader rasterization with
   intensity grading, persistence (off → infinite), vectors/dots/XY modes,
   optional CRT styling (phosphor halo, scanlines, vignette), and thermal /
@@ -92,10 +102,11 @@ Or build from source with `cargo build --release`.
   monitor, with a manual override for hi-DPI panels the OS does not scale
   (`NEOWON_UI_SCALE`, or the Utility dialog's slider).
 - **Comes back the way you left it**: UI scale, window size and position,
-  dock sections, open windows and every scope and SDR setting are saved to
-  `~/.neowon/state.nws` (a plain session script) and restored at launch.
-  Environment overrides win; `NEOWON_NO_STATE=1` turns it off, and scripted
-  runs never touch it.
+  dock sections, open windows, the workspace mode (scope or SDR) and every
+  scope and SDR setting are saved to `~/.neowon/state.nws` (a plain session
+  script) and restored at launch — the launch flags still pick simulators vs
+  hardware. Environment overrides win; `NEOWON_NO_STATE=1` turns it off, and
+  scripted runs never touch it.
 - **Fully scriptable**: every control is reachable from a plain-text
   automation script (`NEOWON_SCRIPT`), including plot-texture screenshots
   with regions of interest — the same mechanism the test suite uses.
@@ -320,11 +331,11 @@ cargo run -p neowon-vds1022 --example trigtest         # trigger matrix (NEEDS H
 
 CI builds and tests every push. Publishing is deliberate: push a tag and the
 release workflow builds Linux, macOS (Intel and Apple Silicon) and Windows,
-packages each with the shaders, bitstreams, licences and udev rule, and
-attaches them to a GitHub release.
+packages each with the shaders, band plans, bitstreams, licences and udev
+rules, and attaches them to a GitHub release.
 
 ```sh
-git tag -a v0.2.0 -m "v0.2.0" && git push origin v0.2.0
+git tag -a v0.2.1 -m "v0.2.1" && git push origin v0.2.1
 ```
 
 Run the same workflow from the Actions tab (`workflow_dispatch`) to build and

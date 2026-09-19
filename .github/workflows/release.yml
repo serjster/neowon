@@ -109,6 +109,9 @@ jobs:
             done
           fi
           cp -r assets/shaders/user "dist/$name/assets/shaders/user"
+          # The SDR's band plans (the RF map, band strip and minimap read
+          # them beside the binary).
+          cp -r assets/bandplans "dist/$name/assets/bandplans"
           # Named `fwr` because that is the first directory the driver looks in,
           # both beside the binary and in the working directory.
           cp -r 3rdparty/fw "dist/$name/fwr"
