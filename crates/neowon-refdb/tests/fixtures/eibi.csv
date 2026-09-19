@@ -1,0 +1,5 @@
+kHz;Time(UTC);Days;ITU;Station;Lng;Target;Remarks;P;Start;Stop
+5940;0000-2400;Mo-Su;POR;Rádio Nacional;Por;Eu;;100;0000;2400
+6070;0500-0600;Sa,Su;DEU;Evangeliums-Rundfunk;Ger;Eu;USB;10;0500;0600
+17830;1700-1800;Mo-Fr;FRA;RFI;Fra;Af;DRM;100;1700;1800
+bogus;0000-2400;Mo;XXX;Broken;Eng;Eu;;1;0000;2400

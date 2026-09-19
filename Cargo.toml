@@ -7,6 +7,7 @@ members = [
     "crates/neowon-sim",
     "crates/neowon-sdr",
     "crates/neowon-catalog",
+    "crates/neowon-refdb",
     "crates/neowon-audio",
     "crates/neowon-vds1022",
     "crates/neowon-cli",
@@ -26,6 +27,7 @@ neowon-dsp = { path = "crates/neowon-dsp" }
 neowon-sim = { path = "crates/neowon-sim" }
 neowon-sdr = { path = "crates/neowon-sdr" }
 neowon-catalog = { path = "crates/neowon-catalog" }
+neowon-refdb = { path = "crates/neowon-refdb" }
 neowon-audio = { path = "crates/neowon-audio" }
 neowon-vds1022 = { path = "crates/neowon-vds1022" }
 
@@ -39,6 +41,9 @@ nusb = "0.2"
 zstd = "0.13"
 # Phase 10 D4: the catalog's file format. Already in the tree via neowon-mcp.
 serde = { version = "1.0.229", features = ["derive"] }
+# Phase 10.14 D19: blocking HTTPS for the reference fetchers, rustls and
+# confined to neowon-refdb::fetch.
+ureq = "3"
 # float_roundtrip: catalog f64 fields must survive JSON field-exact.
 serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
 # Pinned to the version already compiled in Bevy's tree (see Cargo.lock).
