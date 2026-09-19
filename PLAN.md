@@ -508,6 +508,22 @@ Auto-cal port (compensation pass descending ranges @ DC, amplitude pass ascendin
 > mode-aware; `--test sdr_integration` runs scope→SDR→tune→detect→analyse→
 > classify→catalog→export→scope→SDR. Missing: decode in the chain (10.6),
 > a mode-aware front panel.
+> **D10 landed (operator 2026-09-19):** the SDR separates the hardware
+> **Centre** from the operator's **Tuned** frequency. Tuned lives host-side;
+> left-click sets the tuned cursor without moving the window, right-drag moves
+> the window, an off-by-default **Follow** checkbox pins it to Tuned, and the
+> cursor carries a shaded channel **Width** (auto from the nearest detection or
+> manual). `catalog add` files the tuned channel (measured detection, else the
+> tuned frequency with operator provenance). Decision in
+> `docs/tasks/phase10-sdr-spec.md` D10; audio is its own sub-phase 10.10.
+> **10.10 DONE + D12–D15 recorded (2026-09-19):** realtime audio — a streaming
+> `neowon_dsp::demod` (NCO mixer, decimating channel filter, AM/NFM/WFM, a
+> windowed-sinc resampler) and a cpal **output** sink in `neowon-audio`, with
+> the dock **Audio** section, `get audio` and `sdr demod|volume|mute|squelch`;
+> `demod_golden`, the sink tests and `sdr_audio` pass. Channel width is set by
+> dragging a filter edge (D14). Next: **10.11** scope/SDR workspace split
+> (D12), **10.12** automatic state persistence (D13), **10.13**
+> channel-relative visualizations (D15).
 > Nothing left that runs without the operator except polish. neowon becomes one instrument in two modes —
 > **Scope** and **SDR** — riding `Acquisition::Stream` and the shared engine
 > (recorder/timeline, phosphor, decode, control socket, MCP). RTL-SDR drives
@@ -520,7 +536,10 @@ Auto-cal port (compensation pass descending ranges @ DC, amplitude pass ascendin
 > & measurement · **10.2** catalog v1 · **10.3** modulation lab · **10.4** scanning
 > & survey · **10.5** classification · **10.6** protocol & source · **10.7** RF
 > fingerprinting · **10.8** dataset & training (parallel) · **10.9** UX/control
-> parity (continuous). Each ends runnable and sim-tested; do not begin without
+> parity (continuous) · **10.10** demodulation & audio (AM/FM first) ·
+> **10.11** scope/SDR workspace split · **10.12** automatic state persistence ·
+> **10.13** channel-relative visualizations. Each ends
+> runnable and sim-tested; do not begin without
 > reading the spec's Purpose, decisions (D0–D9), D1b spike and gates (SDR-G1/SDR-G2).
 
 **Done when:** the spec's phase "Done when" is met — all mechanical criteria pass,
