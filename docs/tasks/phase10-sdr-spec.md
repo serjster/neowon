@@ -800,3 +800,21 @@ criterion.
   - A `shot window` (whole-window PNG through Bevy's `Screenshot`) was
     tried and backed out: it wrote all-black frames on macOS/Metal here.
     UI state is verified through `get …` queries instead.
+- **10.12 (2026-09-19, operator: "it should save last settings").** Landed
+  ahead of 10.11 because the operator asked for it. `neowon-app/src/autostate.rs`.
+  - Not persisted, on purpose: the sim stimulus and seed (test fixtures, and
+    the instrument switch resets them), run/stop (an instrument that comes up
+    stopped looks broken), and the instrument (the launch flags choose it).
+    The workspace is not saved yet, because it does not exist until 10.11.
+  - `NEOWON_STATE=<path>` moves the file (tests need their own), and
+    `neowon-mcp --spawn-sim` sets `NEOWON_NO_STATE`, so an agent-driven sim
+    cannot overwrite the operator's setup. Every automated app spawn in the
+    test suites sets it too.
+  - The replay needed new script actions (parity gaps the emitter exposed):
+    `dock a,b|none` (the dock allows several open sections, but `menu` opens
+    exactly one), `windowpos X Y`, and `measwin on|off` (the measurements
+    window had no action at all). The `layout` dump now reports `scale`.
+  - Caps validation: the scope's sample rate is checked against
+    `caps.sample_rates`, and SDR frequencies go through the existing `sdr`
+    range refusal. Either way the rejection reaches the status line, and the
+    other lines still apply.

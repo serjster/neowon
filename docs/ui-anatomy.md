@@ -69,24 +69,38 @@ show gets one of these rather than being crammed into a section.
 
 ## SDR mode
 
-**Instrument** — which of the two instruments the app is: the
-oscilloscope or the SDR. The app bar's **Instrument** menu and the
-`instrument scope|sdr` script verb switch it at run time within the
+**Workspace** — which of the two instruments the app is: the oscilloscope
+or the SDR. The **SCOPE | SDR** switch, first in the app bar (⌘/Ctrl+1,
+⌘/Ctrl+2), and the `instrument scope|sdr` script verb switch it at run
+time within the
 launch's family: the simulators swap for each other, and the VDS1022 swaps
 for the RTL-SDR. Each keeps its settings across a switch. (Plain `mode` is
 the scope's *trace* mode: vectors, dots or XY.)
 
-In SDR mode the regions keep their names and change their content:
+In SDR mode the regions keep their names and change their content; no
+scope control is on screen (D12):
 
-- **App bar** — RUN/STOP, then the tuned frequency, the IQ rate and the
-  gain (or AGC); on the right, the SDR's name and the **IQ frame counter**.
-- **Spectrum** and **waterfall** (`ui/sdr_view.rs`) — drawn where the grid
-  and descriptor bar sit: the spectrum on top, the waterfall below, newest
-  row at the top. A red vertical bar with a triangle tip is the **tuned
+- **App bar** — the workspace switch, the menus (View lists the RF map,
+  band strip, minimap, band plan and Catalog), RUN/STOP, then the tuned
+  frequency, the IQ rate, the gain (or AGC) and the **band** the tuned
+  frequency is in, coloured by kind (the narrowest allocation; hover for
+  all of them); on the right, the SDR's name and the **IQ frame counter**.
+- **Minimap** (`ui/sdr_bands.rs`, `bandmap mini`) — across the top of the
+  canvas: every band of the active plan on a log axis over the tuner's
+  whole range, the IQ window as a white bracket, the tuned frequency as a
+  red tick. Click anywhere on it to tune there.
+- **Spectrum**, **band strip** and **waterfall** (`ui/sdr_view.rs`) — drawn
+  where the grid and descriptor bar sit: the spectrum on top (round MHz
+  ticks, levels in dBFS), the band strip (`bandmap strip`: the plan's bands
+  in view on the same frequency axis, nested allocations stacked; click a
+  band to tune to its centre, double-click to fit the span to it), the
+  waterfall below, newest row at the top. The waterfall's black sits 5 dB
+  under the measured noise floor and white at the reference level. A red vertical bar with a triangle tip is the **tuned
   cursor**, labelled with its frequency at the top of the waterfall; the
   translucent band around it is the **channel width**, with solid filter
   edges. The mouse works as in the scope's Spectrum window: *left-click*
-  tunes to the frequency under the pointer (the window does not move),
+  tunes to the frequency under the pointer (the window moves only for a
+  target outside the IQ band),
   *left-drag on a filter edge* resizes the width, *left-drag* elsewhere pans
   the view inside the IQ band (vertically it moves the reference level),
   *right-drag* moves the **hardware window** (the band follows the pointer),
@@ -95,20 +109,41 @@ In SDR mode the regions keep their names and change their content:
   frequency outside the view shows an edge arrow with its frequency; the
   hardware centre is a faint amber line when it differs from the tuned
   frequency.
-- **SDR dock** (`ui/sdr_dock.rs`) — drawn in the dock's place: the
-  **Tuned** frequency (primary) with its step buttons and the **Follow**
-  checkbox, the dim **Centre** (the hardware window), the **Width** (auto
-  from the nearest detection, or manual), rate, gain, ppm, span, FFT size,
-  level; the **Audio** section (demod, volume, mute, squelch, state); the
-  **modulation lab**; the **constellation**; last, **Detect** and the
-  **signal list**. Every block keeps a constant height so nothing jumps.
-  The list is a fixed-height scroll area, and you resize it by dragging the
-  handle under it.
+- **SDR dock** (`ui/sdr_dock.rs`) — collapsible sections like the scope's,
+  labels in the left column: **Tuning** (the Tuned frequency in large type,
+  the band it is in, Centre, Follow, Width), **Receiver** (rate, gain, RTL
+  AGC, ppm), **Display** (span, FFT, reference and range, peak and floor),
+  **Audio** (demod, volume, mute, squelch, state), **Signals** (Detect,
+  threshold and the resizable signal list), **Analysis** (the modulation
+  lab and the constellation; open while the lab runs) and, on the
+  simulator, **Simulator** (the scene). Hovering "Tuned" lists the canvas
+  mouse gestures.
+- **RF map window** (`ui/bandmap_window.rs`, `bandmap window`) — the whole
+  tunable range as a band chart: one row per decade, log frequency within
+  it, nested allocations stacked, a legend of kinds, the plan selector, the
+  IQ window and the tuned frequency marked. Click tunes; double-click a
+  band fits the span to it.
 - **Catalog window** (`ui/catalog_window.rs`) — the persistent signal
   catalog.
-- **Front panel** — still the scope's. While the SDR is the instrument,
-  scope edits change its settings and reach the scope when it is the
-  instrument again.
+- **Station overlay** (`ui/station_overlay.rs`, `stations overlay`) — on the
+  spectrum: a tick and a `name · WFM [· km]` label (up to three staggered
+  rows; a label that does not fit becomes a tick) for every known station
+  in view. Filtering is the per-service radius (broadcast 150 km, aviation
+  100 km; `stations radius` overrides both) plus "on air now" for scheduled
+  rows. Click tunes there and selects the fitting demodulator.
+- **Stations window** (`ui/stations_window.rs`, `stations window`) — the
+  RF reference, not the catalog (D20): search, filters (source, service,
+  modulation, scope all/in view/near me, on air), sort by frequency or
+  distance, columns frequency · name · mod · service · km · source; click
+  tunes, `+ cat` copies the row into the catalog with `refdb:<source>:<id>`
+  provenance. The **Sources** tab lists each source's snapshot (count,
+  fetched date, origin, licence) with Fetch (a no-location source disables
+  it with the reason), Import and Clear; the **Location** tab holds the
+  manual fix (lat/lon or Maidenhead locator) and the consent-gated
+  `Locate me`.
+- **Front panel** (`ui/sdr_panel.rs`) — the radio's keys: TUNE (±1 MHz,
+  ±100 kHz, Follow), SPAN presets, DEMOD (Off/AM/NFM/WFM, Mute), RUN, and
+  VIEW (RF map, band strip, minimap, Detect, Analyse, Catalog).
 
 SDR vocabulary:
 
@@ -156,6 +191,15 @@ SDR vocabulary:
 - **Signal / observation** — in the catalog, a *signal* is an entity with
   an id, a name, aliases and tags. An *observation* is one sighting of it,
   with time, power and SNR.
+- **Reference store** — `~/.neowon/refdb` (`NEOWON_REFDB`): one snapshot
+  per station source (Wikidata, EiBi, OurAirports, FCC, FMLIST), replaced
+  wholesale by `refdb fetch|import` and never written by the catalog. The
+  only bridge is `Add to catalog`, which copies a row (D20).
+- **Location** — the operator's fix for distance filters and ranking:
+  `location <lat> <lon>` | `location <locator>` | `location ip` |
+  `location clear`, stored in `~/.neowon/location.json`
+  (`NEOWON_LOCATION`). `ip` is one request to ipapi.co after an explicit
+  consent, never a background lookup (D18).
 
 ## Vocabulary that matters
 
@@ -177,6 +221,19 @@ SDR vocabulary:
   be measured.
 - **Reveal** — open a dock section *and* scroll it into view. What a
   front-panel PANELS key or a descriptor chip does.
+
+## UI element tree
+
+`get uitree` (control socket), `uitree <path>` (script) and the MCP
+`ui_tree` tool export the UI as a tree, like a browser's DOM inspector:
+every egui widget (role, label, value, toggled/disabled, clickable) and
+every custom-painted element registered with `uitree::node` (the SDR
+canvas, spectrum, waterfall, band strip and each band segment, minimap,
+dock sections, RF map rows), each with its rect `[x, y, w, h]` in logical
+window pixels, plus the painted regions of the layout dump. It is egui's
+AccessKit tree, built each frame while a control socket is open. Assert
+layout and presence from it rather than from screenshots; a new
+custom-painted element should call `uitree::node` so it shows up.
 
 ## Conventions
 

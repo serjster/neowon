@@ -526,8 +526,41 @@ Auto-cal port (compensation pass descending ranges @ DC, amplitude pass ascendin
 > (Wikidata/EiBi/OurAirports/FCC/FMLIST, `neowon-refdb`, separate from the
 > catalog), opt-in location — `docs/tasks/phase10-refmap-spec.md`. D10
 > amended: a tune target outside the IQ band recentres the hardware.
-> Next: **10.11** scope/SDR workspace split
-> (D12), **10.12** automatic state persistence (D13), **10.13**
+> **10.12 DONE (2026-09-19, ahead of 10.11 at the operator's request):**
+> automatic state persistence — `~/.neowon/state.nws` saved debounced + on
+> exit, restored after connect, env > saved > auto-fit (`--test
+> state_persist`).
+> **UI round (2026-09-19, operator):** the D12 workspace chrome landed
+> ahead of 10.11's full split. A SCOPE | SDR switch in the app bar
+> (⌘/Ctrl+1/2) replaces the Instrument menu. The SDR front panel and View
+> menu are the radio's own, and the SDR dock is sectioned. The spectrum has
+> round ticks and units, and the waterfall is floor-relative. 10.14.4/.5
+> landed: the band strip, the app-bar band name, the minimap and the RF map
+> window (`--test sdr_refmap`). A **UI element tree** (`get uitree`,
+> `uitree`, MCP `ui_tree`: egui's AccessKit tree plus custom-painted nodes)
+> is now the way to audit and assert layout.
+> SDR modulation lab moved off the frame loop (operator: "analyse makes the
+> whole program stagger"): `sdr::analysis::Lab`, one worker thread, one run
+> in flight, busy frames skipped; stale results (retune, modulation change)
+> dropped.
+> **10.14 DONE (2026-09-19, D16–D21):** RF reference, complete.
+> **10.14.1** `neowon-refdb` core — SDR++ band plans (21 shipped, user
+> plans shadow by stem) plus station types, `geo` (haversine, Maidenhead,
+> `location.json`), the frequency-sorted `Index`/`Query`, and the atomic
+> `Store`/`Meta` snapshots. **10.14.2** five pure importers (Wikidata,
+> EiBi, OurAirports, FCC, FMLIST) with fixtures, golden rows and
+> truncation fuzzing; FCC's headerless `list=4` pipe format was confirmed
+> against the live service. **10.14.3** `fetch` + `locate_ip` — ureq 3
+> confined to `neowon-refdb::fetch`, one retry, stub-tested; no test
+> touches the network. **10.14.4/.5** band strip, app-bar band name,
+> minimap and RF map window. **10.14.6** station overlay, Stations window
+> (filters, sort, Sources and Location tabs, consent-gated `Locate me`),
+> the `location` / `refdb` / `stations` verbs and the D20 catalog bridge
+> (`ProvKind::Db`, `input_ref refdb:<source>:<id>`). **10.14.7** MCP
+> `stations`, `station_tune`, `refdb`, `location` (`rf_bands` lives in
+> `ui_tools.rs`). Acceptance: `--test sdr_refmap` (both tests), plus the
+> refdb suites (45 unit tests + importers + fetch).
+> Next: **10.11** scope/SDR workspace split (D12), **10.13**
 > channel-relative visualizations (D15).
 > Nothing left that runs without the operator except polish. neowon becomes one instrument in two modes —
 > **Scope** and **SDR** — riding `Acquisition::Stream` and the shared engine

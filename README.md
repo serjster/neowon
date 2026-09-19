@@ -91,6 +91,11 @@ Or build from source with `cargo build --release`.
 - **Scales to your display**: the window and UI size themselves to the
   monitor, with a manual override for hi-DPI panels the OS does not scale
   (`NEOWON_UI_SCALE`, or the Utility dialog's slider).
+- **Comes back the way you left it**: UI scale, window size and position,
+  dock sections, open windows and every scope and SDR setting are saved to
+  `~/.neowon/state.nws` (a plain session script) and restored at launch.
+  Environment overrides win; `NEOWON_NO_STATE=1` turns it off, and scripted
+  runs never touch it.
 - **Fully scriptable**: every control is reachable from a plain-text
   automation script (`NEOWON_SCRIPT`), including plot-texture screenshots
   with regions of interest — the same mechanism the test suite uses.

@@ -348,4 +348,80 @@ code exists.
 
 ## Deviations (recorded per AGENTS.md)
 
-- (none yet)
+- **10.14.4/.5 placement (2026-09-19, after a UX critic's audit the operator
+  asked for).**
+  - The band strip sits **between the spectrum and the waterfall**, not
+    across the spectrum's top. That is where the eye already crosses from
+    trace to waterfall, and there it does not fight the detection labels.
+  - The **band name** goes in the app bar after the tuned frequency, not in
+    a canvas badge: the app bar is always in view.
+  - A whole-range **minimap** (`bandmap mini`) was added across the top of
+    the canvas.
+  - The RF map window is as specified.
+- **Verbs.** `bandmap strip|mini|window on|off` and `bandmap goto <band>`
+  replace `sdr bandstrip` / `sdr bandlabel` / `bandmap window`, because
+  `sdr/actions.rs` is 22 lines under the 700-line hard budget. There is no
+  label toggle, since the app-bar band name is always shown.
+- **Clicks.** A click in the strip tunes to the band's **centre**; a
+  double-click fits the span (`bandmap goto`). A click in the minimap or map
+  window tunes to the rounded pointer frequency.
+- **Catalog bands.** User-catalog `BandPlanEntry` overlays are not drawn
+  yet; they come with the station overlay (10.14.6).
+- **UI tree.** The acceptance checks assert from the UI element tree
+  (`get uitree`, added at the operator's request), not from pixels.
+- **P1920 is not a callsign (checked on Wikidata 2026-09-19).** P1920 is
+  "CWGC burial ground ID". The Wikidata query binds the callsign from
+  **P2317 only** (plus P17 for the country, as specced); using P1920 would
+  have labelled stations with war-graves identifiers.
+- **Wikidata entities pinned (checked 2026-09-19):** radio station Q14350,
+  television station Q1616075; units hertz Q39369, kilohertz Q2143992,
+  megahertz Q732707, gigahertz Q3276763. The unit is read from the entity,
+  never inferred from the number.
+- **FMLIST (10.14.2).** The importer is header-mapped and delimiter-
+  detected (`,` `;` tab) because no operator file exists yet; frequencies
+  come from a `MHz`/`kHz` header when named, magnitude otherwise. The
+  real header shape gets recorded here when the operator supplies a file.
+- **Import order (10.14.3 before 10.14.6).** The spec's Order section put
+  the stations window before `fetch`; the Sources tab's Fetch button is a
+  call into `neowon-refdb::fetch`, so the fetch API was built first. The
+  operator-visible order is unchanged (both land before 10.14.7).
+- **FCC `list=4` is headerless (confirmed live 2026-09-19).** The
+  pipe-delimited output has no header row; its columns are
+  `1 call sign | 2 "89.3 MHz" | 3 service | … | 10 city | 11 state |
+  12 country | … | 18 facility id | 19 N | 20–22 lat D M S | 23 W |
+  24–26 lon D M S | 27 licensee | …`. The importer anchors on the
+  frequency field and the hemisphere/DMS runs, not on fixed offsets. The
+  radius search parameters (also from the live form) are `serv`, `list=4`,
+  `dist` km, `dlat2`/`mlat2`/`slat2`+`NS`, `dlon2`/`mlon2`/`slon2`+`EW`.
+  `crates/neowon-refdb/tests/fixtures/fcc.txt` holds three real rows.
+- **`locate_ip` leaves `set_at` empty.** The spec's determinism rule and
+  the signature (no clock) win: the app stamps `set_at` with the catalog's
+  RFC 3339 clock (neowon-refdb stays wall-clock-free).
+- **D20 provenance maps to `ProvKind::Db` (2026-09-19).** `neowon-catalog`
+  is off limits and its `ProvKind` has no `Reference` variant, so the
+  catalog copy is filed as `Db` with `tool = "neowon-refdb"` and
+  `input_ref = "refdb:<source>:<id>"`; the row is `+ cat` in the Stations
+  window. `get catalog` now reports each row's provenance (additive).
+- **`NEOWON_LOCATION` (2026-09-19).** `geo::location_path()` honors it so
+  the app tests never touch the operator's `~/.neowon/location.json`, the
+  analogue of `NEOWON_REFDB`/`NEOWON_STATE`. The station tests set both.
+- **Verbs kept out of `sdr/actions.rs`.** `stations window|overlay|radius|
+  find|filter|onair|scope|sort|tune|catalog`, `location …` and
+  `refdb …` live in `refmap/actions.rs` (the file is 22 lines under the
+  700 hard budget); the spec's `sdr stations` / `sdr stationradius` names
+  are not used. Every verb round-trips in `every_action_round_trips`.
+- **`rf_bands` landed with the UI round** in `neowon-mcp/src/ui_tools.rs`
+  (plan/goto options); `refmap_tools.rs` adds `stations`,
+  `station_tune`, `refdb` and `location`. `location ip` is not exposed
+  over MCP, per the spec.
+- **Import paths.** One `refdb import <source> <path>`: OurAirports takes
+  a directory holding `airport-frequencies.csv` and `airports.csv`;
+  FMLIST stays import-only; `refdb fetch fmlist` refuses with that
+  sentence.
+- **10.14.4 geometry check** is asserted from the UI element tree in
+  `--test sdr_refmap` (band strip and minimap inside `SDR canvas`, never
+  overlapping `SDR dock`) rather than from `ui_geometry` pixels, following
+  the UI-tree deviation above.
+- **`Import file…`** in the Sources tab is a path field plus an Import
+  button, source-chosen by a combo — a native file picker would add an
+  `rfd` dependency, which is not approved.
