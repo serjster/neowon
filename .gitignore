@@ -1,6 +1,8 @@
 /target
 /.idea/
 *.csv
+# Test fixtures for the reference importers (10.14.2) are not exports.
+!crates/neowon-refdb/tests/fixtures/*.csv
 *.cap
 /assets/demo/*.wav
 /docs/*.pdf

@@ -1,0 +1,4 @@
+id,ident,type,name,latitude_deg,longitude_deg,elevation_ft,continent,iso_country,iso_region,municipality,scheduled_service,gps_code,iata_code,local_code,home_link,wikipedia_link,keywords
+1,LPPT,large_airport,Lisbon Airport,38.7813,-9.13592,374,EU,PT,PT-11,Lisbon,yes,LPPT,LIS,LIS,,,lisbon
+2,LPPR,medium_airport,Porto Airport,41.2481,-8.68139,228,EU,PT,PT-13,Porto,yes,LPPR,OPO,OPO,,,porto
+3,LPFR,medium_airport,Faro Airport,37.0144,-7.96591,24,EU,PT,PT-08,Faro,yes,LPFR,FAO,FAO,,,faro

@@ -1,0 +1,8 @@
+id,airport_ref,airport_ident,type,description,frequency_mhz,frequency_khz
+10,1,LPPT,TWR,Lisbon Tower,118.1,
+11,1,LPPT,ATIS,Lisbon Information,,126500
+12,2,LPPR,APP,Porto Approach,119.9,
+13,2,LPPR,GND,Porto Ground,,121900
+14,3,LPFR,TWR,Faro Tower,118.2,
+15,99,XXXX,TWR,Nowhere,118.0,
+16,1,LPPT,CTAF,No Frequency,,

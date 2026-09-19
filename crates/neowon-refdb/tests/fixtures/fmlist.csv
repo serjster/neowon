@@ -1,0 +1,5 @@
+FMLIST ID;Programme;Frequency (kHz);Country Code;Latitude;Longitude;ERP (kW);Modulation;Notes;Extra Unknown Column
+p1;Antena 1;99400;PT;38.72;-9.14;12.5;FM;Monsanto;ignored
+p2;Rádio Comercial;97400;PT;41.16;-8.63;10;FM;Porto;ignored
+p3;RDP África;106000;PT;38.7;-9.1;5;FM;Lisboa;ignored
+p4;No Frequency;;PT;;;1;FM;broken row;ignored
