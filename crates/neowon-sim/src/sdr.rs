@@ -25,8 +25,15 @@ use crate::iq::{IqComponent, IqScene};
 /// Pairs per frame (32 ms at 2.048 MS/s).
 pub const CHUNK_PAIRS: usize = 64 * 1024;
 
-/// A transmitter in a scene: a carrier, or a digitally modulated signal
-/// (modulation, symbol rate, roll-off).
+/// An analogue-modulated carrier: AM depth, or FM deviation, on a tone.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Analog {
+    Am { depth: f64, tone_hz: f64 },
+    Fm { deviation_hz: f64, tone_hz: f64 },
+}
+
+/// A transmitter in a scene: a carrier, an analogue-modulated carrier, or a
+/// digitally modulated signal (modulation, symbol rate, roll-off).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Emitter {
     pub freq_hz: f64,
@@ -34,6 +41,7 @@ pub struct Emitter {
     /// a matched filter).
     pub amplitude: f64,
     pub digital: Option<(Modulation, f64, f64)>,
+    pub analog: Option<Analog>,
 }
 
 /// A carrier (see `dig` for a digital emitter).
@@ -42,6 +50,7 @@ pub const fn em(freq_hz: f64, amplitude: f64) -> Emitter {
         freq_hz,
         amplitude,
         digital: None,
+        analog: None,
     }
 }
 
@@ -50,6 +59,28 @@ const fn dig(freq_hz: f64, amplitude: f64, m: Modulation, symbol_rate: f64) -> E
         freq_hz,
         amplitude,
         digital: Some((m, symbol_rate, 0.35)),
+        analog: None,
+    }
+}
+
+const fn am(freq_hz: f64, amplitude: f64, depth: f64, tone_hz: f64) -> Emitter {
+    Emitter {
+        freq_hz,
+        amplitude,
+        digital: None,
+        analog: Some(Analog::Am { depth, tone_hz }),
+    }
+}
+
+const fn fm(freq_hz: f64, amplitude: f64, deviation_hz: f64, tone_hz: f64) -> Emitter {
+    Emitter {
+        freq_hz,
+        amplitude,
+        digital: None,
+        analog: Some(Analog::Fm {
+            deviation_hz,
+            tone_hz,
+        }),
     }
 }
 
@@ -61,12 +92,14 @@ pub struct RfScene {
 }
 
 impl RfScene {
-    pub const PRESETS: [&'static str; 5] = [
+    pub const PRESETS: [&'static str; 7] = [
         "rf-reference",
         "rf-fm-band",
         "rf-hf",
         "rf-noise",
         "rf-digital",
+        "rf-am",
+        "rf-fm",
     ];
 
     pub fn preset(name: &str) -> Option<Self> {
@@ -100,6 +133,9 @@ impl RfScene {
                 ],
                 0.05,
             ),
+            // A 1 kHz tone on each: the demod oracle's stimulus.
+            "rf-am" => (vec![am(100.1e6, 0.5, 0.5, 1000.0)], 0.02),
+            "rf-fm" => (vec![fm(100.1e6, 0.5, 3000.0, 1000.0)], 0.02),
             _ => return None,
         };
         Some(Self {
@@ -120,18 +156,36 @@ impl RfScene {
                 .map(|e| e.freq_hz - centre_hz + shift)
                 .zip(&self.emitters)
                 .filter(|(off, _)| off.abs() < rate / 2.0)
-                .map(|(offset_hz, e)| match e.digital {
-                    None => IqComponent::Tone {
-                        offset_hz,
-                        amplitude: e.amplitude,
-                        phase: 0.0,
-                    },
-                    Some((modulation, symbol_rate, rolloff)) => IqComponent::Digital {
+                .map(|(offset_hz, e)| match (e.digital, e.analog) {
+                    (Some((modulation, symbol_rate, rolloff)), _) => IqComponent::Digital {
                         modulation,
                         symbol_rate,
                         offset_hz,
                         amplitude: e.amplitude,
                         rolloff,
+                    },
+                    (None, Some(Analog::Am { depth, tone_hz })) => IqComponent::Am {
+                        offset_hz,
+                        amplitude: e.amplitude,
+                        depth,
+                        tone_hz,
+                    },
+                    (
+                        None,
+                        Some(Analog::Fm {
+                            deviation_hz,
+                            tone_hz,
+                        }),
+                    ) => IqComponent::Fm {
+                        offset_hz,
+                        amplitude: e.amplitude,
+                        deviation_hz,
+                        tone_hz,
+                    },
+                    (None, None) => IqComponent::Tone {
+                        offset_hz,
+                        amplitude: e.amplitude,
+                        phase: 0.0,
                     },
                 })
                 .collect(),
