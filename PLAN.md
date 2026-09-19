@@ -521,7 +521,12 @@ Auto-cal port (compensation pass descending ranges @ DC, amplitude pass ascendin
 > windowed-sinc resampler) and a cpal **output** sink in `neowon-audio`, with
 > the dock **Audio** section, `get audio` and `sdr demod|volume|mute|squelch`;
 > `demod_golden`, the sink tests and `sdr_audio` pass. Channel width is set by
-> dragging a filter edge (D14). Next: **10.11** scope/SDR workspace split
+> dragging a filter edge (D14). **10.14 specified (2026-09-19, D16–D21, operator-approved):** RF reference —
+> band map window, band strip + SDR++-style band overlay, station database
+> (Wikidata/EiBi/OurAirports/FCC/FMLIST, `neowon-refdb`, separate from the
+> catalog), opt-in location — `docs/tasks/phase10-refmap-spec.md`. D10
+> amended: a tune target outside the IQ band recentres the hardware.
+> Next: **10.11** scope/SDR workspace split
 > (D12), **10.12** automatic state persistence (D13), **10.13**
 > channel-relative visualizations (D15).
 > Nothing left that runs without the operator except polish. neowon becomes one instrument in two modes —
@@ -538,7 +543,8 @@ Auto-cal port (compensation pass descending ranges @ DC, amplitude pass ascendin
 > fingerprinting · **10.8** dataset & training (parallel) · **10.9** UX/control
 > parity (continuous) · **10.10** demodulation & audio (AM/FM first) ·
 > **10.11** scope/SDR workspace split · **10.12** automatic state persistence ·
-> **10.13** channel-relative visualizations. Each ends
+> **10.13** channel-relative visualizations · **10.14** RF reference (band
+> map, stations). Each ends
 > runnable and sim-tested; do not begin without
 > reading the spec's Purpose, decisions (D0–D9), D1b spike and gates (SDR-G1/SDR-G2).
 
@@ -591,6 +597,8 @@ recorded manual hardware smoke run (V3 dongle) is filed in `docs/protocol-rtlsdr
 | SDR feature catalog (home) | `docs/sdr-feature-catalog.md` |
 | RTL-SDR hardware/protocol facts | `docs/protocol-rtlsdr.md` (created with Phase 10) |
 | SDR feature analysis (raw) | `tmp-inspiration/{SDRPlusPlus,librtlsdr-rs,ravenSDR,rtlsdrAI,rtl-ml,modulation-classification,RF-Classification-ML,CNN-BiLSTM-AMC,torchsig,gnuradio_llm,holohub}` — untracked input only; the tracked home is `docs/sdr-feature-catalog.md` |
+| Band plans (SDR++ schema, D16) | `assets/bandplans/` from `tmp-inspiration/SDRPlusPlus/root/res/bandplans/`; widget `…/core/src/gui/widgets/bandplan.cpp` |
+| Station sources (D17) | Wikidata SPARQL (`query.wikidata.org`), EiBi (`eibispace.de/dx/sked-*.csv`), OurAirports (`davidmegginson.github.io/ourairports-data/`), FCC `fmq`/`amq`, FMLIST (operator export) — `docs/tasks/phase10-refmap-spec.md` |
 | Flipper host RPC | `flipper-rpc` crate + `flipperdevices/flipperzero-protobuf` |
 
 ---
