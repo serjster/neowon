@@ -120,6 +120,15 @@ Or build from source with `cargo build --release`.
 ![Oscilloscope Quake](docs/media/quake-demo.png)
 *Oscilloscope Quake (`--demo`): E1M1, drawn by an audio waveform in XY mode.*
 
+![The SDR workspace](docs/media/sdr.png)
+*SDR mode: wideband spectrum and waterfall, the tuned channel cursor with its
+width shaded, the Audio section, the modulation lab's results and the signal
+list.*
+
+![Recovered 16-QAM constellation](docs/media/sdr-constellation.png)
+*The modulation lab recovering a 16-QAM constellation (4.1% EVM, 27.8 dB MER
+on the simulator).*
+
 ## Hardware
 
 | Instrument | Status |
