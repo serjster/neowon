@@ -1,0 +1,17 @@
+# udev rules for RTL-SDR dongles (Realtek RTL2832U + R820T / R828D).
+#
+# Install:
+#   sudo cp scripts/99-rtlsdr.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload && sudo udevadm trigger
+#   ... then replug the dongle
+#
+# Line 1 grants non-root users read/write access to the USB node — without
+# it, opening the receiver fails with "Permission denied". The ids are the
+# generic RTL2832U / RTL2838 ones every RTL-SDR stick shares.
+#
+# This rule does NOT stop the kernel's DVB-T driver from claiming the dongle.
+# On Linux you must also blacklist `dvb_usb_rtl28xxu` (see README, "Linux:
+# RTL-SDR"); otherwise nusb's interface claim fails with EBUSY.
+
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2832", MODE="0666"
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2838", MODE="0666"

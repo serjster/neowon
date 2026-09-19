@@ -3,12 +3,11 @@
 [![CI](https://github.com/serjster/neowon/actions/workflows/ci.yml/badge.svg)](https://github.com/serjster/neowon/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 
-A high-performance, scope-grade oscilloscope application in Rust, built on
-[Bevy](https://bevy.org) with a GPU digital-phosphor rendering pipeline and a
-modular acquisition-backend architecture. The first supported instrument is
-the **OWON VDS1022 / VDS1022I** USB oscilloscope, with a deterministic
-simulated backend for development and testing; SDR and other sources are on
-the roadmap.
+A high-performance oscilloscope **and** software-defined radio in Rust, built
+on [Bevy](https://bevy.org) with a GPU digital-phosphor rendering pipeline and
+a modular acquisition-backend architecture. One application, two instruments:
+the **OWON VDS1022 / VDS1022I** USB oscilloscope and **RTL-SDR** receivers,
+each with a deterministic simulated backend for development and testing.
 
 ![The neowon UI](docs/media/ui.png)
 
@@ -28,6 +27,20 @@ Or build from source with `cargo build --release`.
 
 ## Features
 
+- **SDR mode (RTL-SDR)**: a wideband spectrum and waterfall with an IQ
+  constellation, a clean tuning model (**Centre** = the hardware window,
+  **Tuned** = the channel you monitor, **Width**, and opt-in **Follow**),
+  click-to-tune and drag-a-filter-edge-to-resize, signal detection and
+  tracking, a modulation lab (symbol rate, EVM/MER, cumulants, recovered
+  constellation), a DSP classifier that says `unknown` when it should, a band
+  survey with new/gone/stronger/weaker diffing, and a persistent signal
+  catalog. Driven by an in-tree RTL2832U + R82xx driver on `nusb` — no
+  libusb — with ppm correction, direct sampling for HF below 24 MHz, and tuner
+  AGC.
+- **Realtime AM/FM audio**: demodulate the tuned channel (AM, NFM, WFM) to the
+  sound card with volume, mute and squelch, from the same streaming DSP that
+  feeds the displays; the channel width is set by dragging the filter edges on
+  the spectrum.
 - **GPU digital-phosphor display**: compute-shader rasterization with
   intensity grading, persistence (off → infinite), vectors/dots/XY modes,
   optional CRT styling (phosphor halo, scanlines, vignette), and thermal /
@@ -112,8 +125,9 @@ Or build from source with `cargo build --release`.
 | Instrument | Status |
 | --- | --- |
 | OWON VDS1022 / VDS1022I | Working, hardware-verified (25 MHz, 2 ch, 100 MS/s) |
+| RTL-SDR (RTL2832U + R820T/R828D) | Working, hardware-verified on a V3 dongle: 24 MHz–1.766 GHz, ppm correction, tuner AGC, HF direct sampling below 24 MHz, realtime AM/FM audio |
 | OWON VDS2052 | Untested; the driver's register-table design should make it a small port |
-| RTL-SDR, Flipper Zero | Planned (see `PLAN.md`) |
+| Flipper Zero | Planned (see `PLAN.md`) |
 
 The protocol implementation was ported from the community
 [OWON-VDS1022](https://github.com/florentbr/OWON-VDS1022) Python reference
@@ -144,6 +158,13 @@ cargo build --release
   `echo <bus>-<port>:1.0 | sudo tee
   /sys/bus/usb/drivers/usb_serial_simple/unbind` (see
   `docs/protocol-vds1022.md`).
+- **Linux: RTL-SDR**: the kernel's DVB-T driver claims the dongle, so blacklist
+  it, install the rule, then replug:
+
+  ```sh
+  echo 'blacklist dvb_usb_rtl28xxu' | sudo tee /etc/modprobe.d/blacklist-rtl.conf
+  sudo cp scripts/99-rtlsdr.rules /etc/udev/rules.d/ && sudo udevadm control --reload
+  ```
 - **Windows**: untested; contributions welcome.
 
 ### FPGA bitstreams (hardware only)
@@ -158,12 +179,43 @@ license), so a repo checkout works out of the box. neowon looks in
 ## Running
 
 ```sh
-cargo run --release -p neowon-app            # real hardware
-cargo run --release -p neowon-app -- --sim   # simulated backend
-cargo run --release -p neowon-app -- --demo  # Oscilloscope Quake (see below)
+cargo run --release -p neowon-app               # real scope
+cargo run --release -p neowon-app -- --sim      # simulated scope
+cargo run --release -p neowon-app -- --rtl      # RTL-SDR dongle
+cargo run --release -p neowon-app -- --sdr-sim  # simulated SDR (no hardware)
+cargo run --release -p neowon-app -- --demo     # Oscilloscope Quake (see below)
 ```
 
 Only one process may use the scope at a time — close the vendor app first.
+The Instrument menu (or the `instrument scope|sdr` script action) switches
+between the two at run time within the launch's family: the simulators swap
+for each other, and the VDS1022 swaps for the RTL-SDR.
+
+### SDR
+
+The SDR workspace puts the spectrum over the waterfall, with the **tuned
+cursor** and its channel **Width** shaded around it. *Left-click* tunes,
+*left-drag a filter edge* resizes the width, *left-drag* pans, *right-drag*
+moves the hardware window, *scroll* zooms the span. The dock holds the tune
+controls, detection, the modulation lab, and the **Audio** section
+(demodulator, volume, mute, squelch, and a state line that names every silent
+state). Detected signals can be filed into a persistent **catalog** that
+survives restarts.
+
+It is fully scriptable like the scope, e.g.:
+
+```sh
+sdr tune 99.4M        # tune the channel cursor (the window does not move)
+sdr centre 99M        # move the hardware window
+sdr width auto        # channel width from the nearest detection
+sdr demod wfm         # realtime audio; am | nfm | wfm | off
+sdr survey 88M 108M   # band survey; `get surveydiff` for what changed
+catalog add           # file the tuned channel
+```
+
+`get sdr | audio | detections | modmeas | classify | survey | catalog` return
+structured JSON over the control socket, and the MCP server exposes the same
+as tools (`sdr_tune`, `sdr_demod`, `sdr_audio`, `catalog`, …).
 
 ### The Quake demo
 
@@ -222,6 +274,7 @@ none touch the instrument.
 ```sh
 cargo test                                        # unit + virtual testbench
 cargo test -p neowon-app --test shaders           # naga-validate all WGSL
+cargo test -p neowon-dsp --test demod_golden      # AM/NFM/WFM against exact sim signals
 ```
 
 The rest, each with `-p neowon-app -- --ignored`:
@@ -237,6 +290,12 @@ The rest, each with `-p neowon-app -- --ignored`:
 | `deep_view` | the timeline's whole reason to exist: spanning more time than one record holds *without* dropping the sample rate, plus gap accounting and follow-mode stability |
 | `decode_flow` | protocol decoders end to end, from stimulus to decoded bytes |
 | `capture_flows` | capture save/reload and session round trips |
+| `sdr_mode` | the simulated SDR end to end: tuning, spectrum/waterfall, detection, and a deterministic IQ fingerprint |
+| `sdr_integration` | scope ↔ SDR switch and the tune → detect → analyse → classify → catalog → export chain |
+| `sdr_modlab` | the modulation lab recovering QPSK/16QAM and matching closed-form EVM |
+| `sdr_survey` | a band survey and its new/gone/stronger/weaker diff |
+| `sdr_audio` | the AM demodulator and the audio state machine (plays audio) |
+| `catalog_flow` | the signal catalog across an app restart |
 
 ```sh
 cargo test -p neowon-mcp --test mcp_e2e -- --ignored   # MCP end-to-end
@@ -251,7 +310,7 @@ packages each with the shaders, bitstreams, licences and udev rule, and
 attaches them to a GitHub release.
 
 ```sh
-git tag -a v0.1.0 -m "v0.1.0" && git push origin v0.1.0
+git tag -a v0.2.0 -m "v0.2.0" && git push origin v0.2.0
 ```
 
 Run the same workflow from the Actions tab (`workflow_dispatch`) to build and
@@ -265,13 +324,17 @@ inspect the archives without publishing anything.
 | `neowon-backend` | Backend trait, config model, supervisor thread |
 | `neowon-sim` | Deterministic signal engine / virtual testbench source |
 | `neowon-vds1022` | VDS1022 USB driver (nusb), protocol constants |
-| `neowon-dsp` | Measurements, statistics, FFT, math — the CPU oracle |
+| `neowon-sdr` | RTL2832U + R82xx USB driver (nusb), survey engine |
+| `neowon-catalog` | Persistent signal/source catalog (WAL, merge, history) |
+| `neowon-audio` | Sound-card streaming input backend and audio output sink |
+| `neowon-dsp` | Measurements, statistics, FFT, math, demodulators — the CPU oracle |
 | `neowon-cli` | Headless bring-up and debugging tool |
 | `neowon-app` | Bevy application: GPU pipeline, UI, scripting, control socket |
-| `neowon-mcp` | MCP server exposing the running scope to LLM clients |
+| `neowon-mcp` | MCP server exposing the running instrument to LLM clients |
 
-`PLAN.md` holds the roadmap and phase status;
-`docs/protocol-vds1022.md` records every hardware-verified protocol fact.
+`PLAN.md` holds the roadmap and phase status. `docs/protocol-vds1022.md` and
+`docs/protocol-rtlsdr.md` record every hardware-verified protocol fact;
+`docs/sdr-feature-catalog.md` is the research behind the SDR program.
 
 ## Contributing
 

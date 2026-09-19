@@ -114,7 +114,7 @@ jobs:
           cp -r 3rdparty/fw "dist/$name/fwr"
           cp README.md LICENSE-MIT LICENSE-APACHE docs/ui-anatomy.md "dist/$name/"
           if [ "${{ runner.os }}" = "Linux" ]; then
-            cp scripts/99-vds1022.rules "dist/$name/"
+            cp scripts/99-vds1022.rules scripts/99-rtlsdr.rules "dist/$name/"
           fi
           echo "STAGED=$name" >> "$GITHUB_ENV"
 
