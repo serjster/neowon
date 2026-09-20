@@ -7,6 +7,32 @@ use neowon_dsp::modmeas::{Band, flatness};
 
 use super::SdrState;
 
+/// A JSON string literal, escaped. Service labels come off the air, so they can
+/// contain anything the standard's charset allows.
+fn json_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' | '\r' | '\t' => out.push(' '),
+            c if (c as u32) < 0x20 => out.push('?'),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// A JSON number, or `null` where the standard leaves the value unknown.
+fn opt_num(v: Option<f64>) -> String {
+    match v {
+        Some(v) => num(v),
+        None => "null".into(),
+    }
+}
+
 fn num(v: f64) -> String {
     if v.is_finite() {
         format!("{v}")
@@ -232,5 +258,99 @@ pub fn classify_json(sdr: &SdrState) -> String {
         num(c.features.cyclic_line_db),
         num(c.features.c42),
         num(c.features.c40_abs),
+    )
+}
+
+/// `get dab`: the DAB receiver's state and, once locked, the ensemble table
+/// (phase 10.15.1). Every field here is one the receiver produces: nothing is
+/// inferred, and an unlocked receiver reports an empty table rather than a
+/// partial one (D27).
+pub fn dab_json(sdr: &SdrState) -> String {
+    let Some(rx) = &sdr.dab else {
+        return r#"{"ok":true,"on":false}"#.into();
+    };
+    let status = rx.status();
+    let rate = match status.fib_crc_rate() {
+        Some(r) => num(r),
+        None => "null".into(),
+    };
+    let sub_channels: Vec<String> = status
+        .ensemble
+        .sub_channels
+        .values()
+        .map(|sc| {
+            format!(
+                r#"{{"id":{},"start_cu":{},"size_cu":{},"bitrate_kbps":{},"protection":{}}}"#,
+                sc.id,
+                sc.start_cu,
+                match sc.size_cu {
+                    Some(v) => v.to_string(),
+                    None => "null".into(),
+                },
+                opt_num(sc.bitrate_kbps),
+                json_str(&sc.protection.label()),
+            )
+        })
+        .collect();
+    let services: Vec<String> = status
+        .ensemble
+        .services
+        .values()
+        .map(|sv| {
+            format!(
+                concat!(
+                    r#"{{"sid":{},"sid_hex":"{:04X}","label":{},"sub_channel":{},"#,
+                    r#""coding":{},"ascty":{},"has_audio":{}}}"#
+                ),
+                sv.sid,
+                sv.sid,
+                match &sv.label {
+                    Some(l) => json_str(l),
+                    None => "null".into(),
+                },
+                match sv.sub_channel {
+                    Some(id) => id.to_string(),
+                    None => "null".into(),
+                },
+                json_str(&sv.coding_label()),
+                match sv.ascty {
+                    Some(a) => a.to_string(),
+                    None => "null".into(),
+                },
+                sv.has_audio,
+            )
+        })
+        .collect();
+    let (eid, eid_hex, label) = match status.ensemble.eid {
+        Some(eid) => (
+            eid.to_string(),
+            format!("\"{eid:04X}\""),
+            match &status.ensemble.label {
+                Some(l) => json_str(l),
+                None => "null".into(),
+            },
+        ),
+        None => ("null".into(), "null".into(), "null".into()),
+    };
+    format!(
+        concat!(
+            r#"{{"ok":true,"on":true,"locked":{},"frames":{},"fib_ok":{},"fib_total":{},"#,
+            r#""fib_crc_rate":{},"freq_offset_hz":{},"prs_metric":{},"#,
+            r#""eid":{},"eid_hex":{},"label":{},"data_services":{},"#,
+            r#""sub_channels":[{}],"services":[{}]}}"#
+        ),
+        status.locked,
+        status.frames,
+        status.fib_crc_ok,
+        status.fib_total,
+        rate,
+        num(rx.freq_offset_hz),
+        num(f64::from(rx.prs_metric)),
+        eid,
+        eid_hex,
+        label,
+        status.ensemble.data_services,
+        sub_channels.join(","),
+        services.join(","),
     )
 }

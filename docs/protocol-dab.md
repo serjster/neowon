@@ -181,6 +181,44 @@ channel, the RTL-SDR V3, ensemble identity, service labels, FIB CRC rate, and
 whatever surprised us. Nothing in tier 1 is claimed to work on air until this
 section has content.)*
 
+## Band III targets for the first hardware run
+
+**External data, not verified by us.** Listed so the run has a destination; each
+line becomes a verified fact only when it appears in the section above.
+
+For the Eindhoven area, two national ensembles are the obvious targets, because
+tier 1 needs only a well-filled FIC and these carry 12–15 named services:
+
+| Block | Centre | Ensemble (external) | Services (external) |
+|---|---|---|---|
+| **11C** | **220.352 MHz** | Dutch commercial national, from Gemert (De Mortel) | 100% NL, BNR, Groot Nieuws, Q Music, Qmusic non-stop, Radio 10 (+60s&70s), 538 (+Top 40), Radio Maria, Veronica, Sky Radio (+Hits), Slam FM, SubLime |
+| **12C** | **227.360 MHz** | NPO public national, from Tilburg (Loon op Zand) | Radio 1, Radio 2, 3FM, Radio 4 (+Concerten), Radio 5, FunX (+Dance, Slow Jamz), NPO Soul & Jazz, NPO SterrenNL, 3FM Alternative / KX |
+| 8A | 195.936 MHz | regional Brabant/Limburg, from Eindhoven (Daalakkersweg) and Gemert | Omroep Brabant, Radio 8FM, RadioNL, Radio Continu, Q Music |
+| 7A | 188.928 MHz | regional, from Eindhoven and Tilburg | Radio JND, Mexico FM |
+
+Sources: `frequentie.fm/eindhoven` for the service lists, cross-checked against
+the Band III block table at `wiki.opendigitalradio.org/Band_3_Channels`.
+
+**Do not trust the block letters in that station listing.** Its frequencies match
+the standard raster, but two labels are shifted by a block group: it calls
+195.936 "7A" (it is 8A) and 188.928 "9C" (it is 7A). The raster itself is
+`174.928 + 1.712·n` MHz with 5A at `n = 0`, which puts 11C at 220.352 and 12C at
+227.360 — both matching. Tune by frequency; the letters are administrative
+(the "Wiesbaden" arrangement), not from EN 300 401.
+
+Two consequences for the run:
+
+- **Both national ensembles are DAB+** (`ASCTy` 63), which tier 1 handles
+  *without* any codec: the FIC carries the names regardless of what the audio
+  sub-channels contain. This is why DAB-G1 does not wait on the DAB-G2 decision.
+- **Set `sdr ppm` before concluding anything about the front end.** At 220 MHz a
+  20 ppm dongle error is 4.4 kHz, i.e. four carrier spacings — outside the
+  ±500 Hz the cyclic prefix measures, and squarely in the "no integer-carrier
+  coarse search" limitation. If `prs_metric` stays near noise, stepping the
+  centre by whole kHz should recover it, and that observation is itself the
+  evidence for whether the coarse search has to be built.
+
+
 ## Open items
 
 - **Table 8 (UEP sub-channel sizes)** is not transcribed, so UEP sub-channels

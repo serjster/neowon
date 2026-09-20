@@ -139,6 +139,7 @@ pub fn poll(
             Some("detections") => crate::sdr::detections_json(sdr),
             Some("modmeas") => crate::sdr::modmeas_json(sdr),
             Some("classify") => crate::sdr::classify_json(sdr),
+            Some("dab") => crate::sdr::dab_json(sdr),
             Some("survey") => crate::sdr::survey_json(sdr),
             Some("surveydiff") => crate::sdr::survey_diff_json(sdr),
             Some("catalog") => crate::catalog::catalog_json(cat),

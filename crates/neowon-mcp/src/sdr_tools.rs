@@ -50,6 +50,14 @@ pub struct CatalogCommandParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct DabParams {
+    /// `on` starts decoding the ensemble inside the hardware window, `off`
+    /// stops, `reset` keeps it on and forgets the ensemble table and lock
+    /// (use it after a retune).
+    action: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct SurveyParams {
     /// Range to sweep, Hz.
     start_hz: f64,
@@ -170,6 +178,20 @@ impl Scope {
         starting or off — with volume, squelch, channel power and RMS.")]
     async fn sdr_audio(&self) -> Result<String, ErrorData> {
         self.req("get audio")
+    }
+
+    #[tool(
+        description = "DAB: the ensemble being decoded (phase 10.15.1) — lock         state, the FIB CRC rate that justifies it, the measured carrier         offset, the PRS correlation, and once locked the ensemble's EId, label,         sub-channels and services with their labels, bit rates, protection and         audio coding. Turn it on with the dab_control tool; it decodes whatever         ensemble the hardware window covers, so tune in Band III first."
+    )]
+    async fn dab_ensemble(&self) -> Result<String, ErrorData> {
+        self.req("get dab")
+    }
+
+    #[tool(
+        description = "Turn DAB decoding on, off, or reset it. `on` builds a         fresh receiver (a retune means a different ensemble), `off` drops it,         `reset` forgets the lock and the table but keeps decoding."
+    )]
+    async fn dab_control(&self, p: Parameters<DabParams>) -> Result<String, ErrorData> {
+        self.req(&format!("sdr dab {}", p.0.action.trim()))
     }
 
     #[tool(description = "Set the audio demodulator and optionally volume, mute \

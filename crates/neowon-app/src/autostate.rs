@@ -29,7 +29,7 @@ use neowon_backend::SdrGain;
 
 use crate::Link;
 use crate::script::{Action, Script};
-use crate::sdr::{SdrAction, SdrState};
+use crate::sdr::{DabVerb, SdrAction, SdrState};
 
 /// A change is written once the state has been stable this long, seconds.
 const DEBOUNCE: f64 = 2.0;
@@ -271,6 +271,12 @@ pub fn sdr_actions(sdr: &SdrState) -> Vec<SdrAction> {
         SdrAction::Modulation(sdr.modulation),
         SdrAction::Width((!sdr.width_auto).then_some(sdr.width_hz)),
         SdrAction::Demod(sdr.demod),
+        // Saved only when it is on: a restored session should not start
+        // decoding an ensemble nobody asked for.
+        SdrAction::Dab(match sdr.dab {
+            Some(_) => DabVerb::On,
+            None => DabVerb::Off,
+        }),
         SdrAction::Volume(sdr.volume),
         SdrAction::Mute(sdr.mute),
         SdrAction::Squelch((sdr.squelch_db > -120.0).then_some(sdr.squelch_db)),

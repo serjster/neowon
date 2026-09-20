@@ -56,6 +56,18 @@ pub enum SdrAction {
     List(f32),
     /// `instrument sdr` (true) or `instrument scope`: switch instrument.
     Instrument(bool),
+    /// DAB decoding (`sdr dab on|off|reset`).
+    Dab(DabVerb),
+}
+
+/// What `sdr dab` does. The receiver is a wideband consumer of raw IQ, so
+/// it is switched on and off rather than set to a frequency: it decodes
+/// whatever ensemble the hardware window covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DabVerb {
+    On,
+    Off,
+    Reset,
 }
 
 /// `sdr survey <start> <stop> [cap N] [skip lo:hi]…`.
@@ -110,6 +122,12 @@ pub fn parse<'a>(next: &mut dyn FnMut() -> Result<&'a str, String>) -> Result<Sd
             range_db: num(next()?)?,
         },
         "run" => SdrAction::Run(on_off(next()?)?),
+        "dab" => match next()? {
+            "on" => SdrAction::Dab(DabVerb::On),
+            "off" => SdrAction::Dab(DabVerb::Off),
+            "reset" => SdrAction::Dab(DabVerb::Reset),
+            other => return Err(format!("dab: expected on|off|reset, got {other:?}")),
+        },
         "detect" => SdrAction::Detect(on_off(next()?)?),
         "survey" => match next()? {
             "stop" => SdrAction::Survey(None),
@@ -235,6 +253,9 @@ impl std::fmt::Display for SdrAction {
             SdrAction::Width(Some(hz)) => write!(f, "sdr width {hz}"),
             SdrAction::Demod(None) => write!(f, "sdr demod off"),
             SdrAction::Demod(Some(m)) => write!(f, "sdr demod {}", m.verb()),
+            SdrAction::Dab(DabVerb::On) => write!(f, "sdr dab on"),
+            SdrAction::Dab(DabVerb::Off) => write!(f, "sdr dab off"),
+            SdrAction::Dab(DabVerb::Reset) => write!(f, "sdr dab reset"),
             SdrAction::Volume(v) => write!(f, "sdr volume {v}"),
             SdrAction::Mute(b) => write!(f, "sdr mute {}", on(*b)),
             SdrAction::Squelch(None) => write!(f, "sdr squelch off"),
@@ -404,6 +425,17 @@ pub fn apply(a: SdrAction, sdr: &mut SdrState, link: &mut Link) -> Result<(), St
             sdr.width_auto = false;
             return Ok(());
         }
+        SdrAction::Dab(verb) => match verb {
+            // A fresh receiver: a retune means a different ensemble, and the
+            // old table would be a different station's.
+            DabVerb::On => sdr.dab = Some(neowon_dsp::dab::DabReceiver::new()),
+            DabVerb::Off => sdr.dab = None,
+            DabVerb::Reset => {
+                if let Some(rx) = sdr.dab.as_mut() {
+                    rx.reset();
+                }
+            }
+        },
         SdrAction::Demod(m) => {
             if sdr.demod != m {
                 // A mode change starts the channel clean; switching off
@@ -606,6 +638,7 @@ mod tests {
             SdrAction::Follow(_) => 20,
             SdrAction::Width(_) => 21,
             SdrAction::Demod(_) => 22,
+            SdrAction::Dab(_) => 26,
             SdrAction::Volume(_) => 23,
             SdrAction::Mute(_) => 24,
             SdrAction::Squelch(_) => 25,

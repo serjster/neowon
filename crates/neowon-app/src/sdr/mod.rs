@@ -22,8 +22,10 @@ mod readout;
 pub mod scan;
 
 use crate::viz::waterfall::thermal;
-pub use actions::{SdrAction, parse, parse_hz, parse_instrument, parse_sim, run};
-pub use readout::{audio_json, classify_json, detections_json, iq_json, modmeas_json, sdr_json};
+pub use actions::{DabVerb, SdrAction, parse, parse_hz, parse_instrument, parse_sim, run};
+pub use readout::{
+    audio_json, classify_json, dab_json, detections_json, iq_json, modmeas_json, sdr_json,
+};
 pub use scan::{diff_json as survey_diff_json, survey_json};
 
 /// Waterfall texture: display columns × history rows (newest on top).
@@ -91,6 +93,11 @@ pub struct SdrState {
     pub squelch_db: f64,
     /// The streaming demodulator, built while a mode is on.
     receiver: Option<neowon_dsp::Receiver>,
+    /// The DAB receiver (10.15.1), built while `sdr dab on` is in force.
+    /// It is fed the raw IQ frames, not the demodulated channel: DAB wants
+    /// the whole 1.536 MHz ensemble, so it is a wideband consumer sitting
+    /// beside the demodulator, not a mode of it.
+    pub dab: Option<neowon_dsp::dab::DabReceiver>,
     /// Output device, opened on first use.
     pub audio: Option<neowon_audio::sink::AudioOut>,
     /// Scratch audio buffer, kept to avoid a per-frame allocation.
@@ -169,6 +176,7 @@ impl Default for SdrState {
             mute: false,
             squelch_db: -120.0,
             receiver: None,
+            dab: None,
             audio: None,
             audio_buf: Vec::new(),
             audio_rms: 0.0,
@@ -388,6 +396,18 @@ pub fn update(mut sdr: ResMut<SdrState>) {
     }
     if let Some(mode) = sdr.demod {
         feed_audio(&mut sdr, &frame, mode);
+    }
+    if sdr.dab.is_some() {
+        feed_dab(&mut sdr, &frame);
+    }
+}
+
+/// Hand the frame's IQ to the DAB receiver. Frames are `Arc`-shared and
+/// never copied for a consumer, and the receiver keeps its own sample
+/// buffer, so a frame arriving in ragged pieces is normal input.
+fn feed_dab(sdr: &mut SdrState, frame: &neowon_core::CaptureFrame) {
+    if let Some(rx) = sdr.dab.as_mut() {
+        rx.push_iq(&frame.channels[0].data);
     }
 }
 

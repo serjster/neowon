@@ -232,9 +232,30 @@ the reason DAB+ audio is *last* in this program rather than assumed.
 ### 10.15.4 — App, script and MCP surface
 
 Dock section with the ensemble/service table and the sync quality readout; script
-actions `sdr dab on|off|reset` and a `dab` view verb; `get dab` JSON; one MCP tool
-returning the ensemble and its services. Emitted after 10.15.1's decoder exists, so
-that every displayed field is a field the receiver actually produces.
+actions `sdr dab on|off|reset`; `get dab` JSON; MCP tools returning the ensemble
+and its services. Emitted after 10.15.1's decoder exists, so that every displayed
+field is a field the receiver actually produces.
+
+**Status 2026-09-20: control plane done, verified live.** `sdr dab on|off|reset`
+(`SdrAction::Dab`, with its `Display` arm so the script-parity rule holds by
+construction and a persistence priority), `get dab` (JSON: lock state, FIB CRC
+counters, carrier offset, PRS metric, and the ensemble with services,
+sub-channels, bit rates, protection and coding), the MCP tools `dab_ensemble`
+and `dab_control`, and a `DAB` dock section whose readout always shows the sync
+quality line — an unlocked receiver must not look like an absent one. The
+receiver is fed the **raw IQ frames**, beside the demodulator rather than as a
+mode of it: DAB wants the whole 1.536 MHz ensemble, not a 12.5 kHz channel.
+
+Verified over the control socket in `--sim` (no USB): `sdr dab on` then `get dab`
+returns `locked:false` with `prs_metric` ≈ 0.02 and an empty table on the
+reference tone, and `get uitree` shows `dock section DAB` drawing
+`not locked  FIB CRC -  0 frames  PRS 0.02`.
+
+**Still missing for a positive demo:** the `rf-dab` `RfScene` preset, i.e. a sim
+scene carrying a real ensemble, so the app can be seen locking without hardware.
+It is a small piece (the sim gains a buffer-backed `IqComponent`; the app builds
+the frame from `dab::encoder`, which is the layering deviation 1 already
+records), and the hardware run is the stronger evidence anyway.
 
 ## Verification contract
 

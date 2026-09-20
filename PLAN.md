@@ -561,18 +561,22 @@ Auto-cal port (compensation pass descending ranges @ DC, amplitude pass ascendin
 > `stations`, `station_tune`, `refdb`, `location` (`rf_bands` lives in
 > `ui_tools.rs`). Acceptance: `--test sdr_refmap` (both tests), plus the
 > refdb suites (45 unit tests + importers + fetch).
-> **10.15 DAB/DAB+ decoding — tier 1 (the FIC) complete on the sim, hardware
-> run outstanding** (spec `docs/tasks/phase10-dab-spec.md`, facts
+> **10.15 DAB/DAB+ decoding — tier 1 complete on the sim, control surface live,
+> hardware run outstanding** (spec `docs/tasks/phase10-dab-spec.md`, facts
 > `docs/protocol-dab.md`). `neowon_dsp::dab` decodes a Mode I ensemble from
 > 2.048 MS/s IQ: OFDM front end (null/PRS sync, cyclic-prefix carrier-offset
 > removal, differential demap), the punctured convolutional FEC, FIB CRC, FIG
 > parsing → EId, ensemble label, services with labels, sub-channels, bit rates
 > and protection. Zero new dependencies; engine-free. 34 unit tests + 6
 > end-to-end tests (`--test dab_fic`) keep the published tables (12, 13, 23, 24,
-> 25) and the no-false-lock floor honest. **Not done:** the hardware lock
-> (DAB-G1, needs the operator and a Band III channel), the app/script/MCP
-> surface (10.15.4), and tiers 10.15.2 (MSC, DLS text) and 10.15.3 (audio, behind
-> the operator's DAB-G2 decision on fdk-aac). Sim results do not pass DAB-G1.
+> 25) and the no-false-lock floor honest. Driven from the app: `sdr dab on|off|reset`,
+> `get dab`, the `DAB` dock section (ensemble table + sync quality), MCP
+> `dab_ensemble`/`dab_control`; the receiver eats raw IQ frames beside the
+> demodulator because it wants the whole ensemble, not a channel. **Not done:**
+> the hardware lock (DAB-G1, needs the operator and a Band III channel), the
+> `rf-dab` sim scene for a hardware-free positive demo, and tiers 10.15.2 (MSC,
+> DLS text) and 10.15.3 (audio, behind the operator's DAB-G2 decision on
+> fdk-aac). Sim results do not pass DAB-G1.
 > Next: **10.11** scope/SDR workspace split (D12), **10.13**
 > channel-relative visualizations (D15), **10.15** DAB (hardware lock).
 > Nothing left that runs without the operator except polish. neowon becomes one instrument in two modes —
