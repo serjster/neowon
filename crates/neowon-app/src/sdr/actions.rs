@@ -428,7 +428,10 @@ pub fn apply(a: SdrAction, sdr: &mut SdrState, link: &mut Link) -> Result<(), St
         SdrAction::Dab(verb) => match verb {
             // A fresh receiver: a retune means a different ensemble, and the
             // old table would be a different station's.
-            DabVerb::On => sdr.dab = Some(neowon_dsp::dab::DabReceiver::new()),
+            DabVerb::On => {
+                sdr.dab = Some(neowon_dsp::dab::DabReceiver::new());
+                sdr.dab_next_sample = None;
+            }
             DabVerb::Off => sdr.dab = None,
             DabVerb::Reset => {
                 if let Some(rx) = sdr.dab.as_mut() {

@@ -190,8 +190,8 @@ Work items, in order (each lands with its test):
 7. **`neowon-dsp::dab::receiver`** — the `DabReceiver` state machine: IQ frames in,
    `DabStatus` out, re-lock after dropped frames, no false lock on non-DAB input.
 
-**Status 2026-09-20: tier 1 complete on the sim; the hardware run (row 7) is the
-only thing outstanding.** *(updated as items land)*
+**Status 2026-09-20: tier 1 complete, and row 7 passed on air — DAB-G1 is met.**
+*(updated as items land)*
 
 | Item | State |
 |---|---|
@@ -204,10 +204,16 @@ only thing outstanding.** *(updated as items land)*
 | 7. `dab::receiver` | **done** — `DabReceiver`: null-symbol search, PRS correlation gate, cyclic-prefix frequency offset removed on a continuous time base, three FIC symbols demapped per frame, streaming sample buffer. |
 
 Criteria rows 1–6 all pass: `cargo test -p neowon-dsp --lib dab` (34 tests) and
-`cargo test -p neowon-dsp --test dab_fic` (6 tests, ~1.4 s). Row 7 — one Band III
-channel on the RTL-SDR, ≥ 3 named services, ≥ 90% FIB CRC, filed in
-`docs/protocol-dab.md` — is the only unmet criterion, and it is the one that
-passes DAB-G1.
+`cargo test -p neowon-dsp --test dab_fic` (6 tests, ~1.4 s).
+
+**Row 7 passed on air, 2026-09-20** (11C, 220.352 MHz, RTL-SDR V3, 2.048 MS/s):
+`locked`, EId `0x8008`, **14 services with labels** (SLAM!, YOURSAFE, BNR
+BusinessBeat, Sky Radio, 538, Qmusic, BNR Nieuwsradio, Radio 10, 100% NL,
+Veronica, 538 NONSTOP, Qmusic Non-stop, JOE, Sky Radio Hits) and **98.9–99.3%**
+FIB CRC over 110 and 38 frames, against a floor of 3 services and 90%. The
+readout, the two defects it exposed, and the open yield question are in
+`docs/protocol-dab.md`. **DAB-G1 is met** — the front end is not merely
+sim-plausible, it locks and names a real ensemble.
 
 Tables are generated, not typed: a one-off generator reads the standard's text
 extraction and emits `dab/tables.rs` after asserting each table's invariants
@@ -271,7 +277,7 @@ spec's rule (phase10-sdr-spec.md §Verification contract).
 | 4 | false locks | 0 services and `locked == false` over a 60-frame fixture of `rf-noise`, `rf-reference` and a bare tone (60 frames ≈ 5.8 s of signal; the count is a runtime trade-off, the criterion is that it never locks) | exact | same |
 | 5 | table vectors | FIB CRC check value, PRS sequence values, puncture patterns per protection profile, convolutional generator parity — all match the clause cited | exact | `cargo test -p neowon-dsp --lib dab` |
 | 6 | soft-bit polarity | a deliberately inverted soft-bit sign fails test 1 and no other test (the trap in `tpeg-rust` is a failing test, not a silent one) | exact | same |
-| 7 | hardware lock (manual, dongle on hand, **this closes the sub-phase and is the only unmet criterion**) | ≥ 3 services with labels + correct EId + ≥ 90% FIB CRC on one Band III channel, filed in `docs/protocol-dab.md`; needs the operator's go-ahead and a channel, and the CLI surface it runs through lands with 10.15.4 | fixed-order | manual, `--sim` never |
+| 7 | hardware lock (**passed 2026-09-20**) | 11C at 220.352 MHz: locked, EId `0x8008`, 14 services with labels, 98.9–99.3% FIB CRC — filed in `docs/protocol-dab.md` | fixed-order | manual, `--sim` never; run through the app's control socket (`sdr dab on`, `get dab`) |
 
 Rows 1–6 run in CI on the sim; row 7 is never CI (AGENTS.md, hardware safety) and
 is the only thing that passes DAB-G1.
@@ -338,6 +344,28 @@ table cannot also be tight on lines.
    not amend that ordering.
 
 ## Deviations (recorded per AGENTS.md)
+
+0. **Two defects found on air, both ours, both fixed** (details and evidence in
+   `docs/protocol-dab.md`): the receiver was fed from the display path, which is
+   latest-wins, so it saw a holed stream — the carrier estimate read −223 Hz
+   instead of −12 Hz and labels took 40 s instead of 12; and `prs_metric`
+   reported the last *attempt* rather than the accepted frame, reading ~0.03 on a
+   receiver decoding 98.9% of its FIBs. Both were invisible in sim: the sim feeds
+   whole contiguous frames at exactly 2.048 MS/s and never splices them.
+   **The lesson for the remaining tiers: a criterion that only holds because the
+   sim's frame stream is ideal is not a criterion.** The in-app path is where
+   that assumption gets tested, and it took a hardware session to expose it.
+1. **Sync yield on air is ~13% of attempts** (38 accepted against 262 rejected in
+   the measured run), with rejected attempts scoring ~0.04 PRS — genuinely
+   misaligned rather than marginal. Most likely splices from USB drops, since the
+   null symbol then stops being the unique power dip. It locks and holds, so this
+   is a yield question and not a correctness one, but it is the first item of
+   10.15.1 follow-up work.
+2. **Splice detection cannot be exact yet** — `CaptureFrame::t_start` is
+   arrival-time derived, so a tight gap check fires on jitter (it cost ~87% of
+   one session's attempts before being loosened to a coarse safety net). The fix
+   is a dropped-sample counter in the frame, from the backend.
+
 
 1. **The oracle encoder lives in `neowon-dsp`, not `neowon-sim`** (amends D25's
    wording). `neowon-sim` does not depend on `neowon-dsp` — the dependency runs

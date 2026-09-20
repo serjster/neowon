@@ -66,10 +66,16 @@ pub struct DabReceiver {
     /// Scratch: the frame's soft bits.
     soft: Vec<i8>,
     fic: FicState,
-    /// Carrier frequency offset estimated on the last frame, Hz.
+    /// Carrier frequency offset estimated on the last accepted frame, Hz.
     pub freq_offset_hz: f64,
-    /// Normalized PRS correlation of the last frame.
-    pub prs_metric: f32,
+    /// Normalized PRS correlation of the last **accepted** frame — the score
+    /// that justified decoding it.
+    prs_metric: f32,
+    /// The same score for the last attempt, accepted or not. Kept apart
+    /// because a rejected attempt's score says nothing about the signal, and
+    /// reporting it as the signal's quality is a lie of the sort D27 forbids:
+    /// on air this read ~0.03 on a receiver decoding 98.9% of its FIBs.
+    last_attempt_metric: f32,
     /// Frames decoded, and frames rejected for a failed PRS check.
     pub frames_decoded: u64,
     pub frames_rejected: u64,
@@ -88,6 +94,7 @@ impl DabReceiver {
             fic: FicState::new(),
             freq_offset_hz: 0.0,
             prs_metric: 0.0,
+            last_attempt_metric: 0.0,
             frames_decoded: 0,
             frames_rejected: 0,
         }
@@ -109,7 +116,9 @@ impl DabReceiver {
             if frame_start + FRAME_SAMPLES > self.pending.len() {
                 break;
             }
-            if !self.extract_prs_spectrum(frame_start, 0.0) {
+            let attempt_metric = self.extract_prs_spectrum(frame_start, 0.0);
+            self.last_attempt_metric = attempt_metric;
+            if attempt_metric < PRS_METRIC_MIN {
                 self.frames_rejected += 1;
                 let consume = (frame_start + FRAME_SAMPLES / 2).min(self.pending.len());
                 self.pending.drain(..consume);
@@ -120,7 +129,7 @@ impl DabReceiver {
             self.freq_offset_hz = offset_hz;
             // Re-extract the PRS on the corrected time base: it is the
             // reference for the first FIC symbol, so it must be corrected too.
-            self.extract_prs_spectrum(frame_start, offset_hz);
+            self.prs_metric = self.extract_prs_spectrum(frame_start, offset_hz);
 
             for symbol in 0..3usize {
                 let start = frame_start + T_NULL + (symbol + 1) * T_S + T_G;
@@ -166,12 +175,25 @@ impl DabReceiver {
         self.fic.ensemble()
     }
 
+    /// Drop the buffered samples, keeping the lock window and the table.
+    ///
+    /// For a caller that has detected a **gap or an overlap** in its frame
+    /// stream: spliced samples are worse than missing ones, because the null
+    /// symbol stops being the unique power dip and the sync wanders. On air,
+    /// before this existed, the receiver accepted ~3% of its attempts with the
+    /// PRS score pinned at the 0.5 threshold — the signature of a stream that is
+    /// not contiguous.
+    pub fn discard_buffer(&mut self) {
+        self.pending.clear();
+    }
+
     /// Forget the lock, the table and the buffered samples.
     pub fn reset(&mut self) {
         self.pending.clear();
         self.fic.reset();
         self.freq_offset_hz = 0.0;
         self.prs_metric = 0.0;
+        self.last_attempt_metric = 0.0;
         self.frames_decoded = 0;
         self.frames_rejected = 0;
     }
@@ -202,7 +224,7 @@ impl DabReceiver {
     /// Transform the PRS symbol's useful part and score it against the known
     /// sequence, storing it for the first FIC symbol's demap. Returns whether
     /// the score clears [`PRS_METRIC_MIN`].
-    fn extract_prs_spectrum(&mut self, frame_start: usize, offset_hz: f64) -> bool {
+    fn extract_prs_spectrum(&mut self, frame_start: usize, offset_hz: f64) -> f32 {
         let start = frame_start + T_NULL + T_G;
         let base = (start - frame_start) as f64;
         let mut window = std::mem::take(&mut self.spectrum);
@@ -219,14 +241,24 @@ impl DabReceiver {
             reference_energy += reference[bin].norm_sqr();
         }
         let denominator = (energy * reference_energy).sqrt();
-        self.prs_metric = if denominator > 0.0 {
+        let metric = if denominator > 0.0 {
             correlation.norm() / denominator
         } else {
             0.0
         };
         self.prs_spectrum.copy_from_slice(&window);
         self.spectrum = window;
-        self.prs_metric >= PRS_METRIC_MIN
+        metric
+    }
+
+    /// The accepted frame's PRS correlation: the score behind the table.
+    pub fn prs_metric(&self) -> f32 {
+        self.prs_metric
+    }
+
+    /// The last attempt's PRS correlation, whether or not it was believed.
+    pub fn last_attempt_metric(&self) -> f32 {
+        self.last_attempt_metric
     }
 
     /// Fill `window` with `T_U` samples at `start`, de-rotated by the estimated
@@ -317,8 +349,7 @@ mod tests {
     fn prs_metric_separates_signal_from_noise() {
         let mut receiver = DabReceiver::new();
         receiver.pending = frame_with(prs_samples(0.0));
-        assert!(receiver.extract_prs_spectrum(0, 0.0));
-        let signal_metric = receiver.prs_metric;
+        let signal_metric = receiver.extract_prs_spectrum(0, 0.0);
         assert!(signal_metric > 0.95, "PRS metric {signal_metric}");
 
         let mut noise = DabReceiver::new();
@@ -330,11 +361,10 @@ mod tests {
             let q = ((rng >> 16) as i16 as f32) / 32768.0;
             noise.pending.push(Complex32::new(i, q));
         }
-        assert!(!noise.extract_prs_spectrum(0, 0.0));
+        let noise_metric = noise.extract_prs_spectrum(0, 0.0);
         assert!(
-            noise.prs_metric < 0.1,
-            "noise metric {} should be far below the DAB score",
-            noise.prs_metric
+            noise_metric < 0.1,
+            "noise metric {noise_metric} should be far below the DAB score"
         );
     }
 

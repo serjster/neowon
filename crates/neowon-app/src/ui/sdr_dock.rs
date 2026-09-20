@@ -472,7 +472,8 @@ fn dab(ui: &mut egui::Ui, sdr: &SdrState, script: &mut Script) {
         .map_or_else(|| "-".to_string(), |r| format!("{:.0}%", r * 100.0));
     let sync = format!(
         "FIB CRC {rate}  {} frames  PRS {:.2}",
-        status.frames, rx.prs_metric
+        status.frames,
+        rx.prs_metric()
     );
     if !status.locked {
         ui.monospace(format!("not locked\n{sync}"));

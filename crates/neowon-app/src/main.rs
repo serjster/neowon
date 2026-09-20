@@ -503,6 +503,9 @@ fn ingest(time: Res<Time>, mut link: ResMut<Link>, mut sdr: ResMut<sdr::SdrState
             Event::Frame(f) if f.layout == neowon_core::SampleLayout::Complex => {
                 link.last_frame_at = time.elapsed_secs_f64();
                 sdr.frames_seen += 1;
+                // Streaming consumers get every frame here; the display path
+                // only ever sees the latest one.
+                sdr::feed_dab(&mut sdr, &f);
                 sdr.latest = Some(f);
             }
             Event::Frame(f) => {

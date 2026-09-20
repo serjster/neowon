@@ -176,10 +176,71 @@ MIT reference `dabradio` 0.5.0 and agree value-for-value.
 
 ## Verified on hardware
 
-*(empty — this section is the record of the DAB-G1 hardware run: one Band III
-channel, the RTL-SDR V3, ensemble identity, service labels, FIB CRC rate, and
-whatever surprised us. Nothing in tier 1 is claimed to work on air until this
-section has content.)*
+**DAB-G1 passed, 2026-09-20.** RTL-SDR V3 (R820T), 2.048 MS/s, gain auto, ppm 0,
+hardware centre 220.352 MHz (block 11C), app driven over the control socket.
+
+| Fact | Value |
+|---|---|
+| Lock | `locked: true` on the first ensemble tried |
+| EId | `0x8008` |
+| Ensemble label | `"DAB+"` — the multiplex's own label as transmitted, apparently a placeholder |
+| Services | **14**, all `ASCTy 63` (DAB+ / HE-AAC v2), each with a sub-channel |
+| Service labels | SLAM!, YOURSAFE, BNR BusinessBeat, Sky Radio, 538, Qmusic, BNR Nieuwsradio, Radio 10, 100% NL, Veronica, 538 NONSTOP, Qmusic Non-stop, JOE, Sky Radio Hits |
+| Sub-channels | 14, `EEP 3-A` except one `EEP 2-A`, 128–256 kbit/s |
+| FIB CRC | 1306/1320 = **98.9%** (110 frames, first run); 453/456 = **99.3%** (38 frames, after the feed fix) |
+| Carrier offset | **−12 to −15 Hz** (≈ −0.06 ppm) with a contiguous feed |
+| Labels acquired | all 14 within ~12 s of switching on |
+| Data services | 0 on this ensemble |
+
+The labels are independent confirmation that the FIG parsers work: they are the
+stations the external listing attributes to this ensemble (100% NL, BNR, Qmusic,
+Radio 10, 538, Veronica, Sky, SLAM!), including two the listing does not have
+(JOE, YOURSAFE) and one it names differently (54 → "538 NONSTOP").
+
+### Two defects the session found — both were ours, both fixed
+
+1. **The receiver was fed from the display path, which is latest-wins.** The
+   spectrum view only needs the newest frame to paint, so it consumes one frame
+   per render tick and overwrites the rest; a decoder fed from there sees a
+   stream full of holes. Evidence: with a holed feed the carrier estimate was
+   **−223 Hz** and labels took 40 s; with every frame fed from `ingest` the
+   estimate settled at **−12 Hz** and labels arrived in ~12 s. The estimate was
+   the giveaway — a cyclic-prefix measurement straddling a splice is simply
+   wrong, and nothing about it looks wrong in isolation. `feed_dab` now runs in
+   `ingest`, where every frame arrives.
+2. **`prs_metric` reported the last *attempt*, not the accepted frame.** On air
+   it read ~0.03 while the receiver was decoding 98.9% of its FIBs — a readout
+   that makes a working receiver look broken, and one an operator would use to
+   stop believing the screen. The accepted frames' score is now reported
+   separately (`get dab` carries `prs_metric`, `last_attempt_metric`,
+   `frames_decoded`, `frames_rejected`).
+
+### Open items from the session
+
+- **Sync yield is ~13% of attempts.** The receiver attempts a frame per six
+  16 ms input frames and accepts about one in eight: 38 accepted against 262
+   rejected in the measured run. The rejected attempts' PRS score is ~0.04, i.e.
+  they are genuinely misaligned, not marginal. **Likely cause: splices from USB
+  drops**, because the null symbol then stops being the unique power dip and the
+  sync wanders. It still locks in seconds and holds, so this is a yield problem,
+  not a correctness one — but it is the first thing to fix.
+- **Splice detection needs a real sequence indicator.** `CaptureFrame::t_start`
+  is derived from *arrival* time ("biased late by up to one poll"), so it cannot
+  distinguish a jitter of one poll from a dropped chunk. The current check is a
+  coarse safety net (four frame durations); a tight bound fired on ordinary
+  jitter during this session and, before it was loosened, cost ~87% of attempts.
+  The fix belongs in the frame: a dropped-sample counter from the backend.
+- **The ppm conclusion from earlier in this session is void.** The −223 Hz
+  reading that suggested ≈ −1 ppm was an artifact of the holed feed, and the
+  attempt to "correct" it produced two readings at the same setting that
+  disagreed by 435 Hz. With a contiguous feed the dongle measures ≈ −12 Hz
+  (≈ −0.06 ppm), i.e. it is well calibrated as it stands. Whether the R820T also
+  quantizes small ppm nudges is still open and no longer urgent.
+- **The ensemble label `"DAB+"`** is recorded as received. It is what the
+  multiplex declares in FIG 1/0, but it reads like an operator placeholder rather
+  than an ensemble name, so treat it as a fact about this ensemble, not a
+  property of the label parser.
+
 
 ## Band III targets for the first hardware run
 

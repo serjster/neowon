@@ -336,6 +336,7 @@ pub fn dab_json(sdr: &SdrState) -> String {
         concat!(
             r#"{{"ok":true,"on":true,"locked":{},"frames":{},"fib_ok":{},"fib_total":{},"#,
             r#""fib_crc_rate":{},"freq_offset_hz":{},"prs_metric":{},"#,
+            r#""frames_decoded":{},"frames_rejected":{},"last_attempt_metric":{},"#,
             r#""eid":{},"eid_hex":{},"label":{},"data_services":{},"#,
             r#""sub_channels":[{}],"services":[{}]}}"#
         ),
@@ -345,7 +346,10 @@ pub fn dab_json(sdr: &SdrState) -> String {
         status.fib_total,
         rate,
         num(rx.freq_offset_hz),
-        num(f64::from(rx.prs_metric)),
+        num(f64::from(rx.prs_metric())),
+        rx.frames_decoded,
+        rx.frames_rejected,
+        num(f64::from(rx.last_attempt_metric())),
         eid,
         eid_hex,
         label,

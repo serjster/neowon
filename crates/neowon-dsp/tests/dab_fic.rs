@@ -252,9 +252,9 @@ fn no_false_lock_on_noise_or_a_tone() {
             "{preset} must not invent services"
         );
         assert!(
-            receiver.prs_metric < neowon_dsp::dab::PRS_METRIC_MIN,
+            receiver.prs_metric() < neowon_dsp::dab::PRS_METRIC_MIN,
             "{preset} PRS metric {}",
-            receiver.prs_metric
+            receiver.prs_metric()
         );
     }
 }
