@@ -4,6 +4,7 @@
 
 pub mod acq;
 pub mod classify;
+pub mod dab;
 pub mod decode;
 pub mod demod;
 pub mod detect;

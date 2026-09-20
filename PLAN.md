@@ -561,8 +561,20 @@ Auto-cal port (compensation pass descending ranges @ DC, amplitude pass ascendin
 > `stations`, `station_tune`, `refdb`, `location` (`rf_bands` lives in
 > `ui_tools.rs`). Acceptance: `--test sdr_refmap` (both tests), plus the
 > refdb suites (45 unit tests + importers + fetch).
+> **10.15 DAB/DAB+ decoding — tier 1 (the FIC) complete on the sim, hardware
+> run outstanding** (spec `docs/tasks/phase10-dab-spec.md`, facts
+> `docs/protocol-dab.md`). `neowon_dsp::dab` decodes a Mode I ensemble from
+> 2.048 MS/s IQ: OFDM front end (null/PRS sync, cyclic-prefix carrier-offset
+> removal, differential demap), the punctured convolutional FEC, FIB CRC, FIG
+> parsing → EId, ensemble label, services with labels, sub-channels, bit rates
+> and protection. Zero new dependencies; engine-free. 34 unit tests + 6
+> end-to-end tests (`--test dab_fic`) keep the published tables (12, 13, 23, 24,
+> 25) and the no-false-lock floor honest. **Not done:** the hardware lock
+> (DAB-G1, needs the operator and a Band III channel), the app/script/MCP
+> surface (10.15.4), and tiers 10.15.2 (MSC, DLS text) and 10.15.3 (audio, behind
+> the operator's DAB-G2 decision on fdk-aac). Sim results do not pass DAB-G1.
 > Next: **10.11** scope/SDR workspace split (D12), **10.13**
-> channel-relative visualizations (D15).
+> channel-relative visualizations (D15), **10.15** DAB (hardware lock).
 > Nothing left that runs without the operator except polish. neowon becomes one instrument in two modes —
 > **Scope** and **SDR** — riding `Acquisition::Stream` and the shared engine
 > (recorder/timeline, phosphor, decode, control socket, MCP). RTL-SDR drives
@@ -578,7 +590,8 @@ Auto-cal port (compensation pass descending ranges @ DC, amplitude pass ascendin
 > parity (continuous) · **10.10** demodulation & audio (AM/FM first) ·
 > **10.11** scope/SDR workspace split · **10.12** automatic state persistence ·
 > **10.13** channel-relative visualizations · **10.14** RF reference (band
-> map, stations). Each ends
+> map, stations) · **10.15** DAB/DAB+ decoding (`docs/tasks/phase10-dab-spec.md`).
+> Each ends
 > runnable and sim-tested; do not begin without
 > reading the spec's Purpose, decisions (D0–D9), D1b spike and gates (SDR-G1/SDR-G2).
 
@@ -629,6 +642,9 @@ recorded manual hardware smoke run (V3 dongle) is filed in `docs/protocol-rtlsdr
 | SDR driver | in-tree `crates/neowon-sdr/src/rtl/` (RTL2832U + R82xx on `nusb`); porting reference `tmp-inspiration/librtlsdr-rs`; `seify` for later multi-hardware — `docs/tasks/phase10-sdr-spec.md` D2 |
 | RTL-SDR control reference (ppm, direct sampling, AGC, offset tuning) | `tmp-inspiration/SDRPlusPlus/source_modules/rtl_sdr_source/src/main.cpp` (API usage); `tmp-inspiration/librtlsdr-rs` (audited pure-Rust port of librtlsdr: register sequences + documented hazards) |
 | SDR feature catalog (home) | `docs/sdr-feature-catalog.md` |
+| DAB/DAB+ standards | ETSI EN 300 401 (system, OFDM, FIC/MSC, FEC), ETSI TS 102 563 (DAB+: RS(120,110), superframes, AAC) — clause numbers pinned in `docs/protocol-dab.md` |
+| DAB reference implementations | porting reference **`dabradio`** (MIT, `xoolive/desperado`, 8 393 Rust LOC, binary-only crate); read-only GPL: `JvanKatwijk/dab-cmdline`, `JvanKatwijk/qt-dab`, `welle.io` — licensing rule D26 in `docs/tasks/phase10-dab-spec.md` |
+| DAB Mode I parameters, Band III raster | `docs/tasks/phase10-dab-spec.md` §Technical basis; hardware-verified facts in `docs/protocol-dab.md` |
 | RTL-SDR hardware/protocol facts | `docs/protocol-rtlsdr.md` (created with Phase 10) |
 | SDR feature analysis (raw) | `tmp-inspiration/{SDRPlusPlus,librtlsdr-rs,ravenSDR,rtlsdrAI,rtl-ml,modulation-classification,RF-Classification-ML,CNN-BiLSTM-AMC,torchsig,gnuradio_llm,holohub}` — untracked input only; the tracked home is `docs/sdr-feature-catalog.md` |
 | Band plans (SDR++ schema, D16) | `assets/bandplans/` from `tmp-inspiration/SDRPlusPlus/root/res/bandplans/`; widget `…/core/src/gui/widgets/bandplan.cpp` |
