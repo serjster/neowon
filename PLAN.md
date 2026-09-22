@@ -225,7 +225,7 @@ Each phase ends with something runnable and testable — most against the real s
 > a real time axis and reduces them to per-column min/max, so zooming out
 > spans history at full sample rate instead of slowing the rate; gaps are
 > marked with squiggly edges drawn in the compose shader (an overlay would be
-> invisible to `shot` and untestable). `Capabilities::Acquisition`
+> invisible to the plot readback `shotplot` and untestable). `Capabilities::Acquisition`
 > distinguishes Record from Stream, and `neowon-audio` (cpal) is the first
 > streaming backend — no record, no hardware trigger, fixed input range —
 > which is what actually validates the abstraction. `neowon_dsp::decode`
@@ -247,8 +247,9 @@ Each phase ends with something runnable and testable — most against the real s
 > - Decoders: no post-decoder layer, so a protocol that changes bit rate
 >   mid-capture (ISO 7816 smartcards) cannot be followed; the results table
 >   is not searchable or filterable; on-plot annotations are gizmos, so
->   unlike the timeline's gap markers they do not appear in `shot` or the
->   MCP screenshot and cannot be pixel-asserted.
+>   unlike the timeline's gap markers they do not appear in the plot readback
+>   (`shotplot`) and cannot be pixel-asserted (the whole-window `shot` shows
+>   them, but that also catches the rest of the UI).
 > - Audio backend unverified end to end: on macOS, querying an input device
 >   blocks until microphone access is decided and a CLI binary cannot raise
 >   the prompt, so `--audio` waits at "connecting…" until the terminal is
@@ -561,25 +562,32 @@ Auto-cal port (compensation pass descending ranges @ DC, amplitude pass ascendin
 > `stations`, `station_tune`, `refdb`, `location` (`rf_bands` lives in
 > `ui_tools.rs`). Acceptance: `--test sdr_refmap` (both tests), plus the
 > refdb suites (45 unit tests + importers + fetch).
-> **10.15 DAB/DAB+ decoding — tier 1 complete on the sim, control surface live,
-> hardware run outstanding** (spec `docs/tasks/phase10-dab-spec.md`, facts
-> `docs/protocol-dab.md`). `neowon_dsp::dab` decodes a Mode I ensemble from
-> 2.048 MS/s IQ: OFDM front end (null/PRS sync, cyclic-prefix carrier-offset
-> removal, differential demap), the punctured convolutional FEC, FIB CRC, FIG
-> parsing → EId, ensemble label, services with labels, sub-channels, bit rates
-> and protection. Zero new dependencies; engine-free. 34 unit tests + 6
-> end-to-end tests (`--test dab_fic`) keep the published tables (12, 13, 23, 24,
-> 25) and the no-false-lock floor honest. Driven from the app: `sdr dab on|off|reset`,
-> `get dab`, the `DAB` dock section (ensemble table + sync quality), MCP
-> `dab_ensemble`/`dab_control`; the receiver eats raw IQ frames beside the
-> demodulator because it wants the whole ensemble, not a channel. **Not done:**
-> the hardware lock (DAB-G1, needs the operator and a Band III channel), the
-> `rf-dab` sim scene for a hardware-free positive demo, and tiers 10.15.2 (MSC,
-> DLS text) and 10.15.3 (audio, behind the operator's DAB-G2 decision on
-> fdk-aac). Sim results do not pass DAB-G1.
+> **10.15 DAB/DAB+ decoding — tiers 1–3 landed on the sim, audio plays, the
+> on-air listening run is the last item.** Tier 1 (FIC → ensemble/service table)
+> is hardware-verified: DAB-G1 met on 11C, 2026-09-20. Tier 2 (MSC): clause-12
+> time de-interleaving, energy dispersal, EEP/UEP depuncturing and terminated
+> Viterbi, sub-channel bytes, F-PAD/X-PAD/DLS with the EBU Latin card.
+> Tier 3 (`neowon-codec`, new engine-free crate): DAB+ transport (superframe,
+> RS(120,110), Fire code, per-AU CRC, in-band PAD) and the codec adapters —
+> libfdk-aac behind the `neowon-codec/fdk-aac` feature because the pure-Rust
+> `oxideav-aac` rejects SBR on the 960 transform DAB+ mandates (DAB-G2,
+> operator decision 2026-09-20; the C source is fetched by Cargo, not
+> vendored), plus `oxideav-mp2` for DAB classic. The `rf-dab` sim scene is
+> composed in the app from `dab::encoder` (three services, EEP+UEP, a DLS
+> carrier and two audio programmes); `sdr dab on|off|reset|service <#n|sid>|play|stop|channel <label|next|prev>`,
+> `get dab` (ensemble, MSC counters, service, DLS, audio, and the Band III
+> block under the hardware centre), the DAB dock with a service list, level
+> and the Band III block selector (catalogue from `neowon-refdb::dab`,
+> offered blocks from the active band plan's DAB allocation — no frequency
+> to know by heart), MCP `dab_ensemble`/`dab_control`. Tests: `--test
+> dab_fic`, `--test dab_msc`, the `neowon-codec` fixture suites (HE-AAC v2
+> correlation 0.9999, MP2 0.99999 vs source), `--test sdr_dab`,
+> `--test sdr_dab_audio`. **Not done:** the on-air listening run (row 17 — the
+> only available proof for real 960/SBR access units, since no open encoder
+> emits them), and §10.15.2's extended labels/MOT.
 > Next: **10.11** scope/SDR workspace split (D12), **10.13**
-> channel-relative visualizations (D15), **10.15** DAB (hardware lock).
-> Nothing left that runs without the operator except polish. neowon becomes one instrument in two modes —
+> channel-relative visualizations (D15); DAB is sim-complete and waits on the
+> operator for the listening run. neowon becomes one instrument in two modes —
 > **Scope** and **SDR** — riding `Acquisition::Stream` and the shared engine
 > (recorder/timeline, phosphor, decode, control socket, MCP). RTL-SDR drives
 > through librtlsdr bindings *presumed* for V3 compatibility; the exact crate is
@@ -648,7 +656,7 @@ recorded manual hardware smoke run (V3 dongle) is filed in `docs/protocol-rtlsdr
 | SDR feature catalog (home) | `docs/sdr-feature-catalog.md` |
 | DAB/DAB+ standards | ETSI EN 300 401 (system, OFDM, FIC/MSC, FEC), ETSI TS 102 563 (DAB+: RS(120,110), superframes, AAC) — clause numbers pinned in `docs/protocol-dab.md` |
 | DAB reference implementations | porting reference **`dabradio`** (MIT, `xoolive/desperado`, 8 393 Rust LOC, binary-only crate); read-only GPL: `JvanKatwijk/dab-cmdline`, `JvanKatwijk/qt-dab`, `welle.io` — licensing rule D26 in `docs/tasks/phase10-dab-spec.md` |
-| DAB Mode I parameters, Band III raster | `docs/tasks/phase10-dab-spec.md` §Technical basis; hardware-verified facts in `docs/protocol-dab.md` |
+| DAB Mode I parameters, Band III raster | `docs/tasks/phase10-dab-spec.md` §Technical basis; the 5A–13F block table in `crates/neowon-refdb/src/dab.rs` (port provenance in `docs/protocol-dab.md`); hardware-verified facts in `docs/protocol-dab.md` |
 | RTL-SDR hardware/protocol facts | `docs/protocol-rtlsdr.md` (created with Phase 10) |
 | SDR feature analysis (raw) | `tmp-inspiration/{SDRPlusPlus,librtlsdr-rs,ravenSDR,rtlsdrAI,rtl-ml,modulation-classification,RF-Classification-ML,CNN-BiLSTM-AMC,torchsig,gnuradio_llm,holohub}` — untracked input only; the tracked home is `docs/sdr-feature-catalog.md` |
 | Band plans (SDR++ schema, D16) | `assets/bandplans/` from `tmp-inspiration/SDRPlusPlus/root/res/bandplans/`; widget `…/core/src/gui/widgets/bandplan.cpp` |
@@ -663,6 +671,10 @@ Deferred findings, with the reason (the home the critic skill's `defer` writes t
 
 - (none currently. The Phase 10 classification corpus is no longer deferred: D9 collects it
   from 10.0, from a public over-the-air dataset or a live capture.)
+- **Per-frame SDR DSP churn** (phase10-implementation round 1, M25): a fresh `FftPlanner` per
+  `stft` call, per-call block matrices, and a full 1.3 MB waterfall texture re-upload per row.
+  Deferred because no rig prices the frame loop yet — revisit once M16's headless `frame_cost`
+  example measures each stage against the 32 ms period.
 
 ---
 

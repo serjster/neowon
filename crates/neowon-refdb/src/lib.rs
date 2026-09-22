@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 
 pub mod bandplan;
+pub mod dab;
 pub mod fetch;
 pub mod geo;
 pub mod index;
@@ -15,6 +16,7 @@ pub mod station;
 pub mod store;
 
 pub use bandplan::{Band, BandPlan, LoadError, NamedPlan, load_plans};
+pub use dab::DabBlock;
 pub use geo::{LatLon, Location, LocationSource};
 pub use index::{Index, Query, SortBy};
 pub use sources::Report;

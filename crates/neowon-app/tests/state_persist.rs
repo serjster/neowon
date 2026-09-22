@@ -192,6 +192,8 @@ fn a_scripted_run_writes_no_state() {
         .env("NEOWON_SCRIPT", &script)
         .env("NEOWON_STATE", &state)
         .env_remove("NEOWON_NO_STATE")
+        // A killed harness must not leave the scripted app behind.
+        .env("NEOWON_ORPHAN_EXIT", "120")
         .status()
         .unwrap();
     assert!(status.success());

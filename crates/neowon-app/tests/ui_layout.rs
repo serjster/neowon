@@ -68,6 +68,8 @@ fn run_layout_script(name: &str, script: &str) -> Vec<PathBuf> {
         .env("NEOWON_UI_SCALE", "1.0")
         .env("NEOWON_WINDOW", "1520x820")
         .env_remove("NEOWON_SHOT")
+        // A killed harness must not leave the scripted app behind.
+        .env("NEOWON_ORPHAN_EXIT", "120")
         .status()
         .expect("launch app");
     assert!(status.success(), "app exited with {status}");

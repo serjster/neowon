@@ -10,20 +10,18 @@
 //!
 //! Scene names are a stable API like the scope's stimulus presets.
 
-use std::sync::Arc;
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use neowon_backend::{
     Acquisition, Backend, BackendError, Capabilities, InstrumentConfig, SdrCaps, SdrConfig,
 };
-use neowon_core::SharedFrame;
+use neowon_core::{SharedFrame, stream_chunk_pairs};
 
 use neowon_core::Modulation;
 
-use crate::iq::{IqComponent, IqScene};
-
-/// Pairs per frame (32 ms at 2.048 MS/s).
-pub const CHUNK_PAIRS: usize = 64 * 1024;
+use crate::iq::{IqBuffer, IqComponent, IqScene};
 
 /// An analogue-modulated carrier: AM depth, or FM deviation, on a tone.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -87,12 +85,45 @@ const fn fm(freq_hz: f64, amplitude: f64, deviation_hz: f64, tone_hz: f64) -> Em
 #[derive(Debug, Clone, PartialEq)]
 pub struct RfScene {
     pub emitters: Vec<Emitter>,
-    /// Complex noise RMS, full-scale units.
+    /// Complex noise RMS, full-scale units. Applied on top of `buffer` too.
     pub noise_rms: f64,
+    /// A pre-modulated stream the app installed (see [`install_scene`]);
+    /// `rf-dab` carries the Mode I ensemble here.
+    pub buffer: Option<IqBuffer>,
+}
+
+/// Scenes the embedding app hands the sim under a preset name.
+///
+/// The sim cannot synthesise a DAB ensemble — that needs `neowon_dsp`, which
+/// must not become a sim dependency (tier-1 deviation 1) — so the app builds
+/// the IQ and installs it here; `RfScene::preset` then resolves the stable
+/// preset name like any built-in. The registry is process-global because the
+/// backend lives on the supervisor thread; the app installs before it sends
+/// the `stimulus` command, and tests run in separate processes.
+static INSTALLED: OnceLock<Mutex<BTreeMap<String, RfScene>>> = OnceLock::new();
+
+/// Install `scene` under `name`, replacing a previous install. Idempotent
+/// for the same content; without an install, `preset("rf-dab")` is silence.
+pub fn install_scene(name: &str, scene: RfScene) {
+    INSTALLED
+        .get_or_init(Default::default)
+        .lock()
+        .expect("scene registry")
+        .insert(name.to_string(), scene);
+}
+
+/// The installed scene under `name`, if the app put one there.
+pub fn installed_scene(name: &str) -> Option<RfScene> {
+    INSTALLED
+        .get_or_init(Default::default)
+        .lock()
+        .expect("scene registry")
+        .get(name)
+        .cloned()
 }
 
 impl RfScene {
-    pub const PRESETS: [&'static str; 7] = [
+    pub const PRESETS: [&'static str; 8] = [
         "rf-reference",
         "rf-fm-band",
         "rf-hf",
@@ -100,9 +131,13 @@ impl RfScene {
         "rf-digital",
         "rf-am",
         "rf-fm",
+        "rf-dab",
     ];
 
     pub fn preset(name: &str) -> Option<Self> {
+        if let Some(installed) = installed_scene(name) {
+            return Some(installed);
+        }
         let (emitters, noise_rms) = match name {
             // Tuned to the default 100 MHz this is IqScene::reference.
             "rf-reference" => (vec![em(100.1e6, 0.5)], 0.05),
@@ -136,11 +171,16 @@ impl RfScene {
             // A 1 kHz tone on each: the demod oracle's stimulus.
             "rf-am" => (vec![am(100.1e6, 0.5, 0.5, 1000.0)], 0.02),
             "rf-fm" => (vec![fm(100.1e6, 0.5, 3000.0, 1000.0)], 0.02),
+            // The app installs the real ensemble (an IQ buffer); before that
+            // there is nothing honest to play, so it is silent rather than a
+            // different signal wearing the name.
+            "rf-dab" => (Vec::new(), 0.0),
             _ => return None,
         };
         Some(Self {
             emitters,
             noise_rms,
+            buffer: None,
         })
     }
 
@@ -148,47 +188,52 @@ impl RfScene {
     /// pairs/s with `ppm` crystal correction.
     pub fn baseband(&self, centre_hz: f64, rate: f64, ppm: f64) -> IqScene {
         let shift = centre_hz * ppm * 1e-6;
-        IqScene {
-            sample_rate: rate,
-            components: self
-                .emitters
-                .iter()
-                .map(|e| e.freq_hz - centre_hz + shift)
-                .zip(&self.emitters)
-                .filter(|(off, _)| off.abs() < rate / 2.0)
-                .map(|(offset_hz, e)| match (e.digital, e.analog) {
-                    (Some((modulation, symbol_rate, rolloff)), _) => IqComponent::Digital {
-                        modulation,
-                        symbol_rate,
-                        offset_hz,
-                        amplitude: e.amplitude,
-                        rolloff,
-                    },
-                    (None, Some(Analog::Am { depth, tone_hz })) => IqComponent::Am {
-                        offset_hz,
-                        amplitude: e.amplitude,
-                        depth,
-                        tone_hz,
-                    },
-                    (
-                        None,
-                        Some(Analog::Fm {
-                            deviation_hz,
-                            tone_hz,
-                        }),
-                    ) => IqComponent::Fm {
-                        offset_hz,
-                        amplitude: e.amplitude,
+        let mut components: Vec<IqComponent> = self
+            .emitters
+            .iter()
+            .map(|e| e.freq_hz - centre_hz + shift)
+            .zip(&self.emitters)
+            .filter(|(off, _)| off.abs() < rate / 2.0)
+            .map(|(offset_hz, e)| match (e.digital, e.analog) {
+                (Some((modulation, symbol_rate, rolloff)), _) => IqComponent::Digital {
+                    modulation,
+                    symbol_rate,
+                    offset_hz,
+                    amplitude: e.amplitude,
+                    rolloff,
+                },
+                (None, Some(Analog::Am { depth, tone_hz })) => IqComponent::Am {
+                    offset_hz,
+                    amplitude: e.amplitude,
+                    depth,
+                    tone_hz,
+                },
+                (
+                    None,
+                    Some(Analog::Fm {
                         deviation_hz,
                         tone_hz,
-                    },
-                    (None, None) => IqComponent::Tone {
-                        offset_hz,
-                        amplitude: e.amplitude,
-                        phase: 0.0,
-                    },
-                })
-                .collect(),
+                    }),
+                ) => IqComponent::Fm {
+                    offset_hz,
+                    amplitude: e.amplitude,
+                    deviation_hz,
+                    tone_hz,
+                },
+                (None, None) => IqComponent::Tone {
+                    offset_hz,
+                    amplitude: e.amplitude,
+                    phase: 0.0,
+                },
+            })
+            .collect();
+        // The buffer is baseband already: no RF offset is applied.
+        if let Some(buffer) = &self.buffer {
+            components.push(IqComponent::Buffer(*buffer));
+        }
+        IqScene {
+            sample_rate: rate,
+            components,
             noise_rms: self.noise_rms,
         }
     }
@@ -225,7 +270,9 @@ impl SimSdrBackend {
                     25.4, 28.0, 29.7, 32.8, 33.8, 36.4, 37.2, 38.6, 40.2, 42.1, 43.4, 43.9, 44.5,
                     48.0, 49.6,
                 ],
-                acquisition: Acquisition::Stream { chunk: CHUNK_PAIRS },
+                acquisition: Acquisition::Stream {
+                    chunk: stream_chunk_pairs(cfg.sample_rate),
+                },
             }),
             baseband: scene.baseband(cfg.centre_hz, cfg.sample_rate, cfg.ppm),
             scene,
@@ -273,6 +320,11 @@ impl Backend for SimSdrBackend {
             ));
         }
         self.cfg = c.clone();
+        if let Capabilities::Sdr(caps) = &mut self.caps {
+            caps.acquisition = Acquisition::Stream {
+                chunk: stream_chunk_pairs(c.sample_rate),
+            };
+        }
         self.rebuild();
         Ok(())
     }
@@ -289,13 +341,12 @@ impl Backend for SimSdrBackend {
                 return Ok(None);
             }
         }
-        let period = Duration::from_secs_f64(CHUNK_PAIRS as f64 / self.cfg.sample_rate);
+        let chunk = stream_chunk_pairs(self.cfg.sample_rate);
+        let period = Duration::from_secs_f64(chunk as f64 / self.cfg.sample_rate);
         // Real time, without accumulating a backlog if we fell behind.
         self.next_at = (self.next_at + period).max(Instant::now());
-        let frame = self
-            .baseband
-            .frame(self.seed, self.seq, self.index, CHUNK_PAIRS);
-        self.index += CHUNK_PAIRS as u64;
+        let frame = self.baseband.frame(self.seed, self.seq, self.index, chunk);
+        self.index += chunk as u64;
         self.seq += 1;
         Ok(Some(Arc::new(frame)))
     }
@@ -375,11 +426,47 @@ mod tests {
     #[test]
     fn ppm_raises_the_band() {
         let s = RfScene::preset("rf-reference").unwrap();
-        let IqComponent::Tone { offset_hz, .. } = s.baseband(100e6, 2.048e6, 10.0).components[0]
-        else {
+        let bb = s.baseband(100e6, 2.048e6, 10.0);
+        let IqComponent::Tone { offset_hz, .. } = &bb.components[0] else {
             panic!("rf-reference is a tone");
         };
-        assert!((offset_hz - (100e3 + 1000.0)).abs() < 1e-6);
+        assert!((*offset_hz - (100e3 + 1000.0)).abs() < 1e-6);
+    }
+
+    /// The app's hand-off path: an installed scene is what `preset` returns,
+    /// and the backend plays its buffer as the sample stream.
+    #[test]
+    fn an_installed_scene_is_the_preset_and_plays_its_buffer() {
+        static SAMPLES: [f32; 4] = [0.25, -0.25, 0.5, -0.5];
+        let buffer = IqBuffer {
+            samples: &SAMPLES,
+            sample_rate: 2.048e6,
+        };
+        install_scene(
+            "rf-buffer-test",
+            RfScene {
+                emitters: Vec::new(),
+                noise_rms: 0.0,
+                buffer: Some(buffer),
+            },
+        );
+        let scene = RfScene::preset("rf-buffer-test").expect("installed");
+        assert!(scene.buffer.is_some());
+        let mut b = SimSdrBackend::new();
+        b.apply(&tuned(100e6)).unwrap();
+        assert!(b.set_stimulus("rf-buffer-test").unwrap());
+        let f = next(&mut b);
+        assert_eq!(&f.channels[0].data[..2], &[0.25, -0.25]);
+    }
+
+    /// Without an app install the `rf-dab` name is present and resolves to
+    /// silence — an absent ensemble, never a different signal wearing it.
+    #[test]
+    fn uninstalled_rf_dab_is_silence() {
+        let scene = RfScene::preset("rf-dab").expect("the preset name exists");
+        let bb = scene.baseband(100e6, 2.048e6, 0.0);
+        assert!(bb.components.is_empty());
+        assert_eq!(bb.noise_rms, 0.0);
     }
 
     #[test]
@@ -394,7 +481,29 @@ mod tests {
         assert_eq!(d[..2], IqScene::reference().samples(1, 0, 1)[..]);
         b.set_seed(2).unwrap();
         let f2 = next(&mut b);
-        let expect = IqScene::reference().samples(2, 2 * CHUNK_PAIRS as u64, 1);
+        let chunk = stream_chunk_pairs(2.048e6) as u64;
+        let expect = IqScene::reference().samples(2, 2 * chunk, 1);
         assert_eq!(f2.channels[0].data[..2], expect[..]);
+    }
+
+    /// The frame carries the shared time-based chunk, not a fixed pair
+    /// count: the same policy the RTL transport uses, so the simulator
+    /// shows the display cadence the hardware will have at any rate.
+    #[test]
+    fn frame_size_follows_the_rate() {
+        let mut b = SimSdrBackend::new();
+        b.apply(&InstrumentConfig::Sdr(SdrConfig {
+            sample_rate: 250e3,
+            ..Default::default()
+        }))
+        .unwrap();
+        let f = next(&mut b);
+        assert_eq!(f.channels[0].data.len() / 2, stream_chunk_pairs(250e3));
+        assert!((f.duration() - 0.065536).abs() < 1e-12, "{}", f.duration());
+        b.apply(&InstrumentConfig::Sdr(SdrConfig::default()))
+            .unwrap();
+        let f = next(&mut b);
+        assert_eq!(f.channels[0].data.len() / 2, 102_400);
+        assert!((f.duration() - 0.05).abs() < 1e-12, "{}", f.duration());
     }
 }

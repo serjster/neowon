@@ -16,18 +16,18 @@ const PLOT_H: usize = 500;
 fn run_script(name: &str, script: &str) -> Vec<PathBuf> {
     let dir = std::env::temp_dir().join(format!("neowon-uitest-{name}"));
     std::fs::create_dir_all(&dir).unwrap();
-    // Rewrite `shot NAME ...` to absolute paths, collect them.
+    // Rewrite `shotplot NAME ...` to absolute paths, collect them.
     let mut shots = Vec::new();
     let script_text: String = script
         .lines()
         .map(|l| {
             let l = l.trim();
-            if let Some(rest) = l.strip_prefix("shot ") {
+            if let Some(rest) = l.strip_prefix("shotplot ") {
                 let mut parts = rest.split_whitespace();
                 let file = dir.join(parts.next().unwrap());
                 shots.push(file.clone());
                 let tail: Vec<&str> = parts.collect();
-                format!("shot {} {}\n", file.display(), tail.join(" "))
+                format!("shotplot {} {}\n", file.display(), tail.join(" "))
             } else {
                 format!("{l}\n")
             }
@@ -40,6 +40,9 @@ fn run_script(name: &str, script: &str) -> Vec<PathBuf> {
         .arg("--sim")
         .env("NEOWON_SCRIPT", &script_path)
         .env_remove("NEOWON_SHOT")
+        // No control-socket client here: the guard exits a scripted app
+        // that a killed harness would otherwise leave on screen.
+        .env("NEOWON_ORPHAN_EXIT", "120")
         .status()
         .expect("launch app");
     assert!(status.success(), "app exited with {status}");
@@ -89,7 +92,7 @@ fn dc_level_renders_at_expected_row() {
         persist off
         mode vectors
         wait 1.5
-        shot dc.ppm
+        shotplot dc.ppm
         quit
         "#,
     );
@@ -128,7 +131,7 @@ fn square_renders_two_bands() {
         persist off
         mode vectors
         wait 1.5
-        shot square.ppm
+        shotplot square.ppm
         quit
         "#,
     );
@@ -162,14 +165,14 @@ fn vertical_pan_and_home_shift_the_trace() {
         persist off
         mode vectors
         wait 1.5
-        shot base.ppm
+        shotplot base.ppm
         pan up
         wait 0.6
-        shot panned.ppm
+        shotplot panned.ppm
         home
         vdiv 0 0.5
         wait 0.6
-        shot homed.ppm
+        shotplot homed.ppm
         quit
         "#,
     );
@@ -210,7 +213,7 @@ fn xy_circle_renders_as_ellipse_ring() {
         mode xy
         persist off
         wait 1.5
-        shot xy.ppm
+        shotplot xy.ppm
         quit
         "#,
     );

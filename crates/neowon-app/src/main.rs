@@ -86,6 +86,9 @@ pub struct Link {
     pub stimulus: String,
     /// The channel pointer gestures and scroll steps act on.
     pub selected: usize,
+    /// Path of the last written screenshot (`shot`/`shotplot`), for the
+    /// status line and `get status`.
+    pub last_shot: Option<String>,
 }
 
 fn main() {
@@ -143,6 +146,7 @@ fn main() {
             arrived: Vec::new(),
             stimulus: "probe-comp".into(),
             selected: 0,
+            last_shot: None,
         })
         .insert_resource({
             let mut p = Phosphor::default();
@@ -174,6 +178,7 @@ fn main() {
         .init_resource::<cursors::CursorState>()
         .init_resource::<record::Recorder>()
         .init_resource::<record::History>()
+        .init_resource::<script::shot::WindowShots>()
         .init_resource::<refs::RefState>()
         .init_gizmo_group::<viz::three_d::VizGizmos>()
         .init_resource::<effects::Effects>()
@@ -243,6 +248,7 @@ fn main() {
                         // Before `flush`: the rule writes `config.acq`, and
                         // `flush` is what sends it to the instrument.
                         autopeak::update,
+                        script::shot::tick,
                         sdr::flush,
                         flush,
                         derived::compute_derived,
@@ -503,9 +509,11 @@ fn ingest(time: Res<Time>, mut link: ResMut<Link>, mut sdr: ResMut<sdr::SdrState
             Event::Frame(f) if f.layout == neowon_core::SampleLayout::Complex => {
                 link.last_frame_at = time.elapsed_secs_f64();
                 sdr.frames_seen += 1;
+                sdr.dab_last_frame_at = Some(time.elapsed_secs_f64());
                 // Streaming consumers get every frame here; the display path
                 // only ever sees the latest one.
-                sdr::feed_dab(&mut sdr, &f);
+                sdr::dab::feed(&mut sdr, &f);
+                sdr::iqdump::write(&mut sdr, &f);
                 sdr.latest = Some(f);
             }
             Event::Frame(f) => {
@@ -523,6 +531,17 @@ fn ingest(time: Res<Time>, mut link: ResMut<Link>, mut sdr: ResMut<sdr::SdrState
             Event::ConfigUpdated(InstrumentConfig::Sdr(cfg)) => sdr.config = cfg,
             Event::Error(e) => link.status = format!("error: {e}"),
         }
+    }
+    // A DAB receiver whose stream has stopped is looking at nothing. The
+    // hardware-moving actions reset at once; this catches a stopped backend,
+    // a disconnect or a stalled link, where no frame will arrive to carry the
+    // receiver's own expiry (D27).
+    if sdr.dab.is_some()
+        && sdr
+            .dab_last_frame_at
+            .is_some_and(|at| time.elapsed_secs_f64() - at > sdr::dab::NO_INPUT_TIMEOUT_S)
+    {
+        sdr::dab::no_input(&mut sdr);
     }
 }
 

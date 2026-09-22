@@ -36,10 +36,10 @@ fn invert_effect_inverts_the_display() {
          wait 1.0\n\
          run 0\n\
          wait 0.3\n\
-         shot {d}/plain.ppm\n\
+         shotplot {d}/plain.ppm\n\
          effect invert\n\
          wait 2.0\n\
-         shot {d}/inverted.ppm\n\
+         shotplot {d}/inverted.ppm\n\
          wait 0.5\n\
          quit\n"
     );
@@ -54,6 +54,8 @@ fn invert_effect_inverts_the_display() {
             concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/shaders/user"),
         )
         .env_remove("NEOWON_SHOT")
+        // A killed harness must not leave the scripted app behind.
+        .env("NEOWON_ORPHAN_EXIT", "120")
         .status()
         .expect("launch app");
     assert!(status.success(), "app exited with {status}");

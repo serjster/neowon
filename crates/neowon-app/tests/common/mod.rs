@@ -53,6 +53,11 @@ pub fn launch(args: &[&str], env: &[(&str, &str)]) -> (std::process::Child, Conn
     cmd.args(args)
         .env("NEOWON_CONTROL", port.to_string())
         .env_remove("NEOWON_SCRIPT")
+        // If this test process is killed, the app must not linger: with no
+        // live client for this many seconds it exits by itself
+        // (`neowon-app/src/control/orphan.rs`). The connection above is held
+        // for the test's lifetime, so a killed harness is what closes it.
+        .env("NEOWON_ORPHAN_EXIT", "15")
         // Tests never read or write the operator's saved state (D13);
         // `NEOWON_STATE` in `env` opts a test back in.
         .env("NEOWON_NO_STATE", "1");

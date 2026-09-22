@@ -8,7 +8,7 @@ use super::sdr_view::{BG, GRID, TRACE, fmt_mhz, inject};
 use crate::Link;
 use crate::refmap::RefMap;
 use crate::script::{Action, Script};
-use crate::sdr::{DabVerb, FFT_SIZES, SdrAction, SdrState};
+use crate::sdr::{FFT_SIZES, SdrAction, SdrState};
 use crate::uitree;
 
 const SPANS: [f64; 6] = [0.0, 1e6, 500e3, 200e3, 100e3, 50e3];
@@ -18,7 +18,8 @@ const GESTURES: &str = "click: tune\n\
     drag a channel edge: width\n\
     drag: pan (vertical: reference level)\n\
     right-drag: move the hardware window\n\
-    scroll: span · shift+scroll: dB range\n\
+    scroll: span + sample rate · shift+scroll: pan\n\
+    ctrl+scroll: dB range\n\
     double-click: reset the view";
 
 /// The whole dock: titled, collapsible sections like the scope's, labels
@@ -29,7 +30,16 @@ pub fn show(ui: &mut egui::Ui, sdr: &SdrState, link: &Link, rm: &RefMap, script:
     section(ui, "Receiver", true, |ui| receiver(ui, sdr, script));
     section(ui, "Display", false, |ui| display(ui, sdr, script));
     section(ui, "Audio", true, |ui| audio(ui, sdr, script));
-    section(ui, "DAB", sdr.dab.is_some(), |ui| dab(ui, sdr, script));
+    // While the receiver runs the section is held open: turning DAB on is a
+    // request to see the ensemble, and a collapsed section would hide the
+    // table, the DLS line and the service list the switch exists for.
+    section_state(
+        ui,
+        "DAB",
+        sdr.dab.is_some(),
+        sdr.dab.is_some().then_some(true),
+        |ui| super::dab_dock::show(ui, sdr, rm, script),
+    );
     section(ui, "Signals", true, |ui| signals(ui, sdr, script));
     section(ui, "Analysis", sdr.analyse_on, |ui| {
         lab(ui, sdr, script);
@@ -51,9 +61,22 @@ pub fn show(ui: &mut egui::Ui, sdr: &SdrState, link: &Link, rm: &RefMap, script:
 }
 
 fn section(ui: &mut egui::Ui, title: &str, open: bool, body: impl FnOnce(&mut egui::Ui)) {
+    section_state(ui, title, open, None, body);
+}
+
+/// `section` with an optional forced open/closed state (`None` leaves the
+/// header user-controlled).
+fn section_state(
+    ui: &mut egui::Ui,
+    title: &str,
+    default_open: bool,
+    force_open: Option<bool>,
+    body: impl FnOnce(&mut egui::Ui),
+) {
     let r = egui::CollapsingHeader::new(egui::RichText::new(title).strong())
         .id_salt(("sdr-dock", title))
-        .default_open(open)
+        .default_open(default_open)
+        .open(force_open)
         .show(ui, body);
     uitree::node(
         ui.ctx(),
@@ -442,60 +465,6 @@ fn lab(ui: &mut egui::Ui, sdr: &SdrState, script: &mut Script) {
 /// Detection controls and the active tracks, strongest first. The list
 /// holds a fixed height whatever its length (so nothing around it jumps);
 /// drag the handle under it to resize it (`sdr list <px>`).
-/// DAB (10.15.1): a switch, the sync quality that backs whatever is shown,
-/// and the ensemble's service table. The quality line is always drawn while
-/// the receiver runs — an unlocked receiver that silently showed nothing
-/// would be indistinguishable from one that is not finding a signal.
-fn dab(ui: &mut egui::Ui, sdr: &SdrState, script: &mut Script) {
-    ui.horizontal(|ui| {
-        let mut on = sdr.dab.is_some();
-        if ui.checkbox(&mut on, "Decode").changed() {
-            inject(
-                script,
-                SdrAction::Dab(if on { DabVerb::On } else { DabVerb::Off }),
-            );
-        }
-        if sdr.dab.is_some() && ui.button("Reset").clicked() {
-            inject(script, SdrAction::Dab(DabVerb::Reset));
-        }
-        if let Some(rx) = &sdr.dab {
-            ui.label(format!("{:+} Hz", rx.freq_offset_hz.round()));
-        }
-    });
-    let Some(rx) = &sdr.dab else {
-        ui.weak("off - tune a Band III block, then Decode");
-        return;
-    };
-    let status = rx.status();
-    let rate = status
-        .fib_crc_rate()
-        .map_or_else(|| "-".to_string(), |r| format!("{:.0}%", r * 100.0));
-    let sync = format!(
-        "FIB CRC {rate}  {} frames  PRS {:.2}",
-        status.frames,
-        rx.prs_metric()
-    );
-    if !status.locked {
-        ui.monospace(format!("not locked\n{sync}"));
-        return;
-    }
-    let e = &status.ensemble;
-    ui.monospace(format!(
-        "{}  EId {:04X}\n{sync}",
-        e.label.as_deref().unwrap_or("<no label yet>"),
-        e.eid.unwrap_or(0)
-    ));
-    for line in e.service_lines() {
-        ui.monospace(line);
-    }
-    if e.data_services > 0 {
-        ui.weak(format!(
-            "{} data services (not decoded in tier 1)",
-            e.data_services
-        ));
-    }
-}
-
 fn signals(ui: &mut egui::Ui, sdr: &SdrState, script: &mut Script) {
     ui.horizontal(|ui| {
         let mut on = sdr.detect_on;

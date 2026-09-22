@@ -37,6 +37,7 @@ fn socket_drives_and_queries_the_app() {
         .env("NEOWON_CONTROL", port.to_string())
         .env_remove("NEOWON_SCRIPT")
         .env("NEOWON_NO_STATE", "1")
+        .env("NEOWON_ORPHAN_EXIT", "15")
         .spawn()
         .expect("launch app");
 

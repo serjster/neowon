@@ -65,6 +65,7 @@ fn survey_diff_classifies_every_change_honestly() {
         ]
         .concat(),
         noise_rms: 0.01,
+        buffer: None,
     };
     let after_scene = RfScene {
         emitters: [
@@ -74,6 +75,7 @@ fn survey_diff_classifies_every_change_honestly() {
         ]
         .concat(),
         noise_rms: 0.01,
+        buffer: None,
     };
     let before = run(
         &mut SimSdrBackend::with_scene(before_scene),

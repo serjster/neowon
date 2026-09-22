@@ -39,6 +39,28 @@ impl Acquisition {
     }
 }
 
+/// How much time one streamed frame should carry. A display draws one row
+/// per frame, so a fixed chunk count makes the cadence fall with the
+/// sample rate; sizing by time keeps it near 20 rows/s everywhere.
+const STREAM_FRAME_SECS: f64 = 0.05;
+/// Smallest/largest streamed frame, in pairs: 32 KiB…256 KiB of i8 I,Q,
+/// the transfer sizes the USB streaming backends carry.
+const STREAM_CHUNK_MIN_PAIRS: usize = 16 * 1024;
+const STREAM_CHUNK_MAX_PAIRS: usize = 128 * 1024;
+/// USB bulk transfers are whole 64-byte packets, i.e. 32 i8 I,Q pairs.
+const STREAM_CHUNK_ALIGN_PAIRS: usize = 32;
+
+/// Pairs in one streamed frame at `rate_hz` pairs/s: about
+/// `STREAM_FRAME_SECS` of samples, clamped to the bounds above and aligned
+/// to the 64-byte transfer grid. Shared by the hardware and simulated SDR
+/// backends so both deliver the same frame cadence at any rate.
+pub fn stream_chunk_pairs(rate_hz: f64) -> usize {
+    let pairs = (rate_hz * STREAM_FRAME_SECS).round().max(0.0) as usize;
+    pairs
+        .clamp(STREAM_CHUNK_MIN_PAIRS, STREAM_CHUNK_MAX_PAIRS)
+        .next_multiple_of(STREAM_CHUNK_ALIGN_PAIRS)
+}
+
 /// What a scope can do; the scope UI builds itself from this.
 #[derive(Debug, Clone)]
 pub struct ScopeCaps {
@@ -80,6 +102,9 @@ pub struct SdrCaps {
     pub sample_rates: Vec<f64>,
     /// Discrete manual tuner gains, ascending, dB.
     pub gains_db: Vec<f64>,
+    /// How frames arrive. A stream whose chunk follows the sample rate
+    /// advertises the current rate's size here; each frame's own `acq`
+    /// carries the chunk it was actually delivered with.
     pub acquisition: Acquisition,
 }
 
@@ -288,5 +313,33 @@ impl From<ScopeConfig> for InstrumentConfig {
 impl From<SdrConfig> for InstrumentConfig {
     fn from(c: SdrConfig) -> Self {
         InstrumentConfig::Sdr(c)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stream_chunks_are_time_sized_bounded_and_aligned() {
+        // Anchors: at 250 kS/s the floor binds (65.5 ms per frame), at
+        // 1.024 and 2.048 MS/s the frame is the plain 50 ms.
+        assert_eq!(stream_chunk_pairs(250e3), 16_384);
+        assert_eq!(stream_chunk_pairs(1.024e6), 51_200);
+        assert_eq!(stream_chunk_pairs(2.048e6), 102_400);
+        // Bounds, including degenerate rates.
+        assert_eq!(stream_chunk_pairs(0.0), 16_384);
+        assert_eq!(stream_chunk_pairs(1e9), 131_072);
+        // Non-decreasing in rate, on the 64-byte (32-pair) grid.
+        let rates = [250e3, 1.024e6, 1.536e6, 1.92e6, 2.048e6, 2.56e6, 3.2e6];
+        for w in rates.windows(2) {
+            assert!(
+                stream_chunk_pairs(w[0]) <= stream_chunk_pairs(w[1]),
+                "{w:?}"
+            );
+        }
+        for r in rates {
+            assert_eq!(stream_chunk_pairs(r) % 32, 0, "{r}");
+        }
     }
 }

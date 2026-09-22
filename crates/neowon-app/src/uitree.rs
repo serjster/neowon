@@ -33,7 +33,7 @@ pub struct UiTree {
 impl UiTree {
     pub fn from_env() -> Self {
         Self {
-            on: std::env::var_os("NEOWON_CONTROL").is_some(),
+            on: crate::control::configured_port().is_some(),
             ..Default::default()
         }
     }

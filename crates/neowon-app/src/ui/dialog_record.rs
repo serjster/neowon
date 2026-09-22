@@ -132,8 +132,9 @@ pub fn show(
             }
         }
         if ui.button("PNG").clicked() {
-            // Goes through the script queue: the shot needs a GPU readback.
-            script.inject(Action::Shot {
+            // Goes through the script queue: the plot readback is a GPU
+            // round-trip, and a capture export is the plot, not the window.
+            script.inject(Action::ShotPlot {
                 path: export("png").display().to_string(),
                 roi: None,
             });

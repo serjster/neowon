@@ -12,7 +12,7 @@ pub mod wav;
 pub use frame::{CaptureFrame, ChannelCapture, FrameError, IqCal, SampleLayout, SharedFrame};
 pub use instrument::{
     Acquisition, Capabilities, ChannelConfig, InstrumentConfig, ScopeCaps, ScopeConfig, SdrCaps,
-    SdrConfig, SdrGain, TriggerConfig,
+    SdrConfig, SdrGain, TriggerConfig, stream_chunk_pairs,
 };
 pub use modulation::Modulation;
 pub use observation::SignalObservation;

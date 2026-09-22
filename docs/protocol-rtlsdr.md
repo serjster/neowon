@@ -108,13 +108,18 @@ noted tolerances.
 
 - **Open** 355 ms, the same as `librtlsdr-rs` (the ~1.4 s of `rs-rtl` is not
   inherent to the chip).
-- **Stream:** 15 bulk transfers × 256 KiB in flight. Timed from chunk
+- **Stream:** 15 bulk transfers in flight, each sized to ~50 ms of samples
+  for the set rate (200 KiB at 2.048 MS/s; the 256 KiB ceiling binds only
+  from 2.62 MS/s, the 32 KiB floor below ~328 kS/s) so the
+  one-frame-per-transfer display cadence stays ~15–20 rows/s at every rate
+  instead of collapsing to ~2 rows/s at 250 kS/s. Timed from chunk
   arrivals, delivery is within ±0.002% of the set rate at 2.048 and 2.4
   MS/s, with 0 overflows. **Control-to-sample latency is one chunk**
-  (~40–55 ms): the first chunk after a change straddles it, the second is
-  clean. Consumers measuring a setting must drop that chunk. At 29.7 dB its
-  old samples outweigh a 0 dB window by ~100:1, which is how a first
-  version of the check read the gain step as 11 dB.
+  (~50 ms; ~65 ms at 250 kS/s when the floor binds): the first chunk after
+  a change straddles it, the second is clean. Consumers measuring a setting
+  must drop that chunk. At 29.7 dB its old samples outweigh a 0 dB window
+  by ~100:1, which is how a first version of the check read the gain step
+  as 11 dB.
 - **ppm acts on the LO, which sits at centre + IF.** The IF depends on the
   bandwidth: 1.625 MHz at 2.048 MS/s, 1.815 MHz at 2.4 MS/s (the tuner's
   filter arithmetic). So ±100 ppm moves the band by 2·(f + IF)·1e-4:
@@ -160,6 +165,17 @@ strongest at 9.600 MHz, −43 dBFS. At these levels the samples span only a
 few of the 8-bit codes, so the IQ constellation auto-scales to the peak
 (×8 here), where the FM ring and the u8 quantisation lattice are both
 visible.
+
+## The zero-IF DC spike at the tuned centre (2026-09-21)
+
+The R820T/RTL2832U pair leaves a DC offset spike at the hardware centre
+(LO leakage and IQ imbalance). It is a receiver artefact, not a signal and
+not a measurement: the SDR display notches `DC_GUARD` bins either side of
+the spectrum's DC bin — the same guard the signal list and the peak readout
+use — and both the trace and the waterfall draw the one masked copy
+(`crates/neowon-app/src/sdr/display.rs`). The demodulator, detector,
+recorder, DAB receiver and the `neowon-dsp` oracle always see the raw
+IQ/spectrum.
 
 ## Detection on the dongle (2026-09-18)
 

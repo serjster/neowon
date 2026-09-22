@@ -23,6 +23,7 @@ pub fn start(sdr: &mut SdrState, plan: SurveyPlan) -> Result<(), String> {
     sdr.config.centre_hz = first;
     sdr.config.sample_rate = s.plan().sample_rate;
     sdr.dirty = true;
+    sdr.dab_reset();
     sdr.survey = Some(s);
     Ok(())
 }
@@ -45,6 +46,9 @@ pub fn feed(sdr: &mut SdrState, frame: &CaptureFrame) {
         Some(next) => {
             sdr.config.centre_hz = next;
             sdr.dirty = true;
+            // The survey moved the hardware: the DAB table was decoded from
+            // the previous step's window (D27).
+            sdr.dab_reset();
         }
         None => {
             let done = sdr.survey.take().expect("running").finish();

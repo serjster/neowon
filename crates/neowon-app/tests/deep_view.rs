@@ -87,6 +87,7 @@ fn timeline_spans_history_without_losing_sample_rate() {
         .env("NEOWON_UI_SCALE", "1.0")
         .env_remove("NEOWON_SCRIPT")
         .env("NEOWON_NO_STATE", "1")
+        .env("NEOWON_ORPHAN_EXIT", "15")
         .spawn()
         .expect("launch app");
 
@@ -168,7 +169,7 @@ fn timeline_spans_history_without_losing_sample_rate() {
         // precisely so a screenshot can prove they exist.
         let shot: PathBuf = dir.join("deep.ppm");
         let _ = std::fs::remove_file(&shot);
-        conn.ok(&format!("shot {}", shot.display()));
+        conn.ok(&format!("shotplot {}", shot.display()));
         let deadline = Instant::now() + Duration::from_secs(10);
         while !shot.exists() {
             assert!(Instant::now() < deadline, "shot never written");

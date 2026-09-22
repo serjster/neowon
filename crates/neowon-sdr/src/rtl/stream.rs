@@ -29,6 +29,8 @@ pub struct Stream {
     rx: Receiver<std::result::Result<Vec<u8>, String>>,
     stop: Arc<AtomicBool>,
     overflows: Arc<AtomicU64>,
+    /// Pairs per chunk, i.e. the transfer length in pairs.
+    chunk_pairs: usize,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -44,6 +46,8 @@ impl Stream {
         let stop = Arc::new(AtomicBool::new(false));
         let overflows = Arc::new(AtomicU64::new(0));
         let (stop_t, over_t) = (stop.clone(), overflows.clone());
+        let chunk_pairs = transfer_len / 2;
+        debug_assert_eq!(chunk_pairs * 2, transfer_len, "transfers are whole pairs");
         let thread = std::thread::Builder::new()
             .name("neowon-rtl-stream".into())
             .spawn(move || {
@@ -92,6 +96,7 @@ impl Stream {
             rx,
             stop,
             overflows,
+            chunk_pairs,
             thread: Some(thread),
         })
     }
@@ -112,6 +117,14 @@ impl Stream {
     /// Chunks dropped because the consumer was behind.
     pub fn overflows(&self) -> u64 {
         self.overflows.load(Ordering::Relaxed)
+    }
+
+    /// IQ pairs in one chunk — the transfer length the stream was started
+    /// with. A short transfer delivers fewer, but a dropped chunk (what
+    /// `overflows` counts and the sample clock must account for) is one
+    /// whole transfer.
+    pub fn chunk_pairs(&self) -> usize {
+        self.chunk_pairs
     }
 }
 

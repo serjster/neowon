@@ -108,8 +108,9 @@ Or build from source with `cargo build --release`.
   hardware. Environment overrides win; `NEOWON_NO_STATE=1` turns it off, and
   scripted runs never touch it.
 - **Fully scriptable**: every control is reachable from a plain-text
-  automation script (`NEOWON_SCRIPT`), including plot-texture screenshots
-  with regions of interest — the same mechanism the test suite uses.
+  automation script (`NEOWON_SCRIPT`), including whole-window screenshots
+  (`shot`, egui included) and raw plot-texture readbacks with regions of
+  interest (`shotplot`) — the same mechanism the test suite uses.
 - **Remote control & MCP**: a localhost control socket exposes the whole
   script grammar plus JSON state/measurement queries, and the bundled
   `neowon-mcp` server lets LLM clients (Claude, etc.) drive the scope and
@@ -270,8 +271,9 @@ probe-compensation signal.
 ### Scripting
 
 Set `NEOWON_SCRIPT=path.txt` to drive the app from a plain-text action list
-(stimulus selection, every control, screenshots, exports…). The full
-grammar is documented at the top of `crates/neowon-app/src/script.rs`.
+(stimulus selection, every control, screenshots, exports…). `shot` captures
+the whole window (egui included); `shotplot` reads the raw plot texture.
+The full grammar is documented at the top of `crates/neowon-app/src/script/mod.rs`.
 
 ### Remote control & MCP
 

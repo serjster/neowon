@@ -3,10 +3,19 @@
 //! the general-purpose API every external transport (CLI attach, MCP,
 //! future REST) translates into — no scope logic lives outside the app.
 //!
-//! Enabled by `NEOWON_CONTROL=<port>` (binds 127.0.0.1 only; off by
-//! default). Protocol: one request per line; one JSON object per line
-//! back. Commands are injected into the script queue and acked
-//! immediately (`{"ok":true}`) — effects apply on the next frame.
+//! The socket binds 127.0.0.1 only. It is **on by default** at port 7777 so
+//! an app launched from the desktop (no environment to set) is still
+//! reachable by the live-development loop and the MCP server;
+//! `NEOWON_CONTROL=<port>` picks another port and `NEOWON_CONTROL=off` or
+//! `NEOWON_NO_CONTROL=1` turns it off. Protocol: one request per line; one
+//! JSON object per line back. Commands are injected into the script queue
+//! and acked immediately (`{"ok":true}`) — effects apply on the next frame.
+//!
+//! Test and tooling launches set `NEOWON_ORPHAN_EXIT=<seconds>` so a harness
+//! that is killed cannot leave the app behind: the [`orphan`] watchdog ends
+//! the process once no client has been live for that long.
+
+mod orphan;
 
 use bevy::prelude::*;
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
@@ -31,29 +40,58 @@ pub struct ControlServer {
     rx: Option<Receiver<Request>>,
 }
 
-/// Start the listener if `NEOWON_CONTROL` is set; otherwise an inert
-/// resource (the poll system early-outs).
+/// The control socket's port: `NEOWON_CONTROL` when set (`off`/`0`/`none`
+/// disables), otherwise the default localhost port unless
+/// `NEOWON_NO_CONTROL` is set.
+#[must_use]
+pub fn configured_port() -> Option<u16> {
+    const DEFAULT_PORT: u16 = 7777;
+    match std::env::var("NEOWON_CONTROL") {
+        Ok(v) => match v.trim() {
+            "0" | "off" | "none" => None,
+            v => v.parse::<u16>().ok(),
+        },
+        Err(_) => (std::env::var_os("NEOWON_NO_CONTROL").is_none()).then_some(DEFAULT_PORT),
+    }
+}
+
+/// Start the listener on [`configured_port`]; otherwise an inert resource
+/// (the poll system early-outs). `NEOWON_ORPHAN_EXIT` starts the orphan
+/// watchdog either way (see [`orphan`]).
 pub fn start_from_env() -> ControlServer {
-    let Some(port) = std::env::var("NEOWON_CONTROL")
-        .ok()
-        .and_then(|v| v.parse::<u16>().ok())
-    else {
+    let guard = orphan::OrphanGuard::from_env();
+    let Some(port) = configured_port() else {
+        // A scripted launch can ask for the guard with no socket at all:
+        // the watchdog then just watches the start clock.
+        if let Some(g) = guard {
+            g.watch();
+        }
         return ControlServer { rx: None };
     };
     let listener = match TcpListener::bind(("127.0.0.1", port)) {
         Ok(l) => l,
         Err(e) => {
             error!("control: cannot bind 127.0.0.1:{port}: {e}");
+            if let Some(g) = guard {
+                g.watch();
+            }
             return ControlServer { rx: None };
         }
     };
     info!("control: listening on 127.0.0.1:{port}");
+    if let Some(g) = &guard {
+        g.watch();
+    }
     let (tx, rx) = unbounded::<Request>();
     std::thread::spawn(move || {
         for conn in listener.incoming() {
             let Ok(conn) = conn else { continue };
             let tx = tx.clone();
+            let guard = guard.clone();
             std::thread::spawn(move || {
+                // Live for as long as the connection is: dropping the token
+                // on any exit path restarts the orphan watchdog's clock.
+                let _live = guard.as_ref().map(|g| g.connect());
                 let mut out = match conn.try_clone() {
                     Ok(c) => c,
                     Err(_) => return,
@@ -139,7 +177,7 @@ pub fn poll(
             Some("detections") => crate::sdr::detections_json(sdr),
             Some("modmeas") => crate::sdr::modmeas_json(sdr),
             Some("classify") => crate::sdr::classify_json(sdr),
-            Some("dab") => crate::sdr::dab_json(sdr),
+            Some("dab") => crate::sdr::dab_json(sdr, &extra.9),
             Some("survey") => crate::sdr::survey_json(sdr),
             Some("surveydiff") => crate::sdr::survey_diff_json(sdr),
             Some("catalog") => crate::catalog::catalog_json(cat),
@@ -209,7 +247,7 @@ fn status_json(link: &Link, rec: &Recorder, hist: &History) -> String {
     format!(
         concat!(
             r#"{{"ok":true,"running":{},"frames_seen":{},"backend":"{}","serial":"{}","#,
-            r#""status":"{}","stimulus":"{}","#,
+            r#""status":"{}","stimulus":"{}","shot":{},"#,
             r#""recorder":{{"on":{},"frames":{},"bytes":{},"budget":{},"seconds":{}}},"dropped":{},"#,
             r#""history":{},"last_export":{}}}"#
         ),
@@ -219,6 +257,9 @@ fn status_json(link: &Link, rec: &Recorder, hist: &History) -> String {
         escape(&serial),
         escape(&link.status),
         escape(&link.stimulus),
+        link.last_shot
+            .as_ref()
+            .map_or("null".to_string(), |p| format!("\"{}\"", escape(p))),
         rec.on,
         rec.frames.len(),
         rec.bytes(),

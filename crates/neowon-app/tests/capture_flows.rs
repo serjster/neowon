@@ -16,6 +16,8 @@ fn run(dir: &Path, script: &str) {
         .arg("--sim")
         .env("NEOWON_SCRIPT", &script_path)
         .env_remove("NEOWON_SHOT")
+        // A killed harness must not leave the scripted app behind.
+        .env("NEOWON_ORPHAN_EXIT", "120")
         .status()
         .expect("launch app");
     assert!(status.success(), "app exited with {status}");
@@ -47,7 +49,7 @@ fn capture_history_session_roundtrip() {
              recordclear\n\
              capload {d}/flow.nwc\n\
              history 2\n\
-             shot {d}/flow.png\n\
+             shotplot {d}/flow.png\n\
              wait 0.5\n\
              quit\n"
         ),
@@ -124,7 +126,7 @@ fn vendor_cap_import_loads() {
             "run 1\n\
              wait 0.3\n\
              capload {d}/vendor.cap\n\
-             shot {d}/vendor.png\n\
+             shotplot {d}/vendor.png\n\
              wait 0.5\n\
              quit\n"
         ),

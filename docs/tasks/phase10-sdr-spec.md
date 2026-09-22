@@ -663,6 +663,50 @@ classes: one id namespace (`DM*` features vs `D0–D9` decisions vs `SDR-G1/G2`
 gates), one field-name home (`IqCal`), one complex-layout schema, one command per
 criterion.
 
+### Implementation round 1 (`phase10-implementation`, 2026-09-20)
+
+One round over the Phase 10 build (6 seats, mean 6.85, 15 errors; scratch
+`.critic/phase10-implementation/round-1/` — `panel.md`/`triage.md`, not a
+committed link). Checklist names the merged finding ids (M-numbers):
+
+- [ ] Catalog durability: a non-current headerless WAL segment must not brick
+  `open` (+ `segment-create` failpoint); a CRC-bad mid-WAL frame is corruption,
+  not a torn tail (M1, M2).
+- [ ] Cascade `delete` is not undoable — `undoable()` must say so, or the inverse
+  lands; the unrelated-edit rewind probe gets a test (M3).
+- [ ] The gate: `sdr_integration` gets `-- --ignored` in `harness.md` and 10.9's
+  Done-when; the `neowon-ml/ort` line is removed or marked "member absent" (M4).
+- [ ] Indexed history `(signal_id,time,seq)` and bounded refdb queries; no
+  per-frame full scans in the catalog/Stations windows (M5).
+- [ ] Evidence honesty: C42 −1.9992 recorded as measured; PRS false-lock asserted
+  on attempts; bare-tone case reaches an attempt; the classifier asserts its 10 dB
+  row and reports recall/unknown beside precision; EVM/Rs tolerances tightened;
+  FIB CRC known-answer vector; golden JSON readouts filed; IQ-fixture limits
+  stated (M6, M19, M20, M21, M32, M33).
+- [ ] `state_persist`'s control-port race classed (reserved port or echoed nonce)
+  — M7.
+- [ ] Parity: sample `Dab` and assert one count in `sdr/actions.rs`; a count
+  guard in the refmap parity check (M8, M35).
+- [ ] Closure: `neowon-cli sdr smoke --json-out/--doc` exists and files the
+  readout, or triage #22 is un-recorded and closure re-planned (M9).
+- [ ] Tracker and record: PLAN records DAB-G1 passed (11C, 2026-09-20), re-dates
+  the block, moves 10.15.2/.3; wrong counts/commands re-derived; the
+  Instrument-menu / librtlsdr / next-action / deviation-numbering defects fixed;
+  phase-close criteria include 10.14 and the DAB gates (M10, M11, M34).
+- [ ] Seams: supervisor clamp from `Capabilities`; layout×acq private fields +
+  `new`; `sdr_config`; one `Option<Capabilities>`; `survey` out of the driver
+  crate; ladders in one home; sim `Emitter` kind enum (M13, M14, M28, M29, M30).
+- [ ] Budgets: split `sdr/actions.rs` (the parser is the second job) — M12.
+- [ ] Import/export: absent-ref refusal, atomic export, `format` validation,
+  refdb pair-write (M15, M26, M27).
+- [ ] Performance: `--example frame_cost` (headless sim) priced against the 32 ms
+  period; non-blocking audio spawn; overflows surfaced in `get sdr`; batch WAL
+  sync; the straddling post-retune frame dropped (M16, M17, M22, M23, M24).
+- [ ] Test surface: automated DAB control tests; `ui_pixels` sets its own
+  catalog (M18, M31); 10.9's decode deviation recorded (M35).
+- [ ] Deferred: per-frame DSP churn (M25) — `PLAN.md` `## Backlog`, behind the
+  `frame_cost` rig.
+
 ## Deviations (recorded per AGENTS.md)
 
 - **D8, platform-exact arithmetic (2026-09-18).** CI runs `cargo test` on
@@ -797,9 +841,20 @@ criterion.
     The tuning widget is the dock's centre field and step buttons, plus
     click-to-tune on the spectrum and the signal list; there is no
     dedicated dial.
-  - A `shot window` (whole-window PNG through Bevy's `Screenshot`) was
-    tried and backed out: it wrote all-black frames on macOS/Metal here.
-    UI state is verified through `get …` queries instead.
+  - *Screenshots (2026-09-21):* `shot <path> [x y w h]` is now the whole
+    window (egui included) through Bevy 0.19's `Screenshot`; `shotplot
+    <path> [x y w h]` keeps the raw 1000x500 plot-texture readback the
+    pixel tests assert on (the per-capture PNG button in the record dialog
+    moved to it). The earlier `shot window` attempt wrote all-zero PNGs on
+    macOS/Metal: Bevy's capture path reports success with a zeroed buffer
+    when the window's view did not render into the capture texture that
+    frame, and that attempt wrote the first image it got. The new path
+    refuses an all-zero capture, retries it (bounded, with a watchdog for
+    a capture that never returns), and reports a failed shot on the status
+    line instead of writing black; `shot` also names the file it wrote in
+    `get status`. Guarded by `cargo test -p neowon-app --test ui_capture
+    -- --ignored` (SDR mode, asserts the dock fill, waterfall content and a
+    non-black window).
 - **10.12 (2026-09-19, operator: "it should save last settings").** Landed
   ahead of 10.11 because the operator asked for it. `neowon-app/src/autostate.rs`.
   - Not persisted, on purpose: the sim stimulus and seed (test fixtures, and
@@ -822,3 +877,27 @@ criterion.
     `caps.sample_rates`, and SDR frequencies go through the existing `sdr`
     range refusal. Either way the rejection reaches the status line, and the
     other lines still apply.
+- **10.0 stream frame sizing (operator bug report, 2026-09-21).** Selecting
+  250 kS/s made the spectrum/waterfall crawl (~2 rows/s) while 2.048 MS/s
+  ran at ~16: the RTL stream used a fixed 256 KiB transfer (131 072 pairs)
+  and the app draws one row per frame, so the cadence was
+  `transfer_pairs / rate`.
+  - The transfer length is now time-based: one frame per transfer at ~50 ms
+    of samples, clamped to 32 KiB…256 KiB and aligned to 64 bytes
+    (`neowon_core::stream_chunk_pairs`, `neowon_sdr::rtl::transfer_len`).
+    Computed: 250 kS/s → 32 768 B (the floor binds, 65.5 ms, ~15 rows/s);
+    1.024 MS/s → 102 400 B (50 ms); 2.048 MS/s → 204 800 B (50 ms, not the
+    old 256 KiB ceiling). The brief predicted ~25 000 B at 250 kS/s and the
+    ceiling at 2.048 MS/s, but its own stated 32 KiB floor makes the first
+    impossible and its 50 ms formula the second; the formula and clamps as
+    written are what landed.
+  - `apply` restarts the stream when the sample rate changes: transfers in
+    flight keep their old length, so without that a live rate change would
+    keep the old cadence until a stop/start.
+  - `Stream::chunk_pairs()` exposes the real chunk, and overflow accounting
+    in `poll_frame` uses it instead of the removed `CHUNK_PAIRS` constant,
+    so timestamps after dropped chunks stay true. `SdrCaps::acquisition` is
+    recomputed on every apply; each frame's own `acq` remains authoritative.
+  - `neowon-sim`'s SDR backend had the same rate-dependent cadence with its
+    fixed 64 Ki-pair frames (262 ms per frame at 250 kS/s); it now uses the
+    same shared helper, so sim and hardware show the same rows/s at any rate.

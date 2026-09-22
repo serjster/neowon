@@ -2845,6 +2845,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "fdk-aac"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7bb67e142688083cb9afb63f2424203fc98c4e7afb494bf912b60b55513b177e"
+dependencies = [
+ "fdk-aac-sys",
+]
+
+[[package]]
+name = "fdk-aac-sys"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "24516d2611506d5cb1833555adc75f6baf9fe2706b9c13e6fc33a6b22c51ca83"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "fearless_simd"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4098,6 +4116,7 @@ dependencies = [
  "neowon-audio",
  "neowon-backend",
  "neowon-catalog",
+ "neowon-codec",
  "neowon-core",
  "neowon-dsp",
  "neowon-refdb",
@@ -4152,6 +4171,15 @@ dependencies = [
  "neowon-vds1022",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "neowon-codec"
+version = "0.2.1"
+dependencies = [
+ "fdk-aac",
+ "oxideav-aac",
+ "oxideav-mp2",
 ]
 
 [[package]]
@@ -4812,6 +4840,35 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "36820e9051aca1014ddc75770aab4d68bc1e9e632f0f5627c4086bc216fb583b"
 dependencies = [
  "ttf-parser",
+]
+
+[[package]]
+name = "oxideav-aac"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "35453ffa827080f322dba5d2233879f008627d4ffb07c496c0c6fe3190b35048"
+dependencies = [
+ "oxideav-core",
+]
+
+[[package]]
+name = "oxideav-core"
+version = "0.1.36"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a78b502f679c580ceb7cc834d23f80821673b0a393a3083d54ef82668bb9c028"
+dependencies = [
+ "bytemuck",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "oxideav-mp2"
+version = "0.0.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "19c132641af52d4dce3d1f56e92325f0c682e9b49d1dceadc96bd6d02fa74ee1"
+dependencies = [
+ "oxideav-core",
 ]
 
 [[package]]

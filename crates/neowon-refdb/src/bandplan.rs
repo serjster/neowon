@@ -92,6 +92,35 @@ impl BandPlan {
         let end = self.bands.partition_point(|b| b.lo_hz <= hi);
         self.bands[..end].iter().filter(move |b| b.hi_hz >= lo)
     }
+
+    /// Whether the plan declares any DAB allocation. The shipped plans name
+    /// them "DAB Radio", "T-DAB Broadcast", "DAB+ radio", "T-DAB", … — a
+    /// name-only test, because the plans carry ranges, not a DAB kind.
+    pub fn declares_dab(&self) -> bool {
+        self.bands
+            .iter()
+            .any(|b| b.name.to_ascii_uppercase().contains("DAB"))
+    }
+
+    /// The Band III blocks whose centres this plan allocates for DAB, in
+    /// raster order. Empty when the plan declares no DAB allocation — the
+    /// blocks come from the plan, never from an invented per-country list.
+    /// The L-band "T-DAB" allocations contain no Band III centre, so they
+    /// contribute nothing here.
+    pub fn dab_blocks(&self) -> Vec<crate::dab::DabBlock> {
+        let allocations: Vec<&Band> = self
+            .bands
+            .iter()
+            .filter(|b| b.name.to_ascii_uppercase().contains("DAB"))
+            .collect();
+        crate::dab::band_iii_blocks()
+            .filter(|b| {
+                allocations
+                    .iter()
+                    .any(|a| (a.lo_hz..=a.hi_hz).contains(&b.centre_hz))
+            })
+            .collect()
+    }
 }
 
 /// A plan and its file stem.
@@ -189,6 +218,47 @@ mod tests {
         assert_eq!(names(&mut p.within(190.0, 310.0)), ["wide", "above"]);
         // Edges are inclusive.
         assert_eq!(names(&mut p.at(200.0)), ["wide"]);
+    }
+
+    #[test]
+    fn dab_blocks_are_the_plans_allocation_intersected_with_the_raster() {
+        // The fixture: a DAB-named allocation (Belgium-like, 174–223 MHz)
+        // and a plain broadcast band that must not contribute.
+        let p = plan(
+            r#"{"name":"t","bands":[
+              {"name":"TV Broadcast","type":"broadcast","start":174000000,"end":230000000},
+              {"name":"T-DAB Broadcast","type":"broadcast","start":174000000,"end":223000000}]}"#,
+        );
+        let blocks = p.dab_blocks();
+        assert_eq!(blocks.first().unwrap().label, "5A");
+        // 11D at 222.064 MHz is inside 223 MHz; 12A at 223.936 is not.
+        assert_eq!(blocks.last().unwrap().label, "11D");
+        assert!(blocks.iter().all(|b| b.centre_hz <= 223e6));
+        assert!(p.declares_dab());
+
+        // A plan with no DAB-named band says so with an empty list.
+        let tv = plan(
+            r#"{"name":"t","bands":[{"name":"TV Broadcast","type":"broadcast","start":174000000,"end":230000000}]}"#,
+        );
+        assert!(tv.dab_blocks().is_empty());
+        assert!(!tv.declares_dab());
+    }
+
+    /// The operator's Band III allocation exists in the shipped plans, so
+    /// the DAB channel selector has a list to offer out of the box: the
+    /// Netherlands plan allocates 11C and 12C, and ends at 12D (230 MHz).
+    #[test]
+    fn the_shipped_netherlands_plan_allocates_the_11c_block() {
+        let (plans, _) = load_plans(&shipped(), Path::new("/nonexistent"));
+        let nl = &plans.iter().find(|(s, _)| s == "netherlands").unwrap().1;
+        let labels: Vec<&str> = nl.dab_blocks().iter().map(|b| b.label).collect();
+        assert!(labels.contains(&"11C"), "{labels:?}");
+        assert!(labels.contains(&"12C"), "{labels:?}");
+        assert_eq!(labels.last(), Some(&"12D"));
+        // The fallback plan declares none: the app must say so, not invent.
+        let general = &plans.iter().find(|(s, _)| s == "general").unwrap().1;
+        assert!(general.dab_blocks().is_empty());
+        assert!(!general.declares_dab());
     }
 
     #[test]

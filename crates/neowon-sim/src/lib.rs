@@ -15,7 +15,7 @@ pub mod signal;
 
 pub use backend::SimBackend;
 pub use figures::XyFigure;
-pub use iq::{IqComponent, IqScene};
+pub use iq::{IqBuffer, IqComponent, IqScene};
 pub use scenario::Scenario;
 pub use sdr::{Emitter, RfScene, SimSdrBackend, em};
 pub use signal::{Component, SignalSpec, Xorshift};

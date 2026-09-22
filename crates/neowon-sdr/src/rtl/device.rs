@@ -13,9 +13,8 @@ pub use super::r82xx::Chip as TunerKind;
 
 const VID: u16 = 0x0bda;
 const PIDS: [u16; 2] = [0x2832, 0x2838];
-/// librtlsdr's defaults: 15 transfers of 256 KiB in flight.
+/// librtlsdr's default: 15 transfers in flight.
 const TRANSFERS: usize = 15;
-const TRANSFER_LEN: usize = 16 * 32 * 512;
 /// Chunks the consumer may fall behind before the stream drops (and counts).
 const QUEUE: usize = 64;
 
@@ -105,6 +104,15 @@ pub fn ppm_word(ppm: i32) -> i16 {
 
 fn corrected(xtal: u32, ppm: i32) -> u32 {
     (xtal as f64 * (1.0 + ppm as f64 / 1e6)) as u32
+}
+
+/// Bulk-transfer length for streaming at `rate_hz` pairs/s, bytes: the
+/// shared stream-frame policy ([`neowon_core::stream_chunk_pairs`]) sized
+/// for one frame per transfer, so the display cadence stays ~20 rows/s
+/// instead of collapsing at low rates. 32 KiB…256 KiB, and always a whole
+/// number of 64-byte USB packets.
+pub fn transfer_len(rate_hz: f64) -> usize {
+    neowon_core::stream_chunk_pairs(rate_hz) * 2
 }
 
 impl RtlSdr {
@@ -367,10 +375,13 @@ impl RtlSdr {
         Ok(())
     }
 
-    /// Flush the FIFO and start streaming u8 offset-binary I,Q pairs.
+    /// Flush the FIFO and start streaming u8 offset-binary I,Q pairs. The
+    /// transfer length follows the current sample rate.
     pub fn stream(&self) -> Result<Stream> {
         self.usb.reset_buffer()?;
-        Stream::start(self.usb.interface(), TRANSFERS, TRANSFER_LEN, QUEUE)
+        let len = transfer_len(self.rate as f64);
+        debug!(rate = self.rate, transfer_len = len, "start stream");
+        Stream::start(self.usb.interface(), TRANSFERS, len, QUEUE)
     }
 }
 
@@ -413,5 +424,27 @@ mod tests {
         assert_eq!(ppm_word(0), 0);
         assert_eq!(ppm_word(100), -1677);
         assert_eq!(ppm_word(-100), 1677);
+    }
+
+    #[test]
+    fn transfer_len_is_time_sized_bounded_and_aligned() {
+        // The cadence-bug anchors: the floor binds at 250 kS/s (65.5 ms a
+        // transfer), while 1.024 and 2.048 MS/s are the plain 50 ms.
+        assert_eq!(transfer_len(250_000.0), 32_768);
+        assert_eq!(transfer_len(1_024_000.0), 102_400);
+        assert_eq!(transfer_len(2_048_000.0), 204_800);
+        // Bounds: 32 KiB at the bottom, librtlsdr's 256 KiB at the top.
+        assert_eq!(transfer_len(0.0), 32_768);
+        assert_eq!(transfer_len(1e9), 262_144);
+        // Every offered rate stays in bounds, on the 64-byte transfer grid,
+        // and the length never falls as the rate rises.
+        let mut prev = 0;
+        for &r in crate::backend::SAMPLE_RATES.iter() {
+            let len = transfer_len(r);
+            assert!((32_768..=262_144).contains(&len), "{r}: {len}");
+            assert_eq!(len % 64, 0, "{r}: {len}");
+            assert!(len >= prev, "{r}: {len} < {prev}");
+            prev = len;
+        }
     }
 }

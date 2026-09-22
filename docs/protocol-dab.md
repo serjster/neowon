@@ -93,6 +93,33 @@ ordering a carrier `k` sits in bin `k` for `k > 0` and bin `2048 + k` for `k < 0
    labels; published only when the CRC rate over a window of frames says the FIC
    is real (decision D27 in the spec).
 
+### When the table expires (the D27 boundary)
+
+The table is a claim about the *current* signal, so it must be discarded when
+the signal is gone. Three boundaries, ordered shortest to longest:
+
+- **A splice keeps it.** `DabReceiver::discard_buffer` (a gap or overlap in the
+  frame stream, up to ~4 transmission frames ≈ 384 ms) drops the samples and
+  the MSC chain but keeps the FIC window and the table: the receiver re-locks
+  as the window slides, and the labels that took ~12 s to collect are not
+  thrown away for a USB drop. This is capture-proven behaviour.
+- **Seconds of undecodable input expire it.** The receiver counts consecutive
+  attempts that accept no FIC — open-loop searches, noise on the predicted
+  grid, fades — and after `TABLE_EXPIRY_FRAMES` = 48 (≈ 4.6 s at Mode I)
+  empties the FIC window and the raw table. On-air acceptance is about one
+  attempt in three, so a fading ensemble cannot reach 48; a retune onto noise
+  reaches it in a few seconds even if nothing else notices.
+- **No input at all expires it at the owner.** With no samples there are no
+  attempts to count, so the app reports the stop (`DabReceiver::no_input`)
+  after `NO_INPUT_TIMEOUT_S` = 2 s without an IQ frame — a stopped backend, a
+  disconnect, a stalled link. Retunes, rate changes, instrument switches and
+  `sdr dab reset` call the full `reset()` at once, because the new signal is
+  known to be a different one.
+
+A selection (`sdr dab service`) is part of the same claim: when the table goes,
+the app drops the selection, its PAD/DLS parsers and the playback transport in
+the same step.
+
 Soft-bit convention in our decoder: positive = likely 1, negative = likely 0.
 The Viterbi maximizes correlation, so a sign error is a systematic failure, and
 there is a test whose only job is to fail if the convention inverts.
@@ -215,15 +242,56 @@ Radio 10, 538, Veronica, Sky, SLAM!), including two the listing does not have
    separately (`get dab` carries `prs_metric`, `last_attempt_metric`,
    `frames_decoded`, `frames_rejected`).
 
+### The tier-2 failure, root-caused offline (2026-09-21)
+
+The symptom: on 11C the FIC was clean (EId `0x8008`, 14 services, 100% FIB
+CRC) but `neowon_codec::dabplus` never saw a Fire-clean super frame — "not the
+signalled 11 × 8 kbit/s shape". The MSC byte rate was right, so extraction,
+FEC and the CU mapping looked innocent; the first suspect was a shared
+encoder/decoder misreading of a table. **It was not.** Every suspect table was
+re-checked against the standard and is correct: the MSC PRBS restarts per
+sub-channel logical frame (clause 10.3), the puncturing vectors are table 13
+with `PI n` keeping 8+n of 32 bits (clause 11.1.2), the EEP profiles are tables
+18/20 (`3-A` 88 kbit/s = `L1 63, L2 3, PI 8/7`, 66 CUs), and the clause-12
+delay map is table 21. The archived capture then settled it: a receiver that
+re-derives its frame start from the null-symbol power dip every frame — no
+predicted grid, no soft-miss continuation — produces **0 Fire-clean super
+frames and 0 AU CRCs on the capture while the FIC still reports 180/180 CRCs
+and EId `0x8008`**. The mechanism: on air most frames score below the PRS
+acceptance gate (15 of 147 attempts in that run), and the reject path
+discarded the MSC de-interleaver, so a sub-channel never held the 16 logical
+frames of clause-12 continuity. The FIC needs no inter-frame memory, which is
+why it stayed clean while the MSC was starved. The fix (already in the working
+tree, pinned this session): predict the next frame start from the accepted
+grid, refine it to the PRS peak, treat a weak frame at the predicted start as
+a fade (keep demapping, keep the delay line), and give the super-frame search
+a 20-super-frame shape budget that a stream which ever aligned can never trip.
+
+Evidence on `tmp-inspiration/dab-11c.f32` (15 s, 2.048 MS/s, Band III 11C),
+`cargo test -p neowon-app --release --test dab_air_capture -- --ignored`:
+**346 Fire-clean super frames, 843 AUs, 754 AU CRCs ok across all 14 services**
+(indexes 8–12, dac 32/48 kHz, SBR true, one PS mono service — all plausible).
+The same capture through the app's real transport (`air_capture_through_the_real_transport`):
+**707 AU CRCs ok, 0 shape mismatches**. Two bounds defects in the same search
+path were found and fixed while reproducing this: the refinement could move
+the start past the buffered frame (index out of bounds), and its scan guard
+omitted `T_G`. Regression tests: `multipath_echo_keeps_the_clause_12_chain_contiguous`
+and `frame_sized_feeds_never_overrun_the_sample_buffer` in
+`crates/neowon-dsp/tests/dab_msc.rs`; the shape-verdict policy tests live in
+`crates/neowon-app/src/sdr/dab_audio/transport.rs`.
+
 ### Open items from the session
 
 - **Sync yield is ~13% of attempts.** The receiver attempts a frame per six
   16 ms input frames and accepts about one in eight: 38 accepted against 262
-   rejected in the measured run. The rejected attempts' PRS score is ~0.04, i.e.
+  rejected in the measured run. The rejected attempts' PRS score is ~0.04, i.e.
   they are genuinely misaligned, not marginal. **Likely cause: splices from USB
   drops**, because the null symbol then stops being the unique power dip and the
   sync wanders. It still locks in seconds and holds, so this is a yield problem,
-  not a correctness one — but it is the first thing to fix.
+  not a correctness one — but it is the first thing to fix. *(Update 2026-09-21:
+  with the frame-grid prediction the archived capture's yield rose to 56 of 168
+  attempts, and its residual rejections are what the `next_frame` grid is
+  tolerant of. Splice detection is still the fix for the dropped-sample case.)*
 - **Splice detection needs a real sequence indicator.** `CaptureFrame::t_start`
   is derived from *arrival* time ("biased late by up to one poll"), so it cannot
   distinguish a jitter of one poll from a dropped chunk. The current check is a
@@ -262,10 +330,15 @@ the Band III block table at `wiki.opendigitalradio.org/Band_3_Channels`.
 
 **Do not trust the block letters in that station listing.** Its frequencies match
 the standard raster, but two labels are shifted by a block group: it calls
-195.936 "7A" (it is 8A) and 188.928 "9C" (it is 7A). The raster itself is
-`174.928 + 1.712·n` MHz with 5A at `n = 0`, which puts 11C at 220.352 and 12C at
-227.360 — both matching. Tune by frequency; the letters are administrative
-(the "Wiesbaden" arrangement), not from EN 300 401.
+195.936 "7A" (it is 8A) and 188.928 "9C" (it is 7A). The raster is **a table,
+not a formula**: the nominal 1.712 MHz step breaks at group boundaries
+(1.872 MHz before 6A–10A, 1.856 MHz before 11A/12A, 1.712 MHz for 12D→13A and
+1.568 MHz for 13C→13D), so a generated raster would be wrong. The full 38-entry
+5A–13F table is transcribed in `neowon-refdb::dab` from `dabradio` 0.5.0 (MIT;
+notice below); the four centres this project has recorded — 7A 188.928,
+8A 195.936, 11C 220.352, 12C 227.360 — match it value-for-value. Tune by label
+or by frequency; the letters are administrative (the "Wiesbaden" arrangement),
+not from EN 300 401.
 
 Two consequences for the run:
 
@@ -282,16 +355,139 @@ Two consequences for the run:
 
 ## Open items
 
-- **Table 8 (UEP sub-channel sizes)** is not transcribed, so UEP sub-channels
-  report their index and no bit rate. EEP sub-channels are exact (1 CU = 64 bits
-  per 24 ms).
-- **Table 47 (complete EBU Latin)** is not transcribed; labels decode exactly in
-  the ASCII range and show `?` outside it. UTF-8 labels (charset 15) are decoded.
 - **FIG type 2** extended labels (UTF-8/UCS-2, segmented) are not parsed.
 - **Data services** (`P/D = 1`, 32-bit SId) are counted, not tabled.
-- **MSC and audio** (tiers 2–3): time de-interleaving (clause 12), energy
-  dispersal in the MSC (clause 10.3), UEP/EEP depuncturing (clause 11.3),
-  sub-channel extraction, PAD/DLS text, and the codecs.
+- **Audio** (tier 3): the DAB+ transport and codec adapters exist
+  (`crates/neowon-codec`, TS 102 563 clause map below); the HE-AAC v2 decoder
+  situation is recorded there. The app's playback surface and the `rf-dab` sim
+  scene are in progress.
 - The **OFDM front end** (null-symbol detection, PRS correlation, fine timing and
   residual frequency offset) is the next implementation step; its hardware
   behaviour (locking with an RTL-SDR's clock error) is not yet recorded here.
+
+## Licensing / provenance (decision D26)
+
+Tier 1 ports from `dabradio` 0.5.0 (MIT, `xoolive/desperado`) — copyright ©
+Xavier Olive and contributors, MIT licence. Tier 2 (MSC, DLS) ports under the
+same notice: the UEP profile table (`dab/fec/uep_table.rs`, from
+`src/fec/uep.rs`), the EEP profile formulas (`dab/fec/eep.rs`), the clause-12
+time-interleaving order and delay map (`dab/msc.rs`, from `src/msc/mod.rs`),
+the DLS segment structure and reassembly rules (`dab/pad.rs`, from
+`src/pad/mod.rs`), and the complete EBU Latin repertoire (`dab/charset.rs`,
+from `src/charsets.rs`), and the Band III channel catalogue
+(`crates/neowon-refdb/src/dab.rs`, from `src/constants.rs`) that the DAB
+dock's channel selector and `sdr dab channel` tune by. Every ported file
+carries the comment
+`// Ported from dabradio 0.5.0 (MIT); notice in docs/protocol-dab.md`, and the
+tables were re-checked value-for-value against EN 300 401 V2.1.1 (tables 8,
+13, 15, 18, 20); the Band III table has no EN 300 401 source (it is the
+Wiesbaden arrangement) and was checked against the four centres recorded
+above. The GPL implementations (`dab-cmdline`, `qt-dab`,
+`welle.io`) were read for structure only; no code or table was copied from
+them.
+
+Tier-1 clause-map rows now closed: **table 8** (UEP sizes and profiles) is
+transcribed as one 64-entry table in `dab/fec/uep_table.rs` (clause 11.3.1);
+**tables 18/20** (EEP profiles) and **9/10** (sizes) are formulas in
+`dab/fec/eep.rs` (clause 11.3.2); the clause-12 time interleaver
+(`r' = r − D(ir mod 16)`, table 21) is implemented in `dab/msc.rs`; **table 47**
+(complete EBU Latin) is transcribed in `dab/charset.rs`. MSC energy dispersal
+is clause 10.3; the standard defines no MSC payload CRC (only the FIB CRC and
+the X-PAD/DLS CRC), so tier 2 checks a CRC only in oracle mode.
+
+## DAB+ audio transport and codec adapters (Phase 10.15.3)
+
+Standards used: **ETSI TS 102 563 V2.1.1** (DAB+ audio) and **ETSI EN 300 401
+V2.1.1** (DAB system), both downloaded free from ETSI on 2026-09-20. Crate:
+`crates/neowon-codec` (engine-free; `oxideav-aac` 0.1.7 and `oxideav-mp2`
+0.0.10 only).
+
+### TS 102 563 clause map used by neowon-codec
+
+| Constant / rule | Clause |
+|---|---|
+| super frame = 120 ms; size = `subchannel_index × 110` bytes; carried in five consecutive DAB logical frames; index 1..=24 | 5.1 |
+| header syntax: Fire code (16), rfa/dac_rate/sbr_flag/aac_channel_mode/ps_flag/mpeg_surround_config (8), `au_start[1..]` (12 each), alignment (4) | 5.2 Table 2 |
+| `num_aus` from (dac_rate, sbr_flag) = 2 / 3 / 4 / 6 | 5.2 Table 2 |
+| dac_rate = 32/48 kHz; SBR halves the core rate | 5.2 Tables 3, 4 |
+| channel mode / PS / MPEG Surround parameter meanings | 5.2 Tables 5, 6, 7 |
+| `au_start[0]` = 5/6/8/11; `au_start[n] = au_start[n-1] + au_size[n-1] + 2`; terminal offset = super frame size | 5.2 Table 8 |
+| per-AU CRC: `G(x)=x^16+x^12+x^5+1`, init all ones, complemented; procedure per EN 300 401 annex E | 5.2 |
+| header Fire code: `G(x)=(x^11+1)(x^5+x^3+x^2+x+1)` = 0x1782F (mask 0x782F), init all zeros, over super frame bytes 2..10 | 5.2 |
+| PAD in a leading `data_stream_element()`; F-PAD (2 bytes) + X-PAD Ind (none / short 4 / variable); PAD in `au[n]` belongs to `au[n+1]`; invalid length ⇒ no PAD | 5.4.0–5.4.3 |
+| RS(120,110,t=5): GF(2^8), α=2, `P(x)=x^8+x^4+x^3+x^2+1` (0x11D), `G(x)=∏_{i=0}^{9}(x+α^i)`, shortened from RS(255,245) by 135 leading zeros | 6.0, 6.1 |
+| virtual interleaver: `C[i][j] = A[i + j·s]`; parity per row; output = 110·s data then 10·s parity in s-byte columns | 6.2–6.5 |
+| audio parameters signalled in the super frame header; the ASC is derived from them (not transmitted, not in PAD) | 7.2 |
+| receiver-side error concealment / super frame sync / processing (informative) | annexes A, C, D |
+
+Additional (EN 300 401 V2.1.1): F-PAD is "contained in the last two bytes of the
+DAB audio frame" (clause 3.1) — the MP2 ancillary tail — and the F-PAD/X-PAD
+structure is clause 7.4 (shared by both audio codings; the Layer II coding
+itself is ETSI TS 103 466). CRC-16 procedure: annex E.
+
+TS 102 563 publishes no numeric Fire-code, AU-CRC or RS vectors, so the tests
+assert the defining algebraic properties (polynomial expansion, linearity,
+single-bit-flip detection, generator-root closure, 5-error and 10-erasure
+correction) and the published CRC-16 check value `0xD64E` for `"123456789"`.
+
+### The 960 transform / HE-AAC v2 state (important)
+
+DAB+ mandates the 960-line transform (TS 102 563 clause 5.1), and HE-AAC v2 is
+SBR + PS. `oxideav-aac` 0.1.7 decodes 960 for plain AAC-LC but rejects SBR on
+any non-1024 family (`Error::SbrUnsupportedFrameFamily`), so the pure-Rust
+primary cannot play real DAB+. The `fdk-aac` feature (operator decision,
+2026-09-20) swaps the backend to libfdk-aac behind the same adapter API;
+`AacDecoder::BACKEND` names the compiled-in one (`"oxideav-aac"` default,
+`"fdk-aac"` with the feature). libfdk-aac configures the 960 + SBR + PS
+AudioSpecificConfig DAB+ derives, asserted in `tests/aac_fixture.rs`.
+
+The same library's *encoder* cannot emit 960: `AACENC_GRANULE_LENGTH` accepts
+1024/512/480/256/240/128/120 and rejects everything else, so no available open
+encoder produces a conformant 960 DAB+ bitstream for CI. The committed
+`dabplus_heaacv2.sf` fixture is therefore 1024-line — libfdk-aac HE-AAC v2
+(AOT 29, 64 kbit/s CBR, 48 kHz), framed by `SuperframeEncoder` into DAB+
+super frames whose header is 48 kHz + SBR + mono core + PS. It proves the
+transport + adapter + SBR + PS chain against the source PCM (correlation
+0.99992, rel. RMS 0.020/0.013); it does **not** prove the 960 transform. That
+stays a hardware item: when the 11C feed reaches the codec, real 960 access
+units are the first thing to decode and file here; CI has no 960 vector until
+one can be obtained.
+
+Two libfdk-aac behaviours the adapter handles, recorded because they recur:
+
+* Its raw transport (`TT_MP4_RAW`) is a packet transport and requires the AU to
+  be bit-exact — any bit the `raw_data_block()` did not consume is a parse
+  error. DAB+ zero-stuffs the last AU of a super frame inside its CRC-covered
+  region (clause 5.2), so `aac::fdk` trims trailing zero bytes before the fill;
+  safe because `ID_END` plus byte alignment makes a valid block's last byte
+  non-zero.
+* It cannot see that an ASC does not describe the AUs: a 1024 bitstream under a
+  960 ASC decodes to concealed silence and returns OK. The adapter's contract
+  is that the caller pairs the ASC with its AUs; on air the ASC is derived from
+  the header (clause 7.2) and per-AU CRCs gate corruption.
+
+### fdk-aac licensing (Phase 10.15.3 fallback)
+
+`fdk-aac` 0.8.0 is MIT (the Rust binding). `fdk-aac-sys` 0.5.0 is MIT (binding
+and build) but vendors the Fraunhofer FDK AAC Codec Library source
+(`fdk-aac-sys/aac/`, from `haileys/fdk-aac-rs`), under the "Software License for
+The Fraunhofer FDK AAC Codec Library for Android": BSD-3-Clause-style terms
+plus extra conditions (retain the notice; make source available with binary
+redistribution; no endorsement; no fees) and, in section 3, **no patent licence
+of any kind**. AAC/HE-AAC patent licences are administered separately (Via
+Licensing / Fraunhofer) and are the user's responsibility, for encoding as well
+as decoding. The C source is not vendored in this repository; the dependency is
+declared in `neowon-codec`'s `Cargo.toml` and fetched by Cargo.
+
+### Acceptance fixtures and measured agreement
+
+`crates/neowon-codec/tests/fixtures/` (~160 KB): synthetic two-tone stereo
+(440 Hz L / 880 Hz R), ffmpeg 9.0.2 + afconvert 2.0, commands and SHA-256 in
+the fixture README. Metric: best-lag normalised cross-correlation + relative
+RMS error at that lag + Goertzel tone check.
+
+| Fixture | lag | correlation | rel. RMS err | tolerances |
+|---|---:|---|---:|---|
+| `he_aac_v2.latm` (12 AUs) | 4224 | 0.9999998 | 5.0e-4 / 5.5e-4 | ≥0.98, ≤0.05 |
+| `dabplus_heaacv2.sf` (9 AUs, 3 super frames) | 10528 | 0.99992 | 0.020 / 0.013 | ≥0.99, ≤0.05 |
+| `tone.mp2` (17 frames) | 0 | 0.99999999 | 1.4e-4 / 1.5e-4 | ≥0.999, ≤0.01 |

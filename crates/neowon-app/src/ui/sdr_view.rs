@@ -10,7 +10,7 @@ use bevy_egui::{EguiContexts, egui};
 
 use crate::Link;
 use crate::script::{Action, Script};
-use crate::sdr::{SdrAction, SdrState, WF_H, WF_W};
+use crate::sdr::{SdrAction, SdrState, WF_H, WF_W, zoom};
 use crate::ui::layout::Layout;
 use crate::ui::sdr_bands;
 use crate::uitree;
@@ -59,9 +59,14 @@ pub fn show(
             .collect(),
         source_size: egui::vec2(WF_W as f32, WF_H as f32),
     };
+    // Linear filtering, deliberately: the texture is 1024 columns drawn at
+    // several times that width, and nearest-neighbour upscaling of the fine
+    // OFDM carrier texture makes stripe widths vary enough that the eye reads
+    // a slant into a static pattern (measured 0.00 px/row of real shear).
+    let tex_opts = egui::TextureOptions::LINEAR;
     match tex.as_mut() {
-        None => *tex = Some(ctx.load_texture("sdr-waterfall", image(), Default::default())),
-        Some(t) if *uploaded != sdr.wf_rows => t.set(image(), Default::default()),
+        None => *tex = Some(ctx.load_texture("sdr-waterfall", image(), tex_opts)),
+        Some(t) if *uploaded != sdr.wf_rows => t.set(image(), tex_opts),
         _ => {}
     }
     *uploaded = sdr.wf_rows;
@@ -410,13 +415,16 @@ fn draw_channel(p: &egui::Painter, rect: egui::Rect, wf: egui::Rect, sdr: &SdrSt
 }
 
 /// The spectrum and waterfall under the mouse, the way the scope's
-/// Spectrum window works: scroll zooms the span at the pointer,
-/// shift+scroll (or a 2-D wheel's x axis) zooms the dB range, left-drag
-/// pans the view (vertically it moves the reference level), right-drag
-/// moves the hardware window, double-click resets the view. A left-drag on
-/// a channel filter edge sets the Width; elsewhere it pans. A left-click
-/// tunes to the frequency under the pointer and leaves the window alone.
-/// Every gesture injects script actions (`sdr tune|width|centre|span|pan|level`).
+/// Spectrum window works: plain scroll zooms the span at the pointer and
+/// steps the sample rate to the rung that carries it (the zoom→rate choice
+/// lives in `sdr::zoom`), shift+scroll pans horizontally (past the IQ band
+/// the hardware window moves), ctrl+scroll zooms the dB range, a 2-D
+/// wheel's x axis pans, left-drag pans the view (vertically it moves the
+/// reference level), right-drag moves the hardware window, double-click
+/// resets the view. A left-drag on a channel filter edge sets the Width;
+/// elsewhere it pans. A left-click tunes to the frequency under the pointer
+/// and leaves the window alone. Every gesture injects script actions
+/// (`sdr tune|width|centre|span|pan|level|rate`).
 #[allow(clippy::too_many_arguments)]
 fn pointer(
     ui: &egui::Ui,
@@ -530,36 +538,53 @@ fn pointer(
         egui::FontId::monospace(12.0),
         egui::Color32::WHITE,
     );
-    let (scroll, shift) = ui.input(|i| (i.smooth_scroll_delta, i.modifiers.shift));
-    let zf = if shift { 0.0 } else { -scroll.y / 240.0 };
-    let zdb = if shift {
-        -scroll.y / 240.0
+    let (scroll, ctrl) = ui.input(|i| {
+        (
+            i.smooth_scroll_delta,
+            i.modifiers.ctrl || i.modifiers.command,
+        )
+    });
+    if shift {
+        // Pan horizontally: the content follows the scroll, so wheel down
+        // goes to higher frequencies and a swipe right to lower ones. A
+        // 2-D wheel's x axis pans with the y one.
+        let lines = ((scroll.y - scroll.x) / zoom::WHEEL_LINE_POINTS as f32) as f64;
+        if lines.abs() > 1e-3 {
+            for a in zoom::pan_actions(sdr, lines) {
+                inject(script, a);
+            }
+        }
+    } else if ctrl {
+        let zdb = -scroll.y / 240.0;
+        if zdb.abs() > 1e-3 && spec.contains(pos) {
+            // Zoom the dB range around the level under the pointer.
+            let at =
+                sdr.ref_db - (1.0 - ((spec.max.y - pos.y) / spec.height()) as f64) * sdr.range_db;
+            let range = (sdr.range_db * 2f64.powf(zdb as f64)).clamp(10.0, 200.0);
+            let k = range / sdr.range_db;
+            inject(
+                script,
+                SdrAction::Level {
+                    ref_db: (at + (sdr.ref_db - at) * k).clamp(-150.0, 30.0),
+                    range_db: range,
+                },
+            );
+        }
     } else {
-        scroll.x / 240.0
-    };
-    if zf.abs() > 1e-3 {
-        // Keep the frequency under the pointer where it is.
-        let t = ((pos.x - rect.min.x) / rect.width()) as f64 - 0.5;
-        let span = (sdr.span() * 2f64.powf(zf as f64)).clamp(rate / 256.0, rate);
-        let centre = hz - t * span;
-        inject(
-            script,
-            SdrAction::Span(if span >= rate { 0.0 } else { span }),
-        );
-        inject(script, SdrAction::Pan(centre - sdr.config.centre_hz));
-    }
-    if zdb.abs() > 1e-3 && spec.contains(pos) {
-        // Zoom the dB range around the level under the pointer.
-        let at = sdr.ref_db - (1.0 - ((spec.max.y - pos.y) / spec.height()) as f64) * sdr.range_db;
-        let range = (sdr.range_db * 2f64.powf(zdb as f64)).clamp(10.0, 200.0);
-        let k = range / sdr.range_db;
-        inject(
-            script,
-            SdrAction::Level {
-                ref_db: (at + (sdr.ref_db - at) * k).clamp(-150.0, 30.0),
-                range_db: range,
-            },
-        );
+        let zf = -scroll.y / 240.0;
+        if zf.abs() > 1e-3 {
+            let t = ((pos.x - rect.min.x) / rect.width()) as f64 - 0.5;
+            for a in zoom::zoom_actions(sdr, t, zf as f64) {
+                inject(script, a);
+            }
+        }
+        // A 2-D wheel's x axis is a horizontal pan without a modifier too.
+        let lines = (-scroll.x / zoom::WHEEL_LINE_POINTS as f32) as f64;
+        if lines.abs() > 1e-3 {
+            for a in zoom::pan_actions(sdr, lines) {
+                inject(script, a);
+            }
+        }
     }
 }
 

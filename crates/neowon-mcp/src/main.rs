@@ -108,6 +108,10 @@ impl ScopeClient {
                         .arg("--sim")
                         .env("NEOWON_CONTROL", default_port().to_string())
                         .env_remove("NEOWON_SCRIPT")
+                        // The spawned sim is this server's child (killed on
+                        // drop); the guard covers a hard-killed server, so
+                        // the window cannot outlive an MCP that was SIGKILLed.
+                        .env("NEOWON_ORPHAN_EXIT", "30")
                         // An agent-driven sim must not overwrite the operator's
                         // saved setup (D13).
                         .env("NEOWON_NO_STATE", "1")
@@ -245,7 +249,8 @@ struct ScriptParams {
 
 #[derive(Deserialize, JsonSchema)]
 struct ScreenshotParams {
-    /// Optional region of interest in plot-texture pixels (1000×500):
+    /// Optional crop of the captured window image, in its own pixels
+    /// (physical window pixels, so 2x on a Retina display):
     /// [x, y, width, height].
     roi: Option<[u32; 4]>,
 }
@@ -391,8 +396,9 @@ impl Scope {
         self.exec_lines(&p.0.script)
     }
 
-    #[tool(description = "Capture the scope display (the waveform plot) as a \
-        PNG image, optionally cropped to a region of interest.")]
+    #[tool(description = "Capture the whole neowon window — every panel, the \
+        scope plot or SDR spectrum/waterfall, and the controls — as a PNG \
+        image, optionally cropped to a region of the captured image.")]
     async fn screenshot(
         &self,
         p: Parameters<ScreenshotParams>,

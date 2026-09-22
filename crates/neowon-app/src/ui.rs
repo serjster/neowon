@@ -4,6 +4,7 @@
 
 pub mod bandmap_window;
 pub mod catalog_window;
+pub mod dab_dock;
 pub mod descriptors;
 pub mod dialog_acquire;
 pub mod dialog_channel;
@@ -90,6 +91,12 @@ pub fn panel(
     // so the Bevy-side geometry (plot sprite, gizmos, hit tests) agrees.
     if (ctx.zoom_factor() - layout.scale).abs() > 1e-3 {
         ctx.set_zoom_factor(layout.scale);
+    }
+    // egui's wheel zoom would swallow ctrl+wheel before the SDR canvas sees
+    // it (and this app owns the scale anyway: `uiscale`, persisted by D13),
+    // so its zoom modifier is off and ctrl+wheel reaches the canvas.
+    if ctx.options(|o| o.input_options.zoom_modifier) != egui::Modifiers::NONE {
+        ctx.options_mut(|o| o.input_options.zoom_modifier = egui::Modifiers::NONE);
     }
 
     let rects = &mut viz.3;

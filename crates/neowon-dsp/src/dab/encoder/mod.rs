@@ -1,9 +1,11 @@
 //! A deterministic DAB Mode I **encoder**, used as the golden-test oracle.
 //!
-//! This is the transmitter side of tier 1: it builds FCCs (FIGs) from a chosen
-//! ensemble, assembles them into FIBs, applies energy dispersal and the
-//! punctured convolutional code, and can emit either the transmitted bits or
-//! ideal soft bits for the FIC.
+//! This is the transmitter side: it builds FCCs (FIGs) from a chosen ensemble,
+//! assembles them into FIBs, applies energy dispersal and the punctured
+//! convolutional code, and can emit either the transmitted bits or ideal soft
+//! bits for the FIC. [`msc`] carries the Main Service Channel mirror — the
+//! same chain for the sub-channels, time-interleaved per clause 12 — and
+//! [`FicFrame::iq_frame_with_msc`] modulates both into one Mode I frame.
 //!
 //! **Why it lives here and not in `neowon-sim`.** `neowon-sim` does not depend
 //! on `neowon-dsp` (the dependency runs the other way, in tests), and adding
@@ -18,6 +20,10 @@
 //! spec's row 7 (a real capture on real air) exists, and why the table tests
 //! are written against the standard's own published figures.
 
+pub mod msc;
+
+pub use msc::{MscCif, MscEncoder, MscSubChannelSpec};
+
 use rustfft::num_complex::Complex32;
 
 use super::fec::{conv_encode, energy_dispersal, puncture_fic};
@@ -25,7 +31,8 @@ use super::fib::fib_crc;
 use super::ofdm::{Fft2048, carrier_bin, interleaver, prs_reference, qpsk};
 use super::{
     CARRIERS, FIB_BYTES, FIB_DATA_BYTES, FIBS_PER_FRAME, FIC_BITS_PER_SYMBOL, FIC_DATA_BITS,
-    FIC_SOFT_BITS, FIC_SUBBLOCK_BITS, FRAME_SAMPLES, SYMBOLS_PER_FRAME, T_G, T_NULL, T_S, T_U,
+    FIC_SOFT_BITS, FIC_SUBBLOCK_BITS, FRAME_SAMPLES, MSC_BITS_PER_SYMBOL, MSC_SOFT_BITS,
+    MSC_SYMBOLS, Protection, SYMBOLS_PER_FRAME, T_G, T_NULL, T_S, T_U,
 };
 
 /// One service to encode: identifier, label, and its sub-channel.
@@ -38,15 +45,31 @@ pub struct ServiceSpec<'a> {
     pub ascty: u8,
 }
 
+/// One sub-channel to signal in FIG 0/1 and to encode in the MSC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SubChannelSpec {
+    pub id: u8,
+    /// Start address in capacity units (10 bits).
+    pub start_cu: u16,
+    /// Size in capacity units. For UEP the standard derives it from the index
+    /// (table 8); a mismatch is an error in the caller, not a value to guess.
+    pub size_cu: u16,
+    pub protection: Protection,
+}
+
 /// The ensemble to encode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnsembleSpec<'a> {
     pub eid: u16,
     pub label: &'a str,
     pub services: Vec<ServiceSpec<'a>>,
+    /// Explicit sub-channel layout for FIG 0/1 and the MSC. Empty keeps the
+    /// tier-1 legacy layout — each service's sub-channel, 96 CU EEP 3-A, in
+    /// service order — so existing fixtures encode byte-for-byte identically.
+    pub sub_channels: Vec<SubChannelSpec>,
 }
 
-/// A capacity unit is 64 bits; the encoder gives every sub-channel 96 CUs
+/// A capacity unit is 64 bits; the legacy layout gives every sub-channel 96 CUs
 /// (256 kbit/s) with EEP 3-A, which is a realistic DAB+ profile.
 const SUB_CHANNEL_CU: u16 = 96;
 
@@ -69,6 +92,27 @@ fn label_field(text: &str, width: usize) -> Vec<u8> {
 }
 
 impl<'a> EnsembleSpec<'a> {
+    /// The sub-channels to signal and encode: the explicit layout when one was
+    /// given, otherwise the tier-1 legacy layout derived from the services.
+    pub fn layout(&self) -> Vec<SubChannelSpec> {
+        if !self.sub_channels.is_empty() {
+            return self.sub_channels.clone();
+        }
+        self.services
+            .iter()
+            .enumerate()
+            .map(|(index, service)| SubChannelSpec {
+                id: service.sub_channel,
+                start_cu: index as u16 * SUB_CHANNEL_CU,
+                size_cu: SUB_CHANNEL_CU,
+                protection: Protection::Eep {
+                    option: 0,
+                    level: 2,
+                },
+            })
+            .collect()
+    }
+
     /// The FIGs of this ensemble, in the order a broadcaster would repeat them:
     /// identity, sub-channel organization, service organization, labels.
     fn figs(&self) -> Vec<Vec<u8>> {
@@ -79,17 +123,29 @@ impl<'a> EnsembleSpec<'a> {
         data.extend_from_slice(&self.eid.to_be_bytes());
         figs.push(fig(0, &data));
 
-        // FIG 0/1 — sub-channel organization, long form / EEP (clause 6.2.1).
+        // FIG 0/1 — sub-channel organization (clause 6.2.1): the long form for
+        // EEP (option + level + size), the short form for UEP (table index).
         let mut data = vec![0x01]; // extension 1
-        for (index, service) in self.services.iter().enumerate() {
-            let start_cu = index as u16 * SUB_CHANNEL_CU;
-            data.push((service.sub_channel << 2) | ((start_cu >> 8) as u8 & 0x03));
-            data.push(start_cu as u8);
-            // Long form, option 0 (EEP-A), signalled level 2 (= level 3),
-            // size in the low 10 bits.
-            // Long form bit 7, option 0 (= EEP-A), level 2 (= level 3).
-            data.push(0x80 | (2 << 2) | ((SUB_CHANNEL_CU >> 8) as u8 & 0x03));
-            data.push(SUB_CHANNEL_CU as u8);
+        for sub in self.layout() {
+            data.push((sub.id << 2) | ((sub.start_cu >> 8) as u8 & 0x03));
+            data.push(sub.start_cu as u8);
+            match sub.protection {
+                Protection::Eep { option, level } => {
+                    // Long form bit 7, option (000 = EEP-A, 001 = EEP-B),
+                    // signalled level, size in the low 10 bits.
+                    data.push(
+                        0x80 | ((option & 0x07) << 4)
+                            | ((level & 0x03) << 2)
+                            | ((sub.size_cu >> 8) as u8 & 0x03),
+                    );
+                    data.push(sub.size_cu as u8);
+                }
+                Protection::Uep { table_index } => {
+                    // Short form: form bit 0, table switch 0 (table 8), then the
+                    // six-bit index; size and protection come from table 8.
+                    data.push(table_index & 0x3F);
+                }
+            }
         }
         figs.push(fig(0, &data));
 
@@ -210,14 +266,27 @@ impl FicFrame {
     /// the null symbol, the phase reference symbol, the three FIC symbols, and
     /// the 72 MSC symbols (clauses 14.2, 14.3.1, 14.3.2, 14.4.1.1, 14.7).
     ///
-    /// The MSC symbols carry a deterministic pseudo-random DQPSK pattern: tier
-    /// 1 does not decode them, and they must *not* be silent, or the null symbol
-    /// would stop being the only power dip in the frame and the receiver's sync
-    /// would be tested against something no broadcaster transmits.
+    /// The MSC symbols carry a deterministic pseudo-random DQPSK pattern when
+    /// no sub-channel data is supplied: they must *not* be silent, or the null
+    /// symbol would stop being the only power dip in the frame and the
+    /// receiver's sync would be tested against something no broadcaster
+    /// transmits.
     ///
     /// The result is `FRAME_SAMPLES` complex samples, scaled to the given RMS
     /// (a typical SDR capture sits near 0.2 of full scale).
     pub fn iq_frame(&self, rms: f32) -> Vec<Complex32> {
+        self.modulate(None, rms)
+    }
+
+    /// The same frame with real MSC content: `msc_bits` are the 4 CIFs of
+    /// transmitted bits [`MscEncoder::next_cif`] produced (4 × 55 296 bits, in
+    /// CIF order), modulated into the 72 MSC symbols exactly as a receiver
+    /// demaps them.
+    pub fn iq_frame_with_msc(&self, msc_bits: &[u8], rms: f32) -> Vec<Complex32> {
+        self.modulate(Some(msc_bits), rms)
+    }
+
+    fn modulate(&self, msc_bits: Option<&[u8]>, rms: f32) -> Vec<Complex32> {
         let mut fft = Fft2048::new();
         let mut frame = vec![Complex32::new(0.0, 0.0); FRAME_SAMPLES];
 
@@ -242,24 +311,45 @@ impl FicFrame {
             previous = spectrum;
         }
 
-        // The rest of the frame is the MSC, which tier 1 does not decode.
-        let mut rng: u32 = 0x5EED_1234;
-        for _ in (3 + 1)..SYMBOLS_PER_FRAME {
-            let mut spectrum = vec![Complex32::new(0.0, 0.0); T_U];
-            for k in -768..=768i16 {
-                if k == 0 {
-                    continue;
+        match msc_bits {
+            Some(bits) => {
+                assert_eq!(bits.len(), MSC_SOFT_BITS, "one frame is 4 CIFs");
+                for symbol in 0..MSC_SYMBOLS {
+                    let symbol_bits =
+                        &bits[symbol * MSC_BITS_PER_SYMBOL..(symbol + 1) * MSC_BITS_PER_SYMBOL];
+                    let mut spectrum = vec![Complex32::new(0.0, 0.0); T_U];
+                    for (n, k) in interleaver().iter().enumerate() {
+                        let bin = carrier_bin(*k);
+                        spectrum[bin] =
+                            previous[bin] * qpsk(symbol_bits[n], symbol_bits[n + CARRIERS]);
+                    }
+                    write_symbol(&mut frame, at, &fft.symbol_from_spectrum(&spectrum));
+                    at += T_S;
+                    previous = spectrum;
                 }
-                rng = rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                let bit_i = ((rng >> 17) & 1) as u8;
-                rng = rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                let bit_q = ((rng >> 17) & 1) as u8;
-                let bin = carrier_bin(k);
-                spectrum[bin] = previous[bin] * qpsk(bit_i, bit_q);
             }
-            write_symbol(&mut frame, at, &fft.symbol_from_spectrum(&spectrum));
-            at += T_S;
-            previous = spectrum;
+            None => {
+                // The rest of the frame is the MSC; with no data it carries a
+                // deterministic pseudo-random DQPSK pattern.
+                let mut rng: u32 = 0x5EED_1234;
+                for _ in (3 + 1)..SYMBOLS_PER_FRAME {
+                    let mut spectrum = vec![Complex32::new(0.0, 0.0); T_U];
+                    for k in -768..=768i16 {
+                        if k == 0 {
+                            continue;
+                        }
+                        rng = rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                        let bit_i = ((rng >> 17) & 1) as u8;
+                        rng = rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                        let bit_q = ((rng >> 17) & 1) as u8;
+                        let bin = carrier_bin(k);
+                        spectrum[bin] = previous[bin] * qpsk(bit_i, bit_q);
+                    }
+                    write_symbol(&mut frame, at, &fft.symbol_from_spectrum(&spectrum));
+                    at += T_S;
+                    previous = spectrum;
+                }
+            }
         }
         assert_eq!(at, FRAME_SAMPLES);
 
@@ -303,6 +393,7 @@ mod tests {
                     ascty: 63,
                 },
             ],
+            sub_channels: Vec::new(),
         }
     }
 

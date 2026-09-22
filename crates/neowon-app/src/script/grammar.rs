@@ -47,6 +47,28 @@ fn parse_window(s: &str) -> Result<Window, ()> {
     }
 }
 
+/// Optional `[x y w h]` after a shot path.
+fn parse_roi(
+    w: &mut std::str::SplitWhitespace<'_>,
+) -> Result<Option<(u32, u32, u32, u32)>, String> {
+    match w.next() {
+        None => Ok(None),
+        Some(x) => {
+            let p = |s: Option<&str>| -> Result<u32, String> {
+                s.ok_or("roi needs x y w h")?
+                    .parse()
+                    .map_err(|_| "bad roi number".to_string())
+            };
+            Ok(Some((
+                x.parse().map_err(|_| "bad roi number".to_string())?,
+                p(w.next())?,
+                p(w.next())?,
+                p(w.next())?,
+            )))
+        }
+    }
+}
+
 pub(crate) fn parse(text: &str) -> Result<VecDeque<(f64, Action)>, String> {
     let mut t = 0.0f64;
     let mut out = VecDeque::new();
@@ -302,23 +324,17 @@ pub(crate) fn parse(text: &str) -> Result<VecDeque<(f64, Action)>, String> {
             "layout" => Action::Layout(rest()?.to_string()),
             "shot" => {
                 let path = rest()?.to_string();
-                let roi = match w.next() {
-                    None => None,
-                    Some(x) => {
-                        let p = |s: Option<&str>| -> Result<u32, String> {
-                            s.ok_or_else(|| err("roi needs x y w h"))?
-                                .parse()
-                                .map_err(|_| err("bad roi number"))
-                        };
-                        Some((
-                            x.parse().map_err(|_| err("bad roi number"))?,
-                            p(w.next())?,
-                            p(w.next())?,
-                            p(w.next())?,
-                        ))
-                    }
-                };
-                Action::Shot { path, roi }
+                Action::Shot {
+                    path,
+                    roi: parse_roi(&mut w).map_err(|e| err(&e))?,
+                }
+            }
+            "shotplot" => {
+                let path = rest()?.to_string();
+                Action::ShotPlot {
+                    path,
+                    roi: parse_roi(&mut w).map_err(|e| err(&e))?,
+                }
             }
             "trigpos" => Action::TrigPos(rest()?.parse().map_err(|_| err("bad fraction"))?),
             "history" => match rest()? {
@@ -349,4 +365,36 @@ pub(crate) fn parse(text: &str) -> Result<VecDeque<(f64, Action)>, String> {
         out.push_back((t, action));
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse;
+    use crate::script::Action;
+
+    /// The two shot verbs stay distinct: `shot` is the whole window,
+    /// `shotplot` is the raw plot readback, and both take an optional ROI.
+    #[test]
+    fn shot_verbs_round_trip() {
+        let actions = parse("shot /tmp/w.png\nshotplot /tmp/p.ppm 1 2 3 4\n").unwrap();
+        assert!(
+            matches!(&actions[0].1, Action::Shot { path, roi: None } if path == "/tmp/w.png"),
+            "{:?}",
+            actions[0].1
+        );
+        match &actions[1].1 {
+            Action::ShotPlot { path, roi } => {
+                assert_eq!(path, "/tmp/p.ppm");
+                assert_eq!(*roi, Some((1, 2, 3, 4)));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A partial ROI is a parse error, not a silent full-image shot.
+    #[test]
+    fn a_roi_needs_all_four_numbers() {
+        assert!(parse("shot /tmp/w.png 1 2 3").is_err());
+        assert!(parse("shotplot /tmp/p.ppm x 2 3 4").is_err());
+    }
 }

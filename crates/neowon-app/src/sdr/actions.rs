@@ -58,16 +58,54 @@ pub enum SdrAction {
     Instrument(bool),
     /// DAB decoding (`sdr dab on|off|reset`).
     Dab(DabVerb),
+    /// Raw IQ capture for offline replay (`sdr iqdump`).
+    IqDump(IqDumpVerb),
+}
+
+/// `sdr iqdump <path> <seconds>` starts a capture of the complex frames the
+/// streaming consumers receive; `sdr iqdump off` stops it early.
+#[derive(Debug, Clone, PartialEq)]
+pub enum IqDumpVerb {
+    Start { path: String, seconds: f64 },
+    Stop,
 }
 
 /// What `sdr dab` does. The receiver is a wideband consumer of raw IQ, so
 /// it is switched on and off rather than set to a frequency: it decodes
 /// whatever ensemble the hardware window covers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum DabVerb {
     On,
     Off,
     Reset,
+    /// Select a service (`sdr dab service …`).
+    Service(DabService),
+    /// Start audio transport (`sdr dab play`). The state is real; 10.15.3
+    /// consumes it.
+    Play,
+    /// Stop audio transport (`sdr dab stop`).
+    Stop,
+    /// Land the hardware window on a Band III block (`sdr dab channel …`).
+    Channel(DabChannel),
+}
+
+/// How `sdr dab channel` names its target: the raster step verbs, or a
+/// block label (`11C`). The 38 block centres are `neowon-refdb`'s table;
+/// the band plan decides which of them the operator's country allocates.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DabChannel {
+    Next,
+    Prev,
+    Label(String),
+}
+
+/// How `sdr dab service` names a service: by `SId`, or by 1-based position
+/// in the locked table (written `#n`, since service numbers are 16-bit and
+/// a bare number would be ambiguous).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DabService {
+    Sid(u16),
+    Index(u16),
 }
 
 /// `sdr survey <start> <stop> [cap N] [skip lo:hi]…`.
@@ -79,135 +117,6 @@ pub struct SurveyRequest {
     pub peak_cap: usize,
     /// Ranges not to scan.
     pub skip: Vec<(f64, f64)>,
-}
-
-/// `99.4M`, `100k`, `1.2G` or plain Hz.
-pub fn parse_hz(s: &str) -> Result<f64, String> {
-    let (num, mul) = match s.chars().last() {
-        Some('k' | 'K') => (&s[..s.len() - 1], 1e3),
-        Some('M') => (&s[..s.len() - 1], 1e6),
-        Some('G' | 'g') => (&s[..s.len() - 1], 1e9),
-        _ => (s, 1.0),
-    };
-    num.parse::<f64>()
-        .map(|v| v * mul)
-        .map_err(|_| format!("bad frequency {s:?}"))
-}
-
-fn on_off(s: &str) -> Result<bool, String> {
-    match s {
-        "on" | "1" => Ok(true),
-        "off" | "0" => Ok(false),
-        _ => Err(format!("expected on/off, got {s:?}")),
-    }
-}
-
-/// `sdr <verb> …` (the words after `sdr`).
-pub fn parse<'a>(next: &mut dyn FnMut() -> Result<&'a str, String>) -> Result<SdrAction, String> {
-    let num = |s: &str| s.parse::<f64>().map_err(|_| format!("bad number {s:?}"));
-    Ok(match next()? {
-        "tune" => SdrAction::Tune(parse_hz(next()?)?),
-        "step" => SdrAction::Step(parse_hz(next()?)?),
-        "rate" => SdrAction::Rate(parse_hz(next()?)?),
-        "gain" => match next()? {
-            "auto" => SdrAction::Gain(None),
-            db => SdrAction::Gain(Some(num(db)?)),
-        },
-        "agc" => SdrAction::Agc(on_off(next()?)?),
-        "ppm" => SdrAction::Ppm(num(next()?)?),
-        "span" => SdrAction::Span(parse_hz(next()?)?),
-        "fft" => SdrAction::Fft(next()?.parse().map_err(|_| "bad FFT size".to_string())?),
-        "level" => SdrAction::Level {
-            ref_db: num(next()?)?,
-            range_db: num(next()?)?,
-        },
-        "run" => SdrAction::Run(on_off(next()?)?),
-        "dab" => match next()? {
-            "on" => SdrAction::Dab(DabVerb::On),
-            "off" => SdrAction::Dab(DabVerb::Off),
-            "reset" => SdrAction::Dab(DabVerb::Reset),
-            other => return Err(format!("dab: expected on|off|reset, got {other:?}")),
-        },
-        "detect" => SdrAction::Detect(on_off(next()?)?),
-        "survey" => match next()? {
-            "stop" => SdrAction::Survey(None),
-            start => {
-                let (start, stop) = (parse_hz(start)?, parse_hz(next()?)?);
-                let (mut cap, mut skip) = (32, Vec::new());
-                while let Ok(w) = next() {
-                    match w {
-                        "cap" => cap = next()?.parse().map_err(|_| "bad cap".to_string())?,
-                        "skip" => {
-                            let r = next()?;
-                            let (a, b) = r.split_once(':').ok_or("skip lo:hi")?;
-                            skip.push((parse_hz(a)?, parse_hz(b)?));
-                        }
-                        other => return Err(format!("survey: unexpected {other:?}")),
-                    }
-                }
-                SdrAction::Survey(Some(SurveyRequest {
-                    start_hz: start,
-                    stop_hz: stop,
-                    peak_cap: cap,
-                    skip,
-                }))
-            }
-        },
-        "analyse" | "analyze" => SdrAction::Analyse(on_off(next()?)?),
-        "modulation" => match next()? {
-            "auto" => SdrAction::Modulation(None),
-            m => SdrAction::Modulation(Some(
-                neowon_core::Modulation::parse(m)
-                    .ok_or_else(|| format!("unknown modulation {m:?}"))?,
-            )),
-        },
-        "threshold" => SdrAction::Threshold(num(next()?)?),
-        "pan" => SdrAction::Pan(parse_hz(next()?)?),
-        "centre" | "center" => SdrAction::Centre(parse_hz(next()?)?),
-        "follow" => SdrAction::Follow(on_off(next()?)?),
-        "width" => match next()? {
-            "auto" => SdrAction::Width(None),
-            w => SdrAction::Width(Some(parse_hz(w)?)),
-        },
-        "demod" => match next()? {
-            "off" => SdrAction::Demod(None),
-            m => SdrAction::Demod(Some(
-                neowon_dsp::DemodMode::parse(m)
-                    .ok_or_else(|| format!("unknown demod {m:?}; use am|nfm|wfm|off"))?,
-            )),
-        },
-        "volume" => SdrAction::Volume(num(next()?)? as f32),
-        "mute" => SdrAction::Mute(on_off(next()?)?),
-        "squelch" => match next()? {
-            "off" => SdrAction::Squelch(None),
-            db => SdrAction::Squelch(Some(num(db)?)),
-        },
-        "list" => SdrAction::List(next()?.parse().map_err(|_| "bad height".to_string())?),
-        other => return Err(format!("unknown sdr verb {other:?}")),
-    })
-}
-
-/// `sim iq --seed <s>` (the words after `sim`).
-pub fn parse_sim<'a>(
-    next: &mut dyn FnMut() -> Result<&'a str, String>,
-) -> Result<SdrAction, String> {
-    match (next()?, next()?) {
-        ("iq", "--seed") => Ok(SdrAction::Seed(
-            next()?.parse().map_err(|_| "bad seed".to_string())?,
-        )),
-        _ => Err("expected: sim iq --seed <n>".into()),
-    }
-}
-
-/// `instrument scope|sdr` (the word after `instrument`).
-pub fn parse_instrument<'a>(
-    next: &mut dyn FnMut() -> Result<&'a str, String>,
-) -> Result<SdrAction, String> {
-    match next()? {
-        "sdr" => Ok(SdrAction::Instrument(true)),
-        "scope" => Ok(SdrAction::Instrument(false)),
-        m => Err(format!("unknown instrument {m:?}; use scope|sdr")),
-    }
 }
 
 /// The script line for an action. Every variant has one (the match is
@@ -256,6 +165,23 @@ impl std::fmt::Display for SdrAction {
             SdrAction::Dab(DabVerb::On) => write!(f, "sdr dab on"),
             SdrAction::Dab(DabVerb::Off) => write!(f, "sdr dab off"),
             SdrAction::Dab(DabVerb::Reset) => write!(f, "sdr dab reset"),
+            SdrAction::Dab(DabVerb::Play) => write!(f, "sdr dab play"),
+            SdrAction::Dab(DabVerb::Stop) => write!(f, "sdr dab stop"),
+            SdrAction::Dab(DabVerb::Service(DabService::Sid(sid))) => {
+                write!(f, "sdr dab service {sid}")
+            }
+            SdrAction::Dab(DabVerb::Service(DabService::Index(n))) => {
+                write!(f, "sdr dab service #{n}")
+            }
+            SdrAction::Dab(DabVerb::Channel(DabChannel::Next)) => {
+                write!(f, "sdr dab channel next")
+            }
+            SdrAction::Dab(DabVerb::Channel(DabChannel::Prev)) => {
+                write!(f, "sdr dab channel prev")
+            }
+            SdrAction::Dab(DabVerb::Channel(DabChannel::Label(label))) => {
+                write!(f, "sdr dab channel {label}")
+            }
             SdrAction::Volume(v) => write!(f, "sdr volume {v}"),
             SdrAction::Mute(b) => write!(f, "sdr mute {}", on(*b)),
             SdrAction::Squelch(None) => write!(f, "sdr squelch off"),
@@ -264,6 +190,10 @@ impl std::fmt::Display for SdrAction {
             SdrAction::Instrument(sdr) => {
                 write!(f, "instrument {}", if *sdr { "sdr" } else { "scope" })
             }
+            SdrAction::IqDump(IqDumpVerb::Start { path, seconds }) => {
+                write!(f, "sdr iqdump {path} {seconds}")
+            }
+            SdrAction::IqDump(IqDumpVerb::Stop) => write!(f, "sdr iqdump off"),
         }
     }
 }
@@ -312,8 +242,14 @@ pub fn apply(a: SdrAction, sdr: &mut SdrState, link: &mut Link) -> Result<(), St
             if r <= 0.0 {
                 return Err("rate must be positive".into());
             }
+            let changed = sdr.config.sample_rate != r;
             sdr.config.sample_rate = r;
             sdr.clamp_pan();
+            if changed {
+                // Mode I is defined at exactly 2.048 MS/s: another rate is a
+                // different signal, and the old table cannot be re-derived.
+                sdr.dab_reset();
+            }
         }
         SdrAction::Gain(None) => sdr.config.gain = SdrGain::Auto,
         SdrAction::Gain(Some(db)) => {
@@ -331,7 +267,14 @@ pub fn apply(a: SdrAction, sdr: &mut SdrState, link: &mut Link) -> Result<(), St
         }
         SdrAction::Agc(on) => sdr.config.agc = on,
         SdrAction::Ppm(p) => sdr.config.ppm = p,
-        SdrAction::Run(on) => sdr.config.running = on,
+        SdrAction::Run(on) => {
+            if !on {
+                // The switch stops the stream: there will be no frames to
+                // re-derive the table from, so it dies with the stream (D27).
+                sdr.dab_reset();
+            }
+            sdr.config.running = on;
+        }
         SdrAction::Span(hz) => {
             if hz < 0.0 {
                 return Err("span must be >= 0".into());
@@ -429,16 +372,93 @@ pub fn apply(a: SdrAction, sdr: &mut SdrState, link: &mut Link) -> Result<(), St
             // A fresh receiver: a retune means a different ensemble, and the
             // old table would be a different station's.
             DabVerb::On => {
+                sdr.dab_reset();
                 sdr.dab = Some(neowon_dsp::dab::DabReceiver::new());
-                sdr.dab_next_sample = None;
             }
-            DabVerb::Off => sdr.dab = None,
-            DabVerb::Reset => {
-                if let Some(rx) = sdr.dab.as_mut() {
-                    rx.reset();
+            DabVerb::Off => {
+                sdr.dab_reset();
+                sdr.dab = None;
+            }
+            DabVerb::Reset => sdr.dab_reset(),
+            DabVerb::Service(choice) => {
+                let Some(rx) = sdr.dab.as_ref() else {
+                    return Err("dab service: receiver is off (sdr dab on)".into());
+                };
+                let status = rx.status();
+                if !status.locked {
+                    return Err("dab service: no ensemble table yet".into());
                 }
+                let sid = match choice {
+                    DabService::Sid(sid) => {
+                        if !status.ensemble.services.contains_key(&sid) {
+                            return Err(format!("dab service: SId {sid} not in the ensemble"));
+                        }
+                        sid
+                    }
+                    DabService::Index(n) => {
+                        let services: Vec<u16> = status.ensemble.services.keys().copied().collect();
+                        let index = (n as usize)
+                            .checked_sub(1)
+                            .filter(|i| *i < services.len())
+                            .ok_or_else(|| {
+                                format!("dab service: index #{n} outside 1..={}", services.len())
+                            })?;
+                        services[index]
+                    }
+                };
+                sdr.dab_service = Some(sid);
+                sdr.dab_play_error = None;
+                // Selecting a service while playing is the cue the audio
+                // follows: the old worker stops (its decoders with it) and
+                // a fresh one starts on the new stream. If the new stream
+                // cannot be set up, playback stops and the reason surfaces.
+                if super::dab_audio::playing(sdr) {
+                    super::dab_audio::stop(sdr);
+                    if let Err(reason) = super::dab_audio::play(sdr) {
+                        sdr.dab_play_error = Some(reason.clone());
+                        return Err(reason);
+                    }
+                }
+                return Ok(());
+            }
+            DabVerb::Play => {
+                match super::dab_audio::play(sdr) {
+                    Ok(()) => sdr.dab_play_error = None,
+                    Err(reason) => {
+                        sdr.dab_play_error = Some(reason.clone());
+                        return Err(reason);
+                    }
+                }
+                return Ok(());
+            }
+            DabVerb::Stop => {
+                super::dab_audio::stop(sdr);
+                sdr.dab_play_error = None;
+                return Ok(());
+            }
+            DabVerb::Channel(choice) => {
+                let (label, hz) = super::dab::channel(sdr, &choice)?;
+                // The status line is the script's receipt: it names the
+                // block and the exact centre the hardware now runs.
+                link.status = format!("DAB {label} {:.3} MHz", hz / 1e6);
+                return Ok(());
             }
         },
+        SdrAction::IqDump(verb) => {
+            match verb {
+                IqDumpVerb::Stop => {
+                    super::iqdump::stop(sdr);
+                }
+                IqDumpVerb::Start { path, seconds } => {
+                    sdr.iq_dump = Some(super::iqdump::IqDump::start(
+                        &path,
+                        seconds,
+                        sdr.config.sample_rate,
+                    )?);
+                }
+            }
+            return Ok(());
+        }
         SdrAction::Demod(m) => {
             if sdr.demod != m {
                 // A mode change starts the channel clean; switching off
@@ -496,122 +516,11 @@ pub fn apply(a: SdrAction, sdr: &mut SdrState, link: &mut Link) -> Result<(), St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sdr::parse::{parse, parse_instrument, parse_sim};
 
     fn words<'a>(s: &'a str) -> impl FnMut() -> Result<&'a str, String> {
         let mut w = s.split_whitespace();
         move || w.next().ok_or_else(|| "missing argument".to_string())
-    }
-
-    #[test]
-    fn frequencies_take_suffixes() {
-        assert_eq!(parse_hz("99.4M").unwrap(), 99.4e6);
-        assert_eq!(parse_hz("100k").unwrap(), 100e3);
-        assert_eq!(parse_hz("1.2G").unwrap(), 1.2e9);
-        assert_eq!(parse_hz("2048000").unwrap(), 2.048e6);
-        assert!(parse_hz("fast").is_err());
-    }
-
-    #[test]
-    fn verbs_parse() {
-        assert_eq!(
-            parse(&mut words("tune 99.4M")).unwrap(),
-            SdrAction::Tune(99.4e6)
-        );
-        assert_eq!(
-            parse(&mut words("gain auto")).unwrap(),
-            SdrAction::Gain(None)
-        );
-        assert_eq!(
-            parse(&mut words("gain 29.7")).unwrap(),
-            SdrAction::Gain(Some(29.7))
-        );
-        assert_eq!(parse(&mut words("agc on")).unwrap(), SdrAction::Agc(true));
-        assert_eq!(
-            parse(&mut words("level -10 80")).unwrap(),
-            SdrAction::Level {
-                ref_db: -10.0,
-                range_db: 80.0
-            }
-        );
-        assert_eq!(
-            parse(&mut words("detect off")).unwrap(),
-            SdrAction::Detect(false)
-        );
-        assert_eq!(
-            parse(&mut words("threshold 9")).unwrap(),
-            SdrAction::Threshold(9.0)
-        );
-        assert_eq!(
-            parse(&mut words("centre 99M")).unwrap(),
-            SdrAction::Centre(99e6)
-        );
-        assert_eq!(
-            parse(&mut words("follow on")).unwrap(),
-            SdrAction::Follow(true)
-        );
-        assert_eq!(
-            parse(&mut words("width auto")).unwrap(),
-            SdrAction::Width(None)
-        );
-        assert_eq!(
-            parse(&mut words("width 15k")).unwrap(),
-            SdrAction::Width(Some(15e3))
-        );
-        assert_eq!(
-            parse(&mut words("demod nfm")).unwrap(),
-            SdrAction::Demod(Some(neowon_dsp::DemodMode::Nfm))
-        );
-        assert_eq!(
-            parse(&mut words("demod off")).unwrap(),
-            SdrAction::Demod(None)
-        );
-        assert!(parse(&mut words("demod ssb")).is_err());
-        assert_eq!(
-            parse(&mut words("volume 0.5")).unwrap(),
-            SdrAction::Volume(0.5)
-        );
-        assert_eq!(parse(&mut words("mute on")).unwrap(), SdrAction::Mute(true));
-        assert_eq!(
-            parse(&mut words("squelch off")).unwrap(),
-            SdrAction::Squelch(None)
-        );
-        assert_eq!(
-            parse(&mut words("squelch -30")).unwrap(),
-            SdrAction::Squelch(Some(-30.0))
-        );
-        assert_eq!(
-            parse(&mut words("modulation 16qam")).unwrap(),
-            SdrAction::Modulation(Some(neowon_core::Modulation::Qam16))
-        );
-        assert_eq!(
-            parse(&mut words("modulation auto")).unwrap(),
-            SdrAction::Modulation(None)
-        );
-        assert!(parse(&mut words("modulation fm")).is_err());
-        assert_eq!(
-            parse(&mut words("survey 97M 101M cap 8 skip 99M:99.5M")).unwrap(),
-            SdrAction::Survey(Some(SurveyRequest {
-                start_hz: 97e6,
-                stop_hz: 101e6,
-                peak_cap: 8,
-                skip: vec![(99e6, 99.5e6)],
-            }))
-        );
-        assert_eq!(
-            parse(&mut words("survey stop")).unwrap(),
-            SdrAction::Survey(None)
-        );
-        assert!(parse(&mut words("warp 9")).is_err());
-        assert_eq!(
-            parse_sim(&mut words("iq --seed 7")).unwrap(),
-            SdrAction::Seed(7)
-        );
-        assert!(parse_sim(&mut words("iq 7")).is_err());
-        assert_eq!(
-            parse_instrument(&mut words("sdr")).unwrap(),
-            SdrAction::Instrument(true)
-        );
-        assert!(parse_instrument(&mut words("audio")).is_err());
     }
 
     /// Which variant an action is. Exhaustive, so a new variant fails to
@@ -642,6 +551,7 @@ mod tests {
             SdrAction::Width(_) => 21,
             SdrAction::Demod(_) => 22,
             SdrAction::Dab(_) => 26,
+            SdrAction::IqDump(_) => 27,
             SdrAction::Volume(_) => 23,
             SdrAction::Mute(_) => 24,
             SdrAction::Squelch(_) => 25,
@@ -694,6 +604,22 @@ mod tests {
             SdrAction::Mute(true),
             SdrAction::Squelch(None),
             SdrAction::Squelch(Some(-30.0)),
+            // `Dab` was the one variant with no sample here (review M8).
+            SdrAction::Dab(DabVerb::On),
+            SdrAction::Dab(DabVerb::Off),
+            SdrAction::Dab(DabVerb::Reset),
+            SdrAction::Dab(DabVerb::Service(DabService::Sid(0x1001))),
+            SdrAction::Dab(DabVerb::Service(DabService::Index(2))),
+            SdrAction::Dab(DabVerb::Play),
+            SdrAction::Dab(DabVerb::Stop),
+            SdrAction::Dab(DabVerb::Channel(DabChannel::Next)),
+            SdrAction::Dab(DabVerb::Channel(DabChannel::Prev)),
+            SdrAction::Dab(DabVerb::Channel(DabChannel::Label("11C".into()))),
+            SdrAction::IqDump(IqDumpVerb::Start {
+                path: "tmp-inspiration/iq.f32".into(),
+                seconds: 15.0,
+            }),
+            SdrAction::IqDump(IqDumpVerb::Stop),
         ];
         let mut seen = std::collections::BTreeSet::new();
         for a in all {
@@ -709,6 +635,6 @@ mod tests {
             };
             assert_eq!(back.unwrap(), a, "{line}");
         }
-        assert_eq!(seen.len(), 26, "a variant has no round-trip sample");
+        assert_eq!(seen.len(), 28, "a variant has no round-trip sample");
     }
 }

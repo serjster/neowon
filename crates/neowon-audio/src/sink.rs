@@ -7,14 +7,17 @@
 //! audio (glitches, not unbounded latency) and an empty one counts an
 //! underrun rather than hiding it. A machine with no output device is a
 //! state (`available() == false`), not an error.
-
-use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+//!
+//! **Opening is off the caller's path (review M17).** `spawn` starts the
+//! thread and returns immediately; the device report is polled from the
+//! accessors, so a slow or absent device never stalls the frame loop.
+//! `SinkState::Starting` is a real, observable state between the two.
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::bounded;
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// Queue depth (~1 s at 48 kHz): beyond it the oldest audio is dropped.
 pub const MAX_QUEUED: usize = 48_000;
@@ -62,28 +65,50 @@ impl Shared {
     }
 }
 
+/// Where the output device is in its open sequence. `Starting` is a real,
+/// observable state: the thread that opens the device runs off the app's
+/// path (review M17), so the handle reports it until the thread answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SinkState {
+    Starting,
+    Ready,
+    Unavailable,
+}
+
+/// The opened device's description, written once the opening thread reports.
+struct Outlet {
+    state: SinkState,
+    device: String,
+    rate: f64,
+    channels: usize,
+    reason: String,
+}
+
+/// The opening thread's one-shot answer: `(device name, rate, channels)`, or
+/// why the device could not be opened.
+type DeviceReport = Result<(String, f64, usize), String>;
+
 /// A handle to the output device. Cheap to clone-free; owns the queue.
 pub struct AudioOut {
     shared: Arc<Mutex<Shared>>,
     volume: Arc<AtomicU32>,
     mute: Arc<AtomicBool>,
-    available: bool,
-    device: String,
-    rate: f64,
-    channels: usize,
-    reason: String,
+    /// The opening thread's one-shot report; polled, never waited on.
+    ready: Option<crossbeam_channel::Receiver<DeviceReport>>,
+    outlet: Mutex<Outlet>,
     quit: Option<crossbeam_channel::Sender<()>>,
 }
 
 impl AudioOut {
-    /// Open the default output device on a thread that owns the stream.
-    /// Never fails: on any device error the handle reports `available()`
-    /// false and `reason()` says why.
+    /// Open the default output device on a thread that owns the stream, and
+    /// return at once. Never fails: the handle reports `SinkState::Starting`
+    /// while the thread works, then `Ready` or `Unavailable`, and
+    /// `reason()` says why in the latter case.
     pub fn spawn() -> Self {
         let shared = Arc::new(Mutex::new(Shared::default()));
         let volume = Arc::new(AtomicU32::new(1.0f32.to_bits()));
         let mute = Arc::new(AtomicBool::new(false));
-        let (ready_tx, ready_rx) = bounded::<Result<(String, f64, usize), String>>(1);
+        let (ready_tx, ready_rx) = bounded::<DeviceReport>(1);
         let (quit_tx, quit_rx) = bounded::<()>(1);
 
         let (sh, vol, mute_) = (shared.clone(), volume.clone(), mute.clone());
@@ -135,55 +160,85 @@ impl AudioOut {
             })
             .is_ok();
 
-        let (available, device, rate, channels, reason) = if spawned {
-            match ready_rx.recv_timeout(Duration::from_secs(5)) {
-                Ok(Ok((device, rate, channels))) => (true, device, rate, channels, String::new()),
-                Ok(Err(e)) => (false, String::new(), 48000.0, 2, e),
-                Err(e) => (
-                    false,
-                    String::new(),
-                    48000.0,
-                    2,
-                    format!("audio thread: {e}"),
-                ),
-            }
-        } else {
-            (
-                false,
-                String::new(),
-                48000.0,
-                2,
-                "cannot spawn audio thread".into(),
-            )
+        let outlet = Outlet {
+            state: if spawned {
+                SinkState::Starting
+            } else {
+                SinkState::Unavailable
+            },
+            device: String::new(),
+            rate: 48000.0,
+            channels: 2,
+            reason: if spawned {
+                String::new()
+            } else {
+                "cannot spawn audio thread".into()
+            },
         };
 
         Self {
             shared,
             volume,
             mute,
-            available,
-            device,
-            rate,
-            channels,
-            reason,
+            ready: spawned.then_some(ready_rx),
+            outlet: Mutex::new(outlet),
             quit: Some(quit_tx),
         }
     }
 
-    pub fn available(&self) -> bool {
-        self.available
+    /// Take the opening thread's report if it has arrived. Non-blocking, and
+    /// called from every accessor, so the state settles on the next read.
+    fn poll(&self) {
+        let Some(rx) = &self.ready else { return };
+        let Ok(report) = rx.try_recv() else { return };
+        let Ok(mut outlet) = self.outlet.lock() else {
+            return;
+        };
+        match report {
+            Ok((device, rate, channels)) => {
+                outlet.state = SinkState::Ready;
+                outlet.device = device;
+                outlet.rate = rate;
+                outlet.channels = channels;
+            }
+            Err(reason) => {
+                outlet.state = SinkState::Unavailable;
+                outlet.reason = reason;
+            }
+        }
     }
-    pub fn device(&self) -> &str {
-        &self.device
+
+    pub fn state(&self) -> SinkState {
+        self.poll();
+        self.outlet
+            .lock()
+            .map(|o| o.state)
+            .unwrap_or(SinkState::Unavailable)
+    }
+    pub fn available(&self) -> bool {
+        self.state() == SinkState::Ready
+    }
+    pub fn device(&self) -> String {
+        self.poll();
+        self.outlet
+            .lock()
+            .map(|o| o.device.clone())
+            .unwrap_or_default()
     }
     pub fn rate(&self) -> f64 {
-        self.rate
+        self.poll();
+        self.outlet.lock().map(|o| o.rate).unwrap_or(48000.0)
     }
     pub fn channels(&self) -> usize {
-        self.channels
+        self.poll();
+        self.outlet.lock().map(|o| o.channels).unwrap_or(2)
     }
-    pub fn reason(&self) -> &str {
-        &self.reason
+    pub fn reason(&self) -> String {
+        self.poll();
+        self.outlet
+            .lock()
+            .map(|o| o.reason.clone())
+            .unwrap_or_default()
     }
 
     /// Queue mono audio. Drops the oldest if the queue is full.
@@ -266,5 +321,24 @@ mod tests {
         s.fill(&mut out, 2, 0.5, true);
         assert_eq!(out, [0.0; 4]);
         assert_eq!(s.underruns, 0);
+    }
+
+    /// Review M17: opening the device must not stall the caller, and the
+    /// state is named while the thread works.
+    #[test]
+    fn spawn_returns_immediately_with_a_named_state() {
+        let started = std::time::Instant::now();
+        let out = AudioOut::spawn();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "spawn blocked for {:?}",
+            started.elapsed()
+        );
+        assert!(matches!(
+            out.state(),
+            SinkState::Starting | SinkState::Ready | SinkState::Unavailable
+        ));
+        assert_eq!(out.available(), out.state() == SinkState::Ready);
+        assert!(out.rate() > 0.0);
     }
 }

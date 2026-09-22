@@ -6,6 +6,7 @@ use neowon_backend::SdrGain;
 use neowon_dsp::modmeas::{Band, flatness};
 
 use super::SdrState;
+use crate::refmap::RefMap;
 
 /// A JSON string literal, escaped. Service labels come off the air, so they can
 /// contain anything the standard's charset allows.
@@ -72,12 +73,23 @@ pub fn sdr_json(sdr: &SdrState) -> String {
         .unwrap_or_default();
     let (peak_hz, peak_db) = sdr.peak().unwrap_or((f64::NAN, f64::NAN));
     let floor = sdr.spectrum.as_ref().map_or(f64::NAN, |s| s.median_db());
+    // An active raw-IQ capture, or null. The reader knows the sample rate
+    // from `sample_rate` in this same object and the format from `iqdump`.
+    let iqdump = match &sdr.iq_dump {
+        Some(d) => format!(
+            r#"{{"path":"{}","written_pairs":{},"remaining_pairs":{}}}"#,
+            d.path.replace('"', "\\\""),
+            d.written_pairs,
+            d.remaining_pairs
+        ),
+        None => "null".to_string(),
+    };
     format!(
         concat!(
             r#"{{"ok":true,"active":{},"backend":"{}","serial":"{}","tuner":"{}","#,
             r#""centre_hz":{},"tuned_hz":{},"follow":{},"width_hz":{},"width_auto":{},"sample_rate":{},"gain_db":{},"agc":{},"ppm":{},"running":{},"#,
             r#""span_hz":{},"pan_hz":{},"list_px":{},"fft":{},"ref_db":{},"range_db":{},"frames_seen":{},"#,
-            r#""peak_hz":{},"peak_dbfs":{},"floor_dbfs":{}}}"#
+            r#""peak_hz":{},"peak_dbfs":{},"floor_dbfs":{},"iqdump":{}}}"#
         ),
         sdr.active,
         name,
@@ -103,6 +115,7 @@ pub fn sdr_json(sdr: &SdrState) -> String {
         num(peak_hz),
         num(peak_db),
         num(floor),
+        iqdump,
     )
 }
 
@@ -261,13 +274,40 @@ pub fn classify_json(sdr: &SdrState) -> String {
     )
 }
 
+/// The Band III block the hardware centre sits on, as JSON: the label, its
+/// exact centre, and whether the active band plan allocates it. `null` when
+/// the centre is off the raster — the same honesty rule the plans follow:
+/// no reference data, no claim.
+fn channel_json(sdr: &SdrState, rm: &RefMap) -> String {
+    let Some(block) = neowon_refdb::dab::band_iii_block_at(sdr.config.centre_hz) else {
+        return "null".into();
+    };
+    let allocated = rm
+        .plan()
+        .is_some_and(|p| p.dab_blocks().iter().any(|b| b.label == block.label));
+    format!(
+        r#"{{"label":"{}","centre_hz":{},"allocated":{},"plan":"{}"}}"#,
+        block.label,
+        num(block.centre_hz),
+        allocated,
+        rm.stem()
+    )
+}
+
 /// `get dab`: the DAB receiver's state and, once locked, the ensemble table
-/// (phase 10.15.1). Every field here is one the receiver produces: nothing is
-/// inferred, and an unlocked receiver reports an empty table rather than a
-/// partial one (D27).
-pub fn dab_json(sdr: &SdrState) -> String {
+/// (phase 10.15.1), the per-sub-channel MSC counters and the selected
+/// service's DLS text (10.15.2), and the audio transport (10.15.3). Every
+/// field here is one the receiver or the playback worker produces: nothing
+/// is inferred, and an unlocked receiver reports an empty table rather than
+/// a partial one (D27). `audio` carries the worker's own state, backend,
+/// rate, channels, peak/RMS, counters and its typed error reason; rate,
+/// channels and peak are `null` until a block has actually decoded.
+/// `channel` is the Band III block under the hardware centre (10.15.4's
+/// selector), present whether or not the receiver is on.
+pub fn dab_json(sdr: &SdrState, rm: &RefMap) -> String {
+    let channel = channel_json(sdr, rm);
     let Some(rx) = &sdr.dab else {
-        return r#"{"ok":true,"on":false}"#.into();
+        return format!(r#"{{"ok":true,"on":false,"channel":{channel}}}"#);
     };
     let status = rx.status();
     let rate = match status.fib_crc_rate() {
@@ -332,14 +372,85 @@ pub fn dab_json(sdr: &SdrState) -> String {
         ),
         None => ("null".into(), "null".into(), "null".into()),
     };
+    // The selected service (SId) and its DLS text; text is published only
+    // when its reassembly completed CRC-clean (D27), so `null` here means
+    // "not yet", never a guess.
+    let service = match sdr.dab_service {
+        Some(sid) => sid.to_string(),
+        None => "null".into(),
+    };
+    let dls = match super::dab::dls(sdr) {
+        Some(text) => json_str(text),
+        None => "null".into(),
+    };
+    // The playback worker's own report (10.15.3) plus the sink's underruns.
+    // `rate`, `channels` and `peak`/`rms` are null until a block has decoded
+    // — a stream that produced nothing has no invented numbers — and an
+    // `error` carries the typed reason the backend gave.
+    let audio = match &sdr.dab_audio {
+        Some(worker) => {
+            let st = worker.status();
+            let decoded = st.blocks > 0;
+            format!(
+                concat!(
+                    r#"{{"state":"{}","backend":"{}","rate":{},"channels":{},"underruns":{},"#,
+                    r#""peak":{},"rms":{},"blocks":{},"decoded":{},"errors":{},"dropped":{},"reason":{}}}"#
+                ),
+                st.state.label(),
+                st.backend,
+                if st.rate == 0 {
+                    "null".to_string()
+                } else {
+                    st.rate.to_string()
+                },
+                if st.channels == 0 {
+                    "null".to_string()
+                } else {
+                    st.channels.to_string()
+                },
+                sdr.audio.as_ref().map_or(0, |o| o.underruns()),
+                if decoded {
+                    num(f64::from(st.peak))
+                } else {
+                    "null".into()
+                },
+                if decoded {
+                    num(f64::from(st.rms))
+                } else {
+                    "null".into()
+                },
+                st.blocks,
+                st.decoded,
+                st.errors,
+                st.dropped,
+                json_str(&st.reason),
+            )
+        }
+        None => r#"{"state":"off"}"#.to_string(),
+    };
+    let msc: Vec<String> = status
+        .msc
+        .iter()
+        .map(|(id, c)| {
+            format!(
+                concat!(
+                    r#"{{"sub_channel":{},"frames":{},"bytes":{},"#,
+                    r#""crc_checks":{},"crc_failures":{}}}"#
+                ),
+                id, c.frames, c.bytes, c.crc_checks, c.crc_failures
+            )
+        })
+        .collect();
     format!(
         concat!(
-            r#"{{"ok":true,"on":true,"locked":{},"frames":{},"fib_ok":{},"fib_total":{},"#,
+            r#"{{"ok":true,"on":true,"channel":{},"locked":{},"frames":{},"fib_ok":{},"fib_total":{},"#,
             r#""fib_crc_rate":{},"freq_offset_hz":{},"prs_metric":{},"#,
             r#""frames_decoded":{},"frames_rejected":{},"last_attempt_metric":{},"#,
             r#""eid":{},"eid_hex":{},"label":{},"data_services":{},"#,
+            r#""service":{},"dls":{},"audio":{},"msc":[{}],"#,
             r#""sub_channels":[{}],"services":[{}]}}"#
         ),
+        channel,
         status.locked,
         status.frames,
         status.fib_crc_ok,
@@ -354,6 +465,10 @@ pub fn dab_json(sdr: &SdrState) -> String {
         eid_hex,
         label,
         status.ensemble.data_services,
+        service,
+        dls,
+        audio,
+        msc.join(","),
         sub_channels.join(","),
         services.join(","),
     )

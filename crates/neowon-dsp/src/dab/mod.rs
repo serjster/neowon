@@ -20,12 +20,15 @@
 //! (`xoolive/desperado`) for algorithm structure; the notice is recorded in
 //! `docs/protocol-dab.md`.
 
+pub mod charset;
 pub mod encoder;
 pub mod fec;
 pub mod fib;
 pub mod fic;
 pub mod fig;
+pub mod msc;
 pub mod ofdm;
+pub mod pad;
 pub mod receiver;
 pub mod tables;
 
@@ -37,8 +40,9 @@ pub use fec::{
 };
 pub use fib::{fib_crc_ok, walk_figs};
 pub use fic::{FicState, LOCK_CRC_RATE, LOCK_WINDOW_FRAMES};
+pub use msc::{DecodedFrame, MscDecoder, SubChannelStatus};
 pub use ofdm::{Fft2048, carrier_bin, demap_soft, interleaver, prs_phase, prs_reference, qpsk};
-pub use receiver::{DabReceiver, PRS_METRIC_MIN};
+pub use receiver::{DabReceiver, PRS_METRIC_MIN, TABLE_EXPIRY_FRAMES};
 
 // ---------------------------------------------------------------------------
 // Mode I parameters — ETSI EN 300 401 V2.1.1 (2017-01), table 22.
@@ -79,15 +83,36 @@ pub const FIB_BYTES: usize = 32;
 pub const FIB_DATA_BYTES: usize = 30;
 
 // ---------------------------------------------------------------------------
+// MSC mode I arithmetic (clause 13 and table 22)
+// ---------------------------------------------------------------------------
+
+/// OFDM symbols carrying the MSC per frame: the 72 data symbols after the
+/// null, the PRS and the three FIC symbols (table 22, clause 5.1).
+pub const MSC_SYMBOLS: usize = SYMBOLS_PER_FRAME - 1 - FIC_SYMBOLS;
+/// Soft bits one MSC symbol carries: `2K`, same QPSK payload as a FIC symbol.
+pub const MSC_BITS_PER_SYMBOL: usize = FIC_BITS_PER_SYMBOL;
+/// One capacity unit is 64 bits (clauses 5.1, 13).
+pub const CU_BITS: usize = 64;
+/// Capacity units in a CIF: 864 in 24 ms (clause 13).
+pub const CU_PER_CIF: usize = 864;
+/// A CIF is 864 CUs = 55 296 soft bits (clause 13).
+pub const CIF_SOFT_BITS: usize = CU_PER_CIF * CU_BITS;
+/// CIFs in one transmission frame: one per 24 ms (clause 5.1).
+pub const CIFS_PER_FRAME: usize = 4;
+/// MSC soft bits per transmission frame: 72 symbols = 4 CIFs of 55 296.
+pub const MSC_SOFT_BITS: usize = CIFS_PER_FRAME * CIF_SOFT_BITS;
+
+// ---------------------------------------------------------------------------
 // Model
 // ---------------------------------------------------------------------------
 
 /// How a sub-channel is protected.
 ///
-/// Tier 1 reports what the FIC actually says. The short (UEP) form carries a
-/// table *index* only — the size, level and bit rate live in the standard's
-/// table 8, which is not transcribed yet, so they are reported as `None`
-/// rather than guessed (D27).
+/// The short (UEP) form carries a table *index*; the size, level and bit rate
+/// live in the standard's table 8 (clause 11.3.1), which tier 2 transcribes in
+/// [`fec::uep`], so [`SubChannel`]'s `size_cu` and `bitrate_kbps` are filled
+/// for UEP sub-channels too. The index is kept because it is what the FIC
+/// actually signalled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Protection {
     /// Short-form / UEP entry: the index into the standard's table 8.
@@ -196,7 +221,7 @@ impl Ensemble {
     }
 }
 
-/// Everything tier 1 can say about the signal it is looking at.
+/// Everything the receiver can say about the signal it is looking at.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DabStatus {
     /// True only when the FIC is decoding reliably *and* identifies an ensemble.
@@ -208,6 +233,11 @@ pub struct DabStatus {
     pub frames: u64,
     /// The ensemble table. Empty until `locked`.
     pub ensemble: Ensemble,
+    /// Per-sub-channel MSC counters, keyed by `SubChId`, for the sub-channels
+    /// the decoder could build a handler for. DLS text is *not* here: it comes
+    /// from PAD inside the audio stream, which is the codec tier's transport
+    /// (10.15.3), and the receiver does not guess it.
+    pub msc: BTreeMap<u8, SubChannelStatus>,
 }
 
 impl DabStatus {

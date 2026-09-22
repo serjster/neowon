@@ -15,10 +15,9 @@
 //!   — table 4 is explicit about those two.
 //!
 //! What tier 1 deliberately does not do: data services (`P/D = 1`, 32-bit
-//! `SId`) are counted but not tabled, and the UEP index is reported as an index
-//! rather than looked up in the standard's table 8. Both are recorded as gaps in
-//! `docs/tasks/phase10-dab-spec.md`; guessing at either would be worse than
-//! saying so.
+//! `SId`) are counted but not tabled. Tier 2 closes the other gap: a short-form
+//! sub-channel's table index is resolved through table 8 (clause 11.3.1), so
+//! UEP sub-channels carry their exact size and bit rate like EEP ones.
 
 use super::{Protection, Service, SubChannel};
 
@@ -59,25 +58,47 @@ fn fig0_ensemble(ensemble: &mut super::Ensemble, payload: &[u8]) {
 
 /// FIG 0/1 — sub-channel organization (clause 6.2.1).
 ///
-/// Entries are 3 bytes (short form, UEP index) or 4 bytes (long form, explicit
+/// Entries are 3 bytes (short form, table index) or 4 bytes (long form, explicit
 /// size and EEP), and one FIG may carry several; the form bit in the third byte
 /// says which, so the walk can always advance.
+///
+/// A short form's index is resolved through clause 11.3.1's table 8, so a UEP
+/// sub-channel reports its true size and bit rate rather than an index with no
+/// meaning (tier-1 deviation 2 closed). Table switch 1 is reserved by the
+/// standard, so nothing is resolved for it — the index is still reported.
 fn fig0_subchannel(ensemble: &mut super::Ensemble, payload: &[u8]) {
     let mut pos = 0usize;
     while pos + 2 < payload.len() {
         let id = (payload[pos] >> 2) & 0x3F;
         let start_cu = (((payload[pos] & 0x03) as u16) << 8) | payload[pos + 1] as u16;
         let form = (payload[pos + 2] >> 7) & 1;
-        let (protection, size_cu, consumed) = if form == 0 {
-            // Short form: table switch + 6-bit UEP index.
+        let (protection, size_cu, bitrate_kbps, consumed) = if form == 0 {
+            // Short form: table switch (bit 6) + 6-bit table index.
+            let table_switch = (payload[pos + 2] >> 6) & 1;
             let table_index = payload[pos + 2] & 0x3F;
-            (Protection::Uep { table_index }, None, 3)
+            let resolved = if table_switch == 0 {
+                super::fec::uep_profile(table_index)
+            } else {
+                None
+            };
+            (
+                Protection::Uep { table_index },
+                resolved.map(|p| p.size_cu),
+                resolved.map(|p| f64::from(p.bitrate_kbps)),
+                3,
+            )
         } else {
             // Long form: 3-bit option, 2-bit level, 10-bit size.
             let option = (payload[pos + 2] >> 4) & 0x07;
             let level = (payload[pos + 2] >> 2) & 0x03;
             let size = (((payload[pos + 2] & 0x03) as u16) << 8) | payload[pos + 3] as u16;
-            (Protection::Eep { option, level }, Some(size), 4)
+            let size = Some(size);
+            (
+                Protection::Eep { option, level },
+                size,
+                size.map(bitrate_kbps),
+                4,
+            )
         };
         ensemble.sub_channels.insert(
             id,
@@ -86,7 +107,7 @@ fn fig0_subchannel(ensemble: &mut super::Ensemble, payload: &[u8]) {
                 start_cu,
                 size_cu,
                 protection,
-                bitrate_kbps: size_cu.map(bitrate_kbps),
+                bitrate_kbps,
             },
         );
         pos += consumed;
@@ -177,11 +198,10 @@ pub fn fig1(ensemble: &mut super::Ensemble, data: &[u8]) {
 /// The field is filled from the start and padded with `0x00` (clause 5.2.2.2);
 /// some broadcasters pad with spaces instead, which receivers trim too.
 ///
-/// Charset 0 (complete EBU Latin) and charset 15 (UTF-8) share the ASCII range
-/// with the other DAB charsets, so ASCII labels — which is what services
-/// actually carry — decode exactly. Bytes outside it are shown as `?`: tier 1
-/// does not carry the standard's table 47 mapping, and a wrong letter in a
-/// service name is worse than a visible placeholder (D27).
+/// Charset 0 (complete EBU Latin, table 47 of the standard's label clause) and
+/// charset 15 (UTF-8) decode exactly. Any other charset is not transcribed, so
+/// its bytes are not guessed: printable ASCII passes and the rest is `?`
+/// (D27).
 fn label(charset: u8, bytes: &[u8]) -> String {
     let end = bytes
         .iter()
@@ -192,18 +212,7 @@ fn label(charset: u8, bytes: &[u8]) -> String {
     if bytes.is_empty() {
         return String::new();
     }
-    if charset == 15 {
-        return String::from_utf8_lossy(bytes).trim().to_string();
-    }
-    bytes
-        .iter()
-        .map(|b| match *b {
-            0x20..=0x7E => *b as char,
-            _ => '?',
-        })
-        .collect::<String>()
-        .trim()
-        .to_string()
+    super::charset::decode(bytes, charset).trim().to_string()
 }
 
 #[cfg(test)]
@@ -290,11 +299,11 @@ mod tests {
         let mut data = vec![0x00]; // charset 0, extension 0
         data.extend_from_slice(&[0xF0, 0x44]);
         data.extend_from_slice(b"M");
-        data.push(0xC9); // EBU Latin 'E' with acute: outside ASCII -> '?'
+        data.push(0xC2); // EBU Latin 'E' with acute: exact through table 47
         data.extend_from_slice(b"tropolitain");
         data.resize(1 + 2 + 16, 0x00);
         fig1(&mut ensemble, &data);
-        assert_eq!(ensemble.label.as_deref(), Some("M?tropolitain"));
+        assert_eq!(ensemble.label.as_deref(), Some("MÉtropolitain"));
 
         // FIG 1/1, charset 0: SId 0x1001, label "FRANCE INTER".
         let mut data = vec![0x01]; // charset 0, extension 1
@@ -319,10 +328,11 @@ mod tests {
         assert_eq!(label(0, &[0x00; 16]), "");
     }
 
-    /// A UEP sub-channel is reported as its index, with no invented size or
-    /// bit rate.
+    /// A UEP sub-channel resolves its table-8 index into an exact size and bit
+    /// rate; the index itself is still reported, because that is what the FIC
+    /// signalled.
     #[test]
-    fn uep_reports_an_index_and_no_bitrate() {
+    fn uep_index_resolves_through_table_8() {
         let mut data = [0u8; 30];
         data[0] = 4; // FIG type 0, length = flags + one 3-byte entry
         data[1] = 0x01; // extension 1
@@ -334,9 +344,29 @@ mod tests {
         crate::dab::walk_figs(&fib, &mut ensemble);
         let sc = ensemble.sub_channels.get(&7).expect("sub-channel");
         assert_eq!(sc.protection, Protection::Uep { table_index: 5 });
+        // Table 8 index 5: 48 kbit/s, level 5, 24 CUs.
+        assert_eq!(sc.size_cu, Some(24));
+        assert_eq!(sc.bitrate_kbps, Some(48.0));
+        assert_eq!(sc.protection.label(), "UEP index 5");
+    }
+
+    /// Table switch 1 is reserved by the standard (clause 6.2.1), so the index
+    /// is reported but nothing is resolved through table 8 (D27).
+    #[test]
+    fn reserved_table_switch_resolves_nothing() {
+        let mut data = [0u8; 30];
+        data[0] = 4;
+        data[1] = 0x01;
+        data[2] = 7 << 2;
+        data[3] = 10;
+        data[4] = 0x40 | 5; // short form, table switch 1, index 5
+        let fib = make_fib(&data);
+        let mut ensemble = Ensemble::default();
+        crate::dab::walk_figs(&fib, &mut ensemble);
+        let sc = ensemble.sub_channels.get(&7).expect("sub-channel");
+        assert_eq!(sc.protection, Protection::Uep { table_index: 5 });
         assert_eq!(sc.size_cu, None);
         assert_eq!(sc.bitrate_kbps, None);
-        assert_eq!(sc.protection.label(), "UEP index 5");
     }
 
     /// A data service (P/D = 1, 32-bit SId) is counted, not tabled.

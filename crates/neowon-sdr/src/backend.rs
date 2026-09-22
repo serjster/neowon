@@ -11,12 +11,12 @@ use std::time::Duration;
 use neowon_backend::{
     Acquisition, Backend, BackendError, Capabilities, InstrumentConfig, SdrCaps, SdrConfig, SdrGain,
 };
-use neowon_core::{AcqMode, CaptureFrame, ChannelCapture, IqCal, SampleLayout, SharedFrame};
+use neowon_core::{
+    AcqMode, CaptureFrame, ChannelCapture, IqCal, SampleLayout, SharedFrame, stream_chunk_pairs,
+};
 
 use crate::rtl::{self, DirectSampling, R82XX_GAINS, RtlSdr, Stream, TUNER_MAX_HZ, TUNER_MIN_HZ};
 
-/// I/Q pairs per bulk transfer, hence per frame (256 KiB of u8 pairs).
-pub const CHUNK_PAIRS: usize = 128 * 1024;
 /// Lowest centre the HF path serves usefully, Hz.
 pub const HF_MIN_HZ: f64 = 500e3;
 
@@ -78,9 +78,18 @@ pub fn frame_from_u8(bytes: &[u8], seq: u64, t_capture: f64, rate: f64) -> Captu
     .expect("a sampled complex stream is a valid frame")
 }
 
+/// Sample pairs covered by chunks dropped since `seen` was last counted.
+/// The chunk size varies with the rate, so this must be the stream's own
+/// (a `saturating_sub` guards a recreated stream whose count restarted).
+fn dropped_pairs(dropped: u64, seen: u64, chunk_pairs: usize) -> u64 {
+    dropped.saturating_sub(seen) * chunk_pairs as u64
+}
+
 impl RtlBackend {
     pub fn open(serial: Option<&str>) -> Result<Self, rtl::Error> {
         let sdr = RtlSdr::open(serial)?;
+        // The chunk follows the sample rate; this is the default config's,
+        // and `apply` updates it. A frame's own `acq` is authoritative.
         let caps = Capabilities::Sdr(SdrCaps {
             name: "RTL-SDR".into(),
             serial: sdr.info().serial.clone().unwrap_or_default(),
@@ -88,7 +97,9 @@ impl RtlBackend {
             freq_range_hz: (HF_MIN_HZ, TUNER_MAX_HZ as f64),
             sample_rates: SAMPLE_RATES.to_vec(),
             gains_db: R82XX_GAINS.iter().map(|&g| g as f64 / 10.0).collect(),
-            acquisition: Acquisition::Stream { chunk: CHUNK_PAIRS },
+            acquisition: Acquisition::Stream {
+                chunk: stream_chunk_pairs(SdrConfig::default().sample_rate),
+            },
         });
         Ok(Self {
             sdr,
@@ -123,6 +134,11 @@ impl Backend for RtlBackend {
             self.sdr
                 .set_sample_rate(c.sample_rate.round() as u32)
                 .map_err(err)?;
+            // The transfer length follows the rate, so a stream in flight
+            // has to be replaced: the match below starts a fresh one.
+            if self.stream.take().is_some() {
+                self.overflows_seen = 0;
+            }
         }
         let ds = direct_sampling_for(c.centre_hz);
         let ds_changed = ds != self.sdr.direct_sampling();
@@ -150,6 +166,13 @@ impl Backend for RtlBackend {
         if changed(|c| c.ppm.to_bits()) {
             self.sdr.set_ppm(c.ppm.round() as i32).map_err(err)?;
         }
+        // Keep the advertised stream chunk in step with the config the
+        // stream will actually run at.
+        if let Capabilities::Sdr(caps) = &mut self.caps {
+            caps.acquisition = Acquisition::Stream {
+                chunk: stream_chunk_pairs(c.sample_rate),
+            };
+        }
         match (c.running, self.stream.is_some()) {
             (true, false) => {
                 self.stream = Some(self.sdr.stream().map_err(err)?);
@@ -170,9 +193,10 @@ impl Backend for RtlBackend {
         let Some(bytes) = stream.recv_timeout(budget).map_err(err)? else {
             return Ok(None);
         };
-        // Dropped chunks are time that passed: advance the clock over them.
+        // Dropped chunks are time that passed: advance the clock over them
+        // by the chunk the stream really delivers, not a fixed constant.
         let overflows = stream.overflows();
-        self.pairs += (overflows - self.overflows_seen) * CHUNK_PAIRS as u64;
+        self.pairs += dropped_pairs(overflows, self.overflows_seen, stream.chunk_pairs());
         self.overflows_seen = overflows;
         let rate = self.sdr.sample_rate() as f64;
         let frame = frame_from_u8(&bytes, self.seq, self.pairs as f64 / rate, rate);
@@ -213,5 +237,20 @@ mod tests {
             assert!(r > 225_000 && r <= 3_200_000 && !(300_000 < r && r <= 900_000));
             assert_eq!(rtl::resampler(rtl::RTL_XTAL_HZ, r).1, r, "{r}");
         }
+    }
+
+    #[test]
+    fn dropped_chunks_advance_the_clock_by_the_stream_chunk() {
+        // At 250 kS/s the stream chunk is 16 384 pairs, not the old fixed
+        // 131 072: two dropped chunks are 32 768 pairs of time, and the
+        // frame timestamps after them must say so.
+        let chunk = stream_chunk_pairs(250e3);
+        assert_eq!(chunk, 16_384);
+        assert_eq!(dropped_pairs(2, 0, chunk), 32_768);
+        assert_ne!(dropped_pairs(2, 0, chunk), 2 * 128 * 1024);
+        // Only chunks not yet counted advance the clock.
+        assert_eq!(dropped_pairs(5, 3, chunk), 2 * 16_384);
+        // A recreated stream's counter restarting must not underflow.
+        assert_eq!(dropped_pairs(0, 4, chunk), 0);
     }
 }

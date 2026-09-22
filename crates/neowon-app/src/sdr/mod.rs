@@ -5,8 +5,10 @@
 //! The mode follows the connected backend: `Capabilities::Sdr` switches the
 //! app into it, and complex frames are routed here rather than to the scope
 //! consumers (phosphor, measurements, recorder), which then simply idle.
-//! Every display is derived from `neowon_dsp::iq_spectrum`, the oracle, so
-//! the trace and the waterfall can never disagree.
+//! Every display is derived from `neowon_dsp::iq_spectrum`, the oracle, and
+//! notched at DC by `display::mask_dc` before the trace and the waterfall
+//! read it, so the two can never disagree. The notch is the receiver's DC
+//! offset, not a measurement; DSP consumers keep the unmasked spectrum.
 
 use bevy::prelude::*;
 use neowon_backend::{InstrumentConfig, SdrCaps, SdrConfig};
@@ -17,12 +19,22 @@ use crate::Link;
 
 mod actions;
 pub mod analysis;
+pub mod dab;
+pub mod dab_audio;
+pub mod dab_scene;
+mod display;
 mod instrument;
+pub mod iqdump;
+mod parse;
 mod readout;
 pub mod scan;
+pub mod zoom;
 
 use crate::viz::waterfall::thermal;
-pub use actions::{DabVerb, SdrAction, parse, parse_hz, parse_instrument, parse_sim, run};
+pub use actions::{DabChannel, DabService, DabVerb, SdrAction, run};
+use display::wf_level;
+pub use display::{columns, mask_dc};
+pub use parse::{parse, parse_hz, parse_instrument, parse_sim};
 pub use readout::{
     audio_json, classify_json, dab_json, detections_json, iq_json, modmeas_json, sdr_json,
 };
@@ -43,13 +55,6 @@ pub const DC_GUARD: usize = 4;
 const TUNE_REACH: f64 = 0.45;
 /// Waterfall black sits this far under the measured noise floor, dB.
 const WF_UNDER_FLOOR_DB: f64 = 5.0;
-
-/// Waterfall intensity of `db`: 0 at `black`, 1 at `white` (the spectrum's
-/// reference level); a floor above the reference still gets 20 dB of room.
-fn wf_level(db: f64, black: f64, white: f64) -> f32 {
-    let white = white.max(black + 20.0);
-    ((db - black) / (white - black)).clamp(0.0, 1.0) as f32
-}
 
 #[derive(Resource)]
 pub struct SdrState {
@@ -96,11 +101,36 @@ pub struct SdrState {
     /// First sample index the next DAB frame should carry: frames whose
     /// timestamps do not continue from it are spliced, not contiguous.
     pub dab_next_sample: Option<i64>,
+    /// Wall time of the last complex IQ frame fed to the DAB receiver, or
+    /// `None` when none has arrived since the receiver started. A receiver
+    /// with no frames is looking at nothing, and past
+    /// `dab::NO_INPUT_TIMEOUT_S` the table expires (D27).
+    pub dab_last_frame_at: Option<f64>,
     /// The DAB receiver (10.15.1), built while `sdr dab on` is in force.
     /// It is fed the raw IQ frames, not the demodulated channel: DAB wants
     /// the whole 1.536 MHz ensemble, so it is a wideband consumer sitting
     /// beside the demodulator, not a mode of it.
     pub dab: Option<neowon_dsp::dab::DabReceiver>,
+    /// PAD/DLS parser per MSC sub-channel (10.15.2), keyed by `SubChId`.
+    /// Fed each sub-channel's decoded logical-frame bytes; a retune, reset or
+    /// splice clears it rather than mixing partial segments across the seam.
+    pub dab_pad: std::collections::BTreeMap<u8, neowon_dsp::dab::pad::PadParser>,
+    /// Selected DAB service (`SId`), or `None` (`sdr dab service`).
+    pub dab_service: Option<u16>,
+    /// DAB audio playback (10.15.3): the decode worker while the selected
+    /// service is playing, `None` when the transport is stopped. Dropping
+    /// the worker is the stop — its decoders go with it, and its status is
+    /// what `get dab` reports.
+    pub dab_audio: Option<dab_audio::DabAudio>,
+    /// The last `sdr dab play` refusal, shown by the DAB panel. Without it a
+    /// refused Play looks like a dead button: no worker exists to report a
+    /// reason, so the message otherwise dies in the log (and the operator
+    /// running the GUI never sees it). Cleared by a successful Play, Stop, or
+    /// any change to the receiver/selection.
+    pub dab_play_error: Option<String>,
+    /// Active raw-IQ capture (`sdr iqdump`): frames are written as they
+    /// arrive, so a hardware session can be replayed offline.
+    pub iq_dump: Option<iqdump::IqDump>,
     /// Output device, opened on first use.
     pub audio: Option<neowon_audio::sink::AudioOut>,
     /// Scratch audio buffer, kept to avoid a per-frame allocation.
@@ -115,8 +145,11 @@ pub struct SdrState {
     /// Top of the display and its depth, dBFS / dB.
     pub ref_db: f64,
     pub range_db: f64,
+    /// Latest spectrum from the oracle, unmasked: the floor readout and the
+    /// measurements use it. The displays read `columns`, whose DC spike is
+    /// notched out (`display::mask_dc`).
     pub spectrum: Option<IqSpectrum>,
-    /// Display columns of the latest spectrum (peak of the bins each
+    /// Display columns of the latest masked spectrum (peak of the bins each
     /// covers), dBFS — what both the trace and the waterfall row show.
     pub columns: Vec<f64>,
     /// Palettized waterfall, row-major RGBA, newest row first.
@@ -180,7 +213,13 @@ impl Default for SdrState {
             squelch_db: -120.0,
             receiver: None,
             dab_next_sample: None,
+            dab_last_frame_at: None,
             dab: None,
+            dab_pad: Default::default(),
+            dab_service: None,
+            dab_audio: None,
+            dab_play_error: None,
+            iq_dump: None,
             audio: None,
             audio_buf: Vec::new(),
             audio_rms: 0.0,
@@ -281,12 +320,26 @@ impl SdrState {
     /// Move the hardware window to `hz` and drop the display pan (`sdr
     /// centre`, right-drag on the canvas). With `follow` on the tuned
     /// cursor rides along, so the window still holds it centred.
+    ///
+    /// A move is a new signal: the DAB receiver forgets its lock and table,
+    /// because a table decoded from the old window would name a station that
+    /// may not be at the new one (D27).
     pub fn set_centre(&mut self, hz: f64) {
+        let moved = self.config.centre_hz != hz;
         self.config.centre_hz = hz;
         self.pan_hz = 0.0;
         if self.follow {
             self.tuned_hz = hz;
         }
+        if moved {
+            self.dab_reset();
+        }
+    }
+
+    /// Forget the DAB receiver's lock, table, selection and playback: the
+    /// hardware window moved, the stream stopped or the operator reset it.
+    pub fn dab_reset(&mut self) {
+        dab::reset(self);
     }
 
     /// Strongest displayed signal: `(absolute Hz, dBFS)`.
@@ -311,40 +364,30 @@ impl SdrState {
 
     /// The audio state the UI and `get audio` report. All of `off`,
     /// `no device`, `starting`, `muted` and `squelched` mean silence, so
-    /// they are told apart by name.
+    /// they are told apart by name. The sink opens off this thread (M17),
+    /// so `starting` is a state that can be caught in the act.
     pub fn audio_state(&self) -> &'static str {
         if self.demod.is_none() {
             return "off";
         }
         match &self.audio {
             None => "starting",
-            Some(a) if !a.available() => "no device",
-            Some(_) if self.mute => "muted",
-            Some(_) if self.audio_squelched => "squelched",
-            Some(_) => "playing",
+            Some(a) => match a.state() {
+                neowon_audio::sink::SinkState::Starting => "starting",
+                neowon_audio::sink::SinkState::Unavailable => "no device",
+                neowon_audio::sink::SinkState::Ready if self.mute => "muted",
+                neowon_audio::sink::SinkState::Ready if self.audio_squelched => "squelched",
+                neowon_audio::sink::SinkState::Ready => "playing",
+            },
         }
     }
 }
 
-/// `cols` display columns across `span` Hz centred `pan` Hz from DC, each the peak of
-/// the bins it covers (peak-preserving: a narrow carrier never vanishes
-/// between columns).
-pub fn columns(s: &IqSpectrum, pan: f64, span: f64, cols: usize) -> Vec<f64> {
-    (0..cols)
-        .map(|c| {
-            let lo = pan + (c as f64 / cols as f64 - 0.5) * span;
-            let hi = pan + ((c + 1) as f64 / cols as f64 - 0.5) * span;
-            let (a, b) = (s.bin_of(lo), s.bin_of(hi));
-            s.power_db[a.min(b)..=a.max(b)]
-                .iter()
-                .copied()
-                .fold(f64::NEG_INFINITY, f64::max)
-        })
-        .collect()
-}
-
 /// Fold newly arrived frames into the displays.
 pub fn update(mut sdr: ResMut<SdrState>) {
+    // Decoded DAB audio and its PAD reach the sink and the parsers every
+    // frame, including frames with no new IQ.
+    dab_audio::drain(&mut sdr);
     take_lab_result(&mut sdr);
     let Some(frame) = sdr.latest.clone() else {
         return;
@@ -357,7 +400,12 @@ pub fn update(mut sdr: ResMut<SdrState>) {
     let Some(spec) = iq_spectrum(data, frame.sample_rate, Window::Hann, sdr.fft_size) else {
         return;
     };
-    let cols = columns(&spec, sdr.pan_hz, sdr.span(), WF_W);
+    // The displays read a copy with the receiver's DC spike notched out
+    // (display::mask_dc); `spec` itself stays raw for the floor readout and
+    // every DSP consumer. One masked spectrum feeds both the trace and the
+    // waterfall through the same `cols`.
+    let masked = mask_dc(&spec, DC_GUARD);
+    let cols = columns(&masked, sdr.pan_hz, sdr.span(), WF_W);
     // Scroll down one row and paint the new one on top. Black sits just
     // under the measured floor and white at the reference level, so the
     // noise reads dark and a signal a few dB above it already shows.
@@ -403,41 +451,6 @@ pub fn update(mut sdr: ResMut<SdrState>) {
     }
 }
 
-/// A coarse upper bound on one DAB transmission frame, in samples at 2.048 MS/s,
-/// used only to size the splice tolerance.
-pub const FRAME_SAMPLES_HINT: i64 = 196_608;
-
-/// Hand one frame's IQ to the DAB receiver.
-///
-/// Called from `ingest`, where **every** frame arrives, not from the display
-/// path: that one is latest-wins by design (it only needs the newest frame to
-/// paint), and a decoder fed from it sees a stream with holes in it. Measured on
-/// air before this moved: 110 frames decoded out of ~3 700 received, i.e. about
-/// one frame in six, because the receiver spent the rest of the time re-finding
-/// the null symbol. Frames are `Arc`-shared and never copied for a consumer, and
-/// the receiver keeps its own buffer, so a ragged chunk is normal input.
-pub fn feed_dab(sdr: &mut SdrState, frame: &neowon_core::CaptureFrame) {
-    let rate = frame.sample_rate;
-    let start = (frame.t_start() * rate).round() as i64;
-    let pairs = frame.channels[0].unit_count(frame.layout) as i64;
-    // Tolerance is deliberately coarse. `CaptureFrame::t_start` is derived from
-    // *arrival* time ("biased late by up to one poll"), so a tight bound fires
-    // on ordinary jitter — which is how this check cost a real air session ~87%
-    // of its attempts. It is a safety net for a stall or a retune, not splice
-    // detection: that needs a dropped-sample counter from the backend, and it is
-    // recorded as an open item in docs/protocol-dab.md.
-    const JITTER_TOLERANCE_SAMPLES: i64 = 4 * crate::sdr::FRAME_SAMPLES_HINT;
-    let spliced = matches!(sdr.dab_next_sample, Some(expected) if (start - expected).abs() > JITTER_TOLERANCE_SAMPLES);
-    sdr.dab_next_sample = Some(start + pairs);
-    let Some(rx) = sdr.dab.as_mut() else {
-        return;
-    };
-    if spliced {
-        rx.discard_buffer();
-    }
-    rx.push_iq(&frame.channels[0].data);
-}
-
 /// Adopt the lab's finished run, unless the operator has since turned the
 /// lab off, retuned the hardware or changed the modulation setting.
 fn take_lab_result(sdr: &mut SdrState) {
@@ -457,6 +470,9 @@ fn take_lab_result(sdr: &mut SdrState) {
 /// Demodulate the tuned channel from `frame` and push it to the sink. The
 /// receiver and sink persist; only the config changes frame to frame.
 fn feed_audio(sdr: &mut SdrState, frame: &neowon_core::CaptureFrame, mode: neowon_dsp::DemodMode) {
+    // The device opens on its own thread (M17): until it reports, the
+    // receiver runs at the sink's default rate and `configure` below picks
+    // the real one up on a later frame.
     let audio_rate = sdr
         .audio
         .get_or_insert_with(neowon_audio::sink::AudioOut::spawn)
@@ -540,34 +556,7 @@ pub fn flush(mut sdr: ResMut<SdrState>, mut link: ResMut<Link>) {
 
 #[cfg(test)]
 mod tests {
-    use neowon_sim::IqScene;
-
     use super::*;
-
-    #[test]
-    fn columns_keep_a_narrow_carrier() {
-        // One 4096-bin spectrum squeezed into 1024 columns: the carrier's
-        // bin must survive as its column's peak.
-        let scene = IqScene {
-            sample_rate: 2.048e6,
-            components: vec![neowon_sim::IqComponent::Tone {
-                offset_hz: 300e3,
-                amplitude: 0.5,
-                phase: 0.0,
-            }],
-            noise_rms: 0.01,
-        };
-        let s = iq_spectrum(&scene.samples(1, 0, 8192), 2.048e6, Window::Hann, 4096).unwrap();
-        let cols = columns(&s, 0.0, 2.048e6, WF_W);
-        let (c, db) = cols
-            .iter()
-            .enumerate()
-            .max_by(|a, b| a.1.total_cmp(b.1))
-            .unwrap();
-        assert!((db + 6.02).abs() < 0.1, "{db}");
-        // Column c spans (c/1024 - 0.5) * 2.048 MHz: 300 kHz is column 662.
-        assert_eq!(c, 662);
-    }
 
     #[test]
     fn level_maps_reference_and_depth() {
@@ -652,16 +641,5 @@ mod tests {
         let a = r.analysis.expect("analysed");
         assert_eq!(a.modulation, neowon_core::Modulation::Qpsk);
         assert!(r.classification.is_some());
-    }
-
-    #[test]
-    fn the_waterfall_floor_is_dark() {
-        // Floor at -60 dBFS: the noise lands near black, a signal 10 dB
-        // up is visibly lit, the reference level is white.
-        let black = -60.0 - WF_UNDER_FLOOR_DB;
-        assert!(wf_level(-60.0, black, 0.0) < 0.1);
-        assert!(wf_level(-50.0, black, 0.0) > 0.2);
-        assert_eq!(wf_level(0.0, black, 0.0), 1.0);
-        assert_eq!(wf_level(-80.0, black, -90.0), 0.0);
     }
 }

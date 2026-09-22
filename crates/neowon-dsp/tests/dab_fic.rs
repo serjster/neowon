@@ -15,7 +15,7 @@ use rustfft::num_complex::Complex32;
 
 use neowon_dsp::dab::encoder::{EnsembleSpec, FicFrame, ServiceSpec};
 use neowon_dsp::dab::receiver::DabReceiver;
-use neowon_dsp::dab::{FRAME_SAMPLES, SAMPLE_RATE};
+use neowon_dsp::dab::{FRAME_SAMPLES, LOCK_WINDOW_FRAMES, SAMPLE_RATE, TABLE_EXPIRY_FRAMES};
 use neowon_sim::iq::IqScene;
 use neowon_sim::sdr::RfScene;
 
@@ -51,6 +51,9 @@ fn spec<'a>() -> EnsembleSpec<'a> {
                 ascty: 63,
             },
         ],
+        // The tier-1 legacy layout: the FIC-only encoder derives the
+        // sub-channels from the services.
+        sub_channels: Vec::new(),
     }
 }
 
@@ -223,6 +226,92 @@ fn frame_sync_recovers_after_a_gap() {
         status.fib_crc_rate().unwrap() >= 0.95,
         "CRC rate after the gap"
     );
+}
+
+/// D27's stale-table case, the receiver's own half: samples keep arriving but
+/// no ensemble is decoded (`rf-noise` at the tuned centre). After
+/// [`TABLE_EXPIRY_FRAMES`] unaccepted attempts the *raw* table must be empty —
+/// not merely unpublished — and the same ensemble must rebuild it.
+/// *(fixture: `rf-dab` locked, then `rf-noise`; deterministic scenes/seed)*
+#[test]
+fn the_table_expires_after_a_run_of_unaccepted_frames() {
+    let frame = FicFrame::new(&spec()).iq_frame(FRAME_RMS);
+    let mut receiver = DabReceiver::new();
+    let push = |receiver: &mut DabReceiver, value: &[Complex32]| {
+        let interleaved: Vec<f32> = value.iter().flat_map(|c| [c.re, c.im]).collect();
+        receiver.push_iq(&interleaved)
+    };
+    for _ in 0..10 {
+        push(&mut receiver, &frame);
+    }
+    assert!(receiver.status().locked);
+    assert_eq!(receiver.ensemble().services.len(), 3);
+
+    // Noise on the tuned centre: every attempt is rejected, so the rejected
+    // count is the expiry counter.
+    let scene = RfScene::preset("rf-noise")
+        .expect("scene")
+        .baseband(220.0e6, SAMPLE_RATE, 0.0);
+    let before = receiver.frames_rejected;
+    let mut pushed = 0usize;
+    while receiver.frames_rejected - before < u64::from(TABLE_EXPIRY_FRAMES) {
+        let start = pushed as u64 * FRAME_SAMPLES as u64;
+        let samples = scene.samples(0x1234_5678, start, FRAME_SAMPLES);
+        receiver.push_iq(&samples);
+        pushed += 1;
+        assert!(
+            pushed < 4 * TABLE_EXPIRY_FRAMES as usize,
+            "the lock never expired after {pushed} noise frames"
+        );
+    }
+    assert!(
+        !receiver.is_locked(),
+        "still locked after {TABLE_EXPIRY_FRAMES} unaccepted frames"
+    );
+    assert_eq!(
+        receiver.ensemble().eid,
+        None,
+        "the raw table did not expire"
+    );
+    assert!(receiver.ensemble().services.is_empty());
+
+    // The counters are history; new frames rebuild the lock and the table.
+    let before_frames = receiver.status().frames;
+    for _ in 0..(LOCK_WINDOW_FRAMES + 2) {
+        push(&mut receiver, &frame);
+    }
+    let status = receiver.status();
+    assert!(status.locked, "did not re-lock: {status:?}");
+    assert_eq!(status.ensemble.eid, Some(0xF044));
+    assert_eq!(status.ensemble.services.len(), 3);
+    assert!(status.frames > before_frames);
+}
+
+/// The owner's no-input case: with no samples there are no attempts to count,
+/// so the caller says "the stream stopped" and the lock and the raw table go at
+/// once (D27). A splice is `discard_buffer`, tested above; this is not one.
+#[test]
+fn no_input_expires_the_table_at_once() {
+    let frame = FicFrame::new(&spec()).iq_frame(FRAME_RMS);
+    let mut receiver = DabReceiver::new();
+    let push = |receiver: &mut DabReceiver, value: &[Complex32]| {
+        let interleaved: Vec<f32> = value.iter().flat_map(|c| [c.re, c.im]).collect();
+        receiver.push_iq(&interleaved)
+    };
+    for _ in 0..10 {
+        push(&mut receiver, &frame);
+    }
+    assert!(receiver.status().locked);
+
+    receiver.no_input();
+    assert!(!receiver.is_locked());
+    assert_eq!(receiver.ensemble().eid, None, "the raw table survived");
+    assert!(receiver.ensemble().services.is_empty());
+
+    for _ in 0..(LOCK_WINDOW_FRAMES + 2) {
+        push(&mut receiver, &frame);
+    }
+    assert!(receiver.status().locked, "did not re-lock after the stop");
 }
 
 /// Row 4: no false lock. Noise and a plain tone must produce no services and no

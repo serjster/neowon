@@ -98,14 +98,18 @@ scope control is on screen (D12):
   under the measured noise floor and white at the reference level. A red vertical bar with a triangle tip is the **tuned
   cursor**, labelled with its frequency at the top of the waterfall; the
   translucent band around it is the **channel width**, with solid filter
-  edges. The mouse works as in the scope's Spectrum window: *left-click*
+  edges.   The mouse works as in the scope's Spectrum window: *left-click*
   tunes to the frequency under the pointer (the window moves only for a
   target outside the IQ band),
   *left-drag on a filter edge* resizes the width, *left-drag* elsewhere pans
   the view inside the IQ band (vertically it moves the reference level),
   *right-drag* moves the **hardware window** (the band follows the pointer),
-  *scroll* zooms the span at the pointer, *shift+scroll* (or a 2-D wheel's
-  x axis) zooms the dB range, and *double-click* resets the view. A tuned
+  *scroll* zooms the span at the pointer and steps the sample rate to the
+  rung that covers the new span with a 2× margin (DAB pins the rate at
+  2.048 MS/s, so the wheel moves the span only there), *shift+scroll* pans
+  along the spectrum (inside the IQ band it slides the view; at the edge it
+  moves the hardware window), *ctrl+scroll* zooms the dB range, a 2-D
+  wheel's x axis pans, and *double-click* resets the view. A tuned
   frequency outside the view shows an edge arrow with its frequency; the
   hardware centre is a faint amber line when it differs from the tuned
   frequency.

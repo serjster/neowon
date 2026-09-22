@@ -75,6 +75,22 @@ pub fn cos_sin_turns(turns: f64) -> (f64, f64) {
     }
 }
 
+/// A pre-modulated IQ stream the embedding app hands the sim: interleaved
+/// I, Q samples in full-scale units, at the rate they were generated for.
+///
+/// This is how a signal the sim cannot synthesise itself reaches it — the
+/// `rf-dab` scene, whose Mode I ensemble the app builds with
+/// `neowon_dsp::dab::encoder` (the sim has no DSP dependency). The samples
+/// are `'static` because an installed scene lives for the process; the
+/// buffer replays from sample 0 and loops.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IqBuffer {
+    pub samples: &'static [f32],
+    /// The buffer's native sample rate; a scene at another rate reads it by
+    /// nearest sample.
+    pub sample_rate: f64,
+}
+
 /// One deterministic signal in an [`IqScene`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum IqComponent {
@@ -137,6 +153,9 @@ pub enum IqComponent {
         amplitude: f64,
         rolloff: f64,
     },
+    /// A pre-modulated IQ buffer, replayed and looped ([`IqBuffer`]).
+    /// `offset_hz` is not applied: the buffer already is the baseband.
+    Buffer(IqBuffer),
 }
 
 /// Symbols either side of the current one that shape a sample.
@@ -257,6 +276,8 @@ impl IqComponent {
             )),
             // Complex-valued; `IqScene::sample` builds it directly.
             IqComponent::Digital { .. } => None,
+            // A buffer is not a phase model; `IqScene::sample` reads it.
+            IqComponent::Buffer(_) => None,
         }
     }
 
@@ -342,6 +363,24 @@ impl IqScene {
         let (mut i, mut q) = (0.0f64, 0.0f64);
         let t = index as f64 / self.sample_rate;
         for c in &self.components {
+            if let IqComponent::Buffer(buffer) = c {
+                let pairs = buffer.samples.len() / 2;
+                if pairs == 0 {
+                    continue;
+                }
+                // At the buffer's native rate the index is the sample; at any
+                // other scene rate it is read by nearest sample, like a
+                // differently clocked converter.
+                let k = if (buffer.sample_rate - self.sample_rate).abs() < 0.5 {
+                    index
+                } else {
+                    (index as f64 * buffer.sample_rate / self.sample_rate) as u64
+                };
+                let k = (k % pairs as u64) as usize;
+                i += buffer.samples[2 * k] as f64;
+                q += buffer.samples[2 * k + 1] as f64;
+                continue;
+            }
             if let IqComponent::Digital { offset_hz, .. } = *c {
                 let (a, b) = c.digital(seed, index, self.sample_rate);
                 let (cos, sin) = cos_sin_turns(offset_hz * t);
@@ -448,6 +487,24 @@ mod tests {
         let run = scene.samples(9, 0, 64);
         let tail = scene.samples(9, 40, 24);
         assert_eq!(&run[80..], &tail[..]);
+    }
+
+    /// A buffer component is the app's hand-off for signals the sim cannot
+    /// synthesise: it replays exactly and loops, at its native rate.
+    #[test]
+    fn a_buffer_component_replays_and_loops() {
+        static SAMPLES: [f32; 4] = [1.0, 2.0, 3.0, 4.0];
+        let scene = IqScene {
+            sample_rate: 4.0,
+            components: vec![IqComponent::Buffer(IqBuffer {
+                samples: &SAMPLES,
+                sample_rate: 4.0,
+            })],
+            noise_rms: 0.0,
+        };
+        assert_eq!(scene.sample(0, 0), (1.0, 2.0));
+        assert_eq!(scene.sample(0, 1), (3.0, 4.0));
+        assert_eq!(scene.sample(0, 2), (1.0, 2.0), "the buffer loops");
     }
 
     #[test]

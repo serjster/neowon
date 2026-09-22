@@ -8,6 +8,7 @@ members = [
     "crates/neowon-sdr",
     "crates/neowon-catalog",
     "crates/neowon-refdb",
+    "crates/neowon-codec",
     "crates/neowon-audio",
     "crates/neowon-vds1022",
     "crates/neowon-cli",
@@ -28,6 +29,7 @@ neowon-sim = { path = "crates/neowon-sim" }
 neowon-sdr = { path = "crates/neowon-sdr" }
 neowon-catalog = { path = "crates/neowon-catalog" }
 neowon-refdb = { path = "crates/neowon-refdb" }
+neowon-codec = { path = "crates/neowon-codec" }
 neowon-audio = { path = "crates/neowon-audio" }
 neowon-vds1022 = { path = "crates/neowon-vds1022" }
 
@@ -58,6 +60,7 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+debug = "line-tables-only"
 
 # The "*" wildcard does not cover workspace members; list hot ones explicitly.
 [profile.dev.package.neowon-dsp]

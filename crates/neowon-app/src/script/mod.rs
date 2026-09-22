@@ -81,14 +81,14 @@
 //! scrollback <bytes>                    # capture history memory budget
 //! settings <on|off>                     # Settings window
 //! layout <path.json>                    # named-ROI map + open menu
-//! shot <path> [x y w h]                 # plot region; .png or .ppm
+//! shot <path> [x y w h]                 # whole window (WYSIWYG); x y w h crops it
+//! shotplot <path> [x y w h]             # raw plot texture (1000x500), not the UI
 //! quit
 //! ```
 //! `wait` advances a cumulative timeline; other actions fire when their
 //! time comes. `quit` waits for outstanding shots, then exits.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bevy::prelude::*;
 use neowon_backend::{Command, MultiMode};
@@ -98,12 +98,9 @@ use neowon_dsp::{MathOp, Window};
 use crate::Link;
 use crate::cursors::CursorState;
 use crate::derived::{FftState, MathState, MeasureState, PfState};
-use crate::gpu::{PLOT_H, PLOT_W, Persistence, Phosphor, TraceMode};
+use crate::gpu::{Persistence, Phosphor, TraceMode};
 use crate::ui::layout::dump_json;
 use crate::ui::{Menu, MenuState};
-
-/// Shots in flight (readback observers decrement).
-static PENDING_SHOTS: AtomicUsize = AtomicUsize::new(0);
 
 /// Later-phase resources bundled into one system param (Bevy caps
 /// systems at 16 parameters).
@@ -123,6 +120,7 @@ type ExtraState<'w> = (
     ResMut<'w, crate::catalog::CatalogState>,
     ResMut<'w, crate::uitree::UiTree>,
     ResMut<'w, crate::refmap::RefMap>,
+    ResMut<'w, shot::WindowShots>,
 );
 
 #[derive(Debug, Clone)]
@@ -240,7 +238,14 @@ pub enum Action {
     /// Window position, physical pixels (`windowpos X Y`).
     WindowPos(i32, i32),
     Layout(String),
+    /// Whole-window capture (WYSIWYG, egui included) to `.png`/`.ppm`,
+    /// optionally cropped to an ROI in captured-image pixels (`shot`).
     Shot {
+        path: String,
+        roi: Option<(u32, u32, u32, u32)>,
+    },
+    /// Raw plot-texture readback (`shotplot`); `roi` is plot pixels.
+    ShotPlot {
         path: String,
         roi: Option<(u32, u32, u32, u32)>,
     },
@@ -298,6 +303,7 @@ pub fn load_from_env() -> Script {
 }
 
 mod grammar;
+pub(crate) mod shot;
 
 pub(crate) use grammar::parse;
 
@@ -327,6 +333,7 @@ pub fn run_script(
     let deep = &mut ext.8;
     let dec = &mut ext.9;
     let settings = &mut ext.10;
+    let shots = &mut ext.15;
     let now = time.elapsed_secs_f64();
     while let Some((due, _)) = script.queue.front() {
         if *due > now {
@@ -341,6 +348,13 @@ pub fn run_script(
             }
             Action::Catalog(a) => crate::catalog::run(a, &mut ext.12, &ext.11, &mut link),
             Action::Stimulus(name) => {
+                // The sim cannot synthesise a DAB ensemble (it may not depend
+                // on `neowon-dsp`), so the app composes the `rf-dab` scene and
+                // installs it before the backend is asked for the name
+                // (tier-1 deviation 1, phase 10.15).
+                if name == "rf-dab" {
+                    crate::sdr::dab_scene::install();
+                }
                 let _ = link.sup.commands.send(Command::Stimulus(name.clone()));
                 link.stimulus = name;
             }
@@ -606,23 +620,17 @@ pub fn run_script(
                 }
             }
             Action::Shot { path, roi } => {
-                PENDING_SHOTS.fetch_add(1, Ordering::SeqCst);
-                // WYSIWYG: capture the effect output while one is active.
-                let shot_source = if fx.active.is_some() {
+                // The whole window, egui included: what the operator sees.
+                shot::window(shots, &mut commands, &path, roi);
+            }
+            Action::ShotPlot { path, roi } => {
+                // WYSIWYG plot: capture the effect output while one is active.
+                let source = if fx.active.is_some() {
                     fx.output.clone()
                 } else {
                     phosphor.display_image.clone()
                 };
-                commands
-                    .spawn(bevy::render::gpu_readback::Readback::texture(shot_source))
-                    .observe(
-                        move |event: On<bevy::render::gpu_readback::ReadbackComplete>,
-                              mut cmd: Commands| {
-                            write_shot(&event.data, &path, roi);
-                            PENDING_SHOTS.fetch_sub(1, Ordering::SeqCst);
-                            cmd.entity(event.entity).despawn();
-                        },
-                    );
+                shot::plot(&mut commands, source, path, roi);
             }
             Action::TrigPos(p) => {
                 link.config.position = p.clamp(0.0, 1.0);
@@ -714,7 +722,7 @@ pub fn run_script(
                 Err(e) => error!("script: sessionload failed: {e}"),
             },
             Action::Quit => {
-                if PENDING_SHOTS.load(Ordering::SeqCst) > 0 {
+                if shot::pending() > 0 {
                     // Re-arm shortly; shots still in flight.
                     script.queue.push_front((now + 0.05, Action::Quit));
                     return;
@@ -730,45 +738,4 @@ pub fn run_script(
             }
         }
     }
-}
-
-/// Write a (possibly cropped) region of the plot texture — PNG when the
-/// path ends `.png`, binary PPM otherwise. Readback rows are 256-byte
-/// aligned; the stride strips that.
-fn write_shot(rgba: &[u8], path: &str, roi: Option<(u32, u32, u32, u32)>) {
-    let stride = rgba.len() / PLOT_H as usize;
-    let (x0, y0, w, h) = roi.unwrap_or((0, 0, PLOT_W, PLOT_H));
-    let (x0, y0) = (x0.min(PLOT_W - 1), y0.min(PLOT_H - 1));
-    let w = w.min(PLOT_W - x0);
-    let h = h.min(PLOT_H - y0);
-    let mut rgb = Vec::with_capacity((w * h * 3) as usize);
-    for row in y0..y0 + h {
-        let base = row as usize * stride + x0 as usize * 4;
-        for px in rgba[base..base + w as usize * 4].as_chunks::<4>().0 {
-            rgb.extend_from_slice(&px[..3]);
-        }
-    }
-    let result = if path.ends_with(".png") {
-        write_png(path, w, h, &rgb)
-    } else {
-        let mut ppm = format!("P6\n{w} {h}\n255\n").into_bytes();
-        ppm.extend_from_slice(&rgb);
-        std::fs::write(path, &ppm)
-    };
-    match result {
-        Ok(()) => info!("script: wrote {path} ({w}x{h})"),
-        Err(e) => error!("script: cannot write {path}: {e}"),
-    }
-}
-
-fn write_png(path: &str, w: u32, h: u32, rgb: &[u8]) -> std::io::Result<()> {
-    let file = std::io::BufWriter::new(std::fs::File::create(path)?);
-    let mut enc = png::Encoder::new(file, w, h);
-    enc.set_color(png::ColorType::Rgb);
-    enc.set_depth(png::BitDepth::Eight);
-    let mut writer = enc.write_header().map_err(std::io::Error::other)?;
-    writer
-        .write_image_data(rgb)
-        .map_err(std::io::Error::other)?;
-    writer.finish().map_err(std::io::Error::other)
 }

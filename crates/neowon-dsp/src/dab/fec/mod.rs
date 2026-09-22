@@ -1,5 +1,6 @@
-//! Forward error correction for the DAB FIC: the energy-dispersal PRBS, the
-//! punctured convolutional code, and the soft-decision Viterbi decoder.
+//! Forward error correction for DAB: the energy-dispersal PRBS, the punctured
+//! convolutional code, and the soft-decision Viterbi decoder — shared by the
+//! FIC ([`fic`]) and the MSC ([`eep`], [`uep`]).
 //!
 //! Clauses cited are from **ETSI EN 300 401 V2.1.1 (2017-01)**:
 //!
@@ -9,39 +10,53 @@
 //!   768-bit vector scrambled with the PRBS from index 0 — so the sequence
 //!   restarts for every 768-bit group, which is why [`energy_dispersal`] takes
 //!   one group at a time.
+//! - **10.3** energy dispersal in the MSC: the first bit of each *logical
+//!   frame* of a sub-channel is added to PRBS bit 0, so the same function is
+//!   called once per logical frame with the frame's bits — not once per CIF
+//!   group as in the FIC.
 //! - **11.1.1** the mother code: constraint length 7, rate 1/4, generators
 //!   133, 171, 145, 133 (octal) with six zero tail bits. [`conv_encode`]
 //!   implements the clause's four equations directly.
-//! - **11.1.2** puncturing and the tail vector `V_T` (see [`tables`]).
-//! - **11.2.1** what the FIC actually does with it: a 768-bit vector is coded
-//!   to 3096 bits, split into 24 blocks of 128, punctured with PI = 16 for the
-//!   first 21 blocks, PI = 15 for the remaining 3, and the last 24 bits with
-//!   `V_T` — 2304 transmitted bits.
+//! - **11.1.2** puncturing: a 128-bit block is four 32-bit sub-blocks, each
+//!   punctured with the same 32-entry vector (see [`super::tables`]); the last
+//!   24 bits of the serial mother codeword use `V_T` `1100…`.
+//! - **11.2.1** what the FIC does with it ([`fic`]).
+//! - **11.3.1/11.3.2** what the MSC does with it ([`eep`], [`uep`]).
+//! - **annex E** the CRC word used by FIBs, DLS data groups and the MSC's
+//!   oracle payload check ([`crc16`]).
 //!
 //! **Soft-bit convention.** A soft bit is an `i8` where positive means "likely
 //! 1" and negative means "likely 0"; the decoder maximizes correlation, so a
 //! sign flip is a systematic failure rather than a graceful degradation. That
-//! convention is asserted by `soft_bit_polarity_is_detectable`, the test the
-//! spec asks for (D26/row 6), because a polarity error is exactly how a DAB
-//! decoder produces clean-looking data and zero valid FIBs.
+//! convention is asserted by `soft_bit_polarity_is_detectable` (FIC) and
+//! `msc_polarity_is_detectable` (MSC), because a polarity error is exactly how
+//! a DAB decoder produces clean-looking data and zero valid FIBs.
+//!
+//! Portions of this module follow the MIT-licensed reference `dabradio` 0.5.0
+//! (`xoolive/desperado`) for algorithm structure; the notice is recorded in
+//! `docs/protocol-dab.md`.
+
+pub mod eep;
+pub mod fic;
+pub mod uep;
+mod uep_table;
+
+pub use eep::{EepProfile, depuncture_eep, eep_profile};
+pub use fic::{
+    FIC_DATA_BITS, FIC_INFO_BITS, FIC_MOTHER_BITS, FIC_TRANSMITTED_BITS, depuncture_fic,
+    puncture_fic,
+};
+pub use uep::{UEP_PROFILES, UepProfile, depuncture_uep, uep_profile, uep_profile_for};
 
 use super::tables::{P_CODES, PI_TAIL};
 
 /// Mother code rate: one information bit produces four code bits.
 pub const MOTHER_CODE_RATE: usize = 4;
-/// Information bits per FIC codeword: 768 data + 6 tail (clause 11.2.1).
-pub const FIC_INFO_BITS: usize = 774;
-/// Mother codeword length for the FIC: `774 * 4` (clause 11.2.1).
-pub const FIC_MOTHER_BITS: usize = FIC_INFO_BITS * MOTHER_CODE_RATE;
-/// Transmitted bits per FIC codeword after puncturing (clause 11.2.1).
-pub const FIC_TRANSMITTED_BITS: usize = 2304;
-/// Data bits in one FIC codeword (three FIBs), excluding the tail.
-pub const FIC_DATA_BITS: usize = 768;
 /// Constraint length 7, so 6 bits of history: 64 states.
 const STATES: usize = 64;
 
 // ---------------------------------------------------------------------------
-// Energy dispersal (clause 10.1, 10.2)
+// Energy dispersal (clause 10.1, 10.2, 10.3)
 // ---------------------------------------------------------------------------
 
 /// The energy-dispersal PRBS, `P(X) = X^9 + X^5 + 1`, initialized to all ones
@@ -63,8 +78,9 @@ pub fn prbs_bits(n: usize) -> Vec<u8> {
 
 /// Scramble `bits` in place with the energy-dispersal PRBS starting at index 0.
 ///
-/// This is its own inverse. Call it once per 768-bit group (clause 10.2 — the
-/// sequence restarts at the first bit of each group, not once per frame).
+/// This is its own inverse. Call it once per *vector*: in the FIC that is a
+/// 768-bit group (clause 10.2), in the MSC one sub-channel's logical frame
+/// (clause 10.3).
 pub fn energy_dispersal(bits: &mut [u8]) {
     let mut reg: u16 = 0x01FF;
     for bit in bits.iter_mut() {
@@ -72,6 +88,33 @@ pub fn energy_dispersal(bits: &mut [u8]) {
         *bit ^= prbs as u8;
         reg = ((reg << 1) | prbs) & 0x01FF;
     }
+}
+
+// ---------------------------------------------------------------------------
+// CRC (annex E)
+// ---------------------------------------------------------------------------
+
+/// The CRC-16 of **annex E**: `G(X) = X^16 + X^12 + X^5 + 1`, shift register
+/// initialized to all ones, word complemented before transmission.
+///
+/// This is the same check the FIB carries (clause 5.2.1), and the same one the
+/// DLS data group carries (clause 7.4.5.0). It is *not* an on-air MSC CRC —
+/// EN 300 401 defines none at this layer (DAB+ has its own, TS 102 563, tier 3)
+/// — so the MSC decoder applies it only when the sim's oracle transport says
+/// the payload carries one.
+pub fn crc16(data: &[u8]) -> u16 {
+    let mut crc: u16 = 0xFFFF;
+    for byte in data {
+        crc ^= (*byte as u16) << 8;
+        for _ in 0..8 {
+            crc = if crc & 0x8000 != 0 {
+                (crc << 1) ^ 0x1021
+            } else {
+                crc << 1
+            };
+        }
+    }
+    crc ^ 0xFFFF
 }
 
 // ---------------------------------------------------------------------------
@@ -89,7 +132,7 @@ pub fn energy_dispersal(bits: &mut [u8]) {
 /// x2 = a_i ^ a_{i-1} ^ a_{i-4} ^ a_{i-6}
 /// x3 = x0
 /// ```
-fn mother_outputs(bit: u8, history: [u8; 6]) -> [u8; 4] {
+pub(crate) fn mother_outputs(bit: u8, history: [u8; 6]) -> [u8; 4] {
     let [b0, b1, b2, b3, b4, b5] = history;
     let x0 = bit ^ b1 ^ b2 ^ b4 ^ b5;
     let x1 = bit ^ b0 ^ b1 ^ b2 ^ b5;
@@ -114,12 +157,12 @@ pub fn conv_encode(info: &[u8]) -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
-// Puncturing (clause 11.1.2, 11.2.1)
+// Puncturing (clause 11.1.2)
 // ---------------------------------------------------------------------------
 
 /// Apply one puncturing vector to a 128-bit block: four 32-bit sub-blocks, each
 /// punctured by the same vector (clause 11.1.2).
-fn puncture_block(block: &[u8], vector: &[u8; 32], out: &mut Vec<u8>) {
+pub(crate) fn puncture_block(block: &[u8], vector: &[u8; 32], out: &mut Vec<u8>) {
     for sub in 0..4 {
         let base = sub * 32;
         for (i, keep) in vector.iter().enumerate() {
@@ -130,69 +173,103 @@ fn puncture_block(block: &[u8], vector: &[u8; 32], out: &mut Vec<u8>) {
     }
 }
 
-/// Puncture a FIC mother codeword: 3096 bits in, 2304 bits out (clause 11.2.1).
-///
-/// 21 blocks with PI = 16, 3 blocks with PI = 15, then the tail with `V_T`.
-pub fn puncture_fic(mother: &[u8]) -> Vec<u8> {
-    assert_eq!(mother.len(), FIC_MOTHER_BITS, "mother codeword length");
-    let pi16 = &P_CODES[15];
-    let pi15 = &P_CODES[14];
-    let mut out = Vec::with_capacity(FIC_TRANSMITTED_BITS);
-    for block in 0..21 {
-        puncture_block(&mother[block * 128..block * 128 + 128], pi16, &mut out);
-    }
-    for block in 21..24 {
-        puncture_block(&mother[block * 128..block * 128 + 128], pi15, &mut out);
-    }
-    let tail = &mother[24 * 128..];
-    assert_eq!(tail.len(), 24);
-    for (i, keep) in PI_TAIL.iter().enumerate() {
-        if *keep == 1 {
-            out.push(tail[i]);
-        }
-    }
-    assert_eq!(out.len(), FIC_TRANSMITTED_BITS);
-    out
+/// The number of bits a puncturing vector keeps in one 32-bit sub-block
+/// (`PI n` keeps `8 + n`; clause 11.1.2, table 13).
+pub(crate) fn pi_ones(pi: u8) -> usize {
+    assert!((1..=24).contains(&pi), "puncturing index {pi} out of range");
+    8 + pi as usize
 }
 
-/// Inverse of [`puncture_fic`] for soft bits: 2304 in, 3096 out, with
-/// punctured positions marked as erasures (`0`, which the correlating decoder
-/// treats as no evidence).
-pub fn depuncture_fic(soft: &[i8]) -> Vec<i8> {
-    assert_eq!(soft.len(), FIC_TRANSMITTED_BITS, "soft codeword length");
-    let pi16 = &P_CODES[15];
-    let pi15 = &P_CODES[14];
-    let mut out = Vec::with_capacity(FIC_MOTHER_BITS);
-    let mut read = 0;
-    let block = |vector: &[u8; 32], out: &mut Vec<i8>, read: &mut usize| {
-        for _ in 0..4 {
-            for keep in vector.iter() {
-                if *keep == 1 {
-                    out.push(soft[*read]);
-                    *read += 1;
-                } else {
-                    out.push(0);
+/// Depuncture soft bits into the mother code, following the clause-11.1.2
+/// block structure: `regions` is a list of `(blocks, PI)` in transmission
+/// order (the MSC's EEP has two regions, UEP four), and the 24-bit tail is
+/// appended with `V_T`. Punctured positions become erasures (`0`).
+///
+/// `soft` is the punctured codeword (possibly followed by zero padding, which
+/// this function never reads).
+pub fn depuncture_regions(soft: &[i8], regions: &[(usize, u8)]) -> Vec<i8> {
+    let mut out = Vec::with_capacity(
+        regions
+            .iter()
+            .map(|(blocks, _)| blocks * 128)
+            .sum::<usize>()
+            + 24,
+    );
+    let mut read = 0usize;
+    for &(blocks, pi) in regions {
+        if blocks == 0 {
+            continue;
+        }
+        let vector = &P_CODES[pi as usize - 1];
+        for _ in 0..blocks {
+            // One 128-bit block is four 32-bit sub-blocks, one vector each
+            // (clause 11.1.2).
+            for _ in 0..4 {
+                for keep in vector.iter() {
+                    if *keep == 1 {
+                        out.push(soft.get(read).copied().unwrap_or(0));
+                        read += 1;
+                    } else {
+                        out.push(0);
+                    }
                 }
             }
         }
-    };
-    for _ in 0..21 {
-        block(pi16, &mut out, &mut read);
-    }
-    for _ in 0..3 {
-        block(pi15, &mut out, &mut read);
     }
     for keep in PI_TAIL.iter() {
         if *keep == 1 {
-            out.push(soft[read]);
+            out.push(soft.get(read).copied().unwrap_or(0));
             read += 1;
         } else {
             out.push(0);
         }
     }
-    assert_eq!(read, soft.len());
-    assert_eq!(out.len(), FIC_MOTHER_BITS);
     out
+}
+
+/// The transmitted (punctured) bit count of a set of regions, tail included.
+/// Empty regions (`blocks == 0`, as UEP's fourth region often is) contribute
+/// nothing.
+pub fn punctured_bits(regions: &[(usize, u8)]) -> usize {
+    regions
+        .iter()
+        .filter(|(blocks, _)| *blocks > 0)
+        .map(|(blocks, pi)| blocks * 4 * pi_ones(*pi))
+        .sum::<usize>()
+        + 12
+}
+
+/// Puncture a mother codeword with a region list — the transmitter side of
+/// [`depuncture_regions`], used by the oracle encoder.
+pub fn puncture_regions(mother: &[u8], regions: &[(usize, u8)]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(punctured_bits(regions));
+    let mut read = 0usize;
+    for &(blocks, pi) in regions {
+        if blocks == 0 {
+            continue;
+        }
+        let vector = &P_CODES[pi as usize - 1];
+        for _ in 0..blocks {
+            puncture_block(&mother[read..read + 128], vector, &mut out);
+            read += 128;
+        }
+    }
+    let tail = &mother[read..read + 24];
+    for (i, keep) in PI_TAIL.iter().enumerate() {
+        if *keep == 1 {
+            out.push(tail[i]);
+        }
+    }
+    out
+}
+
+/// The mother-code bit count of a set of regions, tail included.
+pub fn mother_bits(regions: &[(usize, u8)]) -> usize {
+    regions
+        .iter()
+        .map(|(blocks, _)| blocks * 128)
+        .sum::<usize>()
+        + 24
 }
 
 // ---------------------------------------------------------------------------
@@ -223,13 +300,14 @@ fn output_table() -> &'static [[[u8; 4]; STATES]; 2] {
     })
 }
 
-/// Decode a punctured FIC codeword of soft bits, returning the information
-/// bits and the winning path metric (higher is better).
+/// Decode a punctured codeword of soft bits, returning the information bits and
+/// the winning path metric (higher is better).
 ///
-/// The code is tail-terminated (six zero bits, clause 11.1.1), so the survivor
-/// is read back from state 0. Punctured positions arrive as `0` from
-/// [`depuncture_fic`] and contribute nothing, which is the whole point of
-/// soft-decision decoding.
+/// The code is tail-terminated (six zero bits, clause 11.1.1) for the FIC and
+/// for both MSC protections (clause 11.3: each vector is processed "as defined
+/// in clause 11.1.1"), so the survivor is read back from state 0. Punctured
+/// positions arrive as `0` from the depuncturers and contribute nothing, which
+/// is the whole point of soft-decision decoding.
 pub fn viterbi_decode(soft: &[i8]) -> (Vec<u8>, i64) {
     assert_eq!(soft.len() % MOTHER_CODE_RATE, 0, "soft bits per step");
     let steps = soft.len() / MOTHER_CODE_RATE;
@@ -320,63 +398,57 @@ mod tests {
         assert_eq!(&coded[8..12], &[1, 1, 0, 1]);
     }
 
-    /// Puncture then depuncture then Viterbi must return the input bits. This
-    /// is the FEC chain end to end, on a deterministic pattern.
-    #[test]
-    fn fec_round_trip_recovers_the_information() {
-        for seed in 0..4u32 {
-            let info: Vec<u8> = (0..FIC_DATA_BITS)
-                .map(|i| {
-                    let mixed = (i as u32)
-                        .wrapping_mul(2_654_435_761)
-                        .wrapping_add(seed.wrapping_mul(40_503));
-                    ((mixed >> 13) & 1) as u8
-                })
-                .collect();
-            let coded = conv_encode(&info);
-            let punctured = puncture_fic(&coded);
-            assert_eq!(punctured.len(), FIC_TRANSMITTED_BITS);
-            let soft: Vec<i8> = punctured
-                .iter()
-                .map(|b| if *b == 1 { 100 } else { -100 })
-                .collect();
-            let depunctured = depuncture_fic(&soft);
-            let (decoded, metric) = viterbi_decode(&depunctured);
-            assert_eq!(decoded, info, "seed {seed}");
-            assert!(metric > 0, "metric {metric} should be positive");
-        }
-    }
-
-    /// The soft-bit polarity trap, as an explicit test: inverting the sign
-    /// convention (which is how a decoder "sees clean data" and produces
-    /// nothing) must fail, loudly and on this test.
-    #[test]
-    fn soft_bit_polarity_is_detectable() {
-        let info: Vec<u8> = (0..FIC_DATA_BITS).map(|i| (i % 7 == 0) as u8).collect();
-        let punctured = puncture_fic(&conv_encode(&info));
-        let inverted: Vec<i8> = punctured
-            .iter()
-            .map(|b| if *b == 1 { -100 } else { 100 })
-            .collect();
-        let (decoded, _) = viterbi_decode(&depuncture_fic(&inverted));
-        assert_ne!(decoded, info, "an inverted soft-bit sign must not decode");
-        let flipped: u32 = decoded
-            .iter()
-            .zip(&info)
-            .map(|(a, b)| (a != b) as u32)
-            .sum();
-        assert!(flipped > 300, "expected garbage, got {flipped} bit errors");
-    }
-
     /// Erasures carry no evidence: a punctured position must not bias the
     /// decision. Decoding an all-erasure codeword is possible *only* because
     /// every path is equally likely, so the survivor is the all-zero codeword's
     /// information vector (the tail-terminated zero path).
     #[test]
     fn erasures_carry_no_evidence() {
-        let soft = vec![0i8; FIC_MOTHER_BITS];
+        let soft = vec![0i8; 3096];
         let (decoded, metric) = viterbi_decode(&soft);
         assert!(decoded.iter().all(|b| *b == 0));
         assert_eq!(metric, 0);
+    }
+
+    /// Table 13's 24 puncturing vectors each keep exactly `8 + PI` of their 32
+    /// bits (clause 11.1.2), which is what makes the MSC sizes add up.
+    #[test]
+    fn puncture_vectors_keep_eight_plus_pi_bits() {
+        for pi in 1..=24u8 {
+            assert_eq!(pi_ones(pi), 8 + pi as usize, "PI {pi}");
+            let kept = P_CODES[pi as usize - 1].iter().filter(|b| **b == 1).count();
+            assert_eq!(kept, 8 + pi as usize, "PI {pi} vector");
+        }
+    }
+
+    /// Clause 10.3: the MSC PRBS restarts at index 0 for each logical frame,
+    /// so two identical frames scramble identically — a continuous PRBS (the
+    /// FIC's per-768-bit grouping applied across frame boundaries) would not.
+    #[test]
+    fn msc_energy_dispersal_restarts_per_logical_frame() {
+        let mut first = vec![1u8; 24];
+        let mut second = first.clone();
+        energy_dispersal(&mut first);
+        energy_dispersal(&mut second);
+        assert_eq!(first, second);
+
+        let prbs = prbs_bits(48);
+        let continuous: Vec<u8> = (0..48).map(|i| 1u8 ^ prbs[i]).collect();
+        let mut grouped = vec![1u8; 48];
+        energy_dispersal(&mut grouped[..24]);
+        energy_dispersal(&mut grouped[24..]);
+        assert_ne!(continuous, grouped);
+    }
+
+    /// The annex-E CRC parameters: all-ones init, complemented output, MSb-first
+    /// (the FIB path already proves the parameters on air). The known answer for
+    /// `123456789` is the complement of CRC-16/CCITT-FALSE, and a single-bit
+    /// flip must fail.
+    #[test]
+    fn crc16_matches_the_published_check_value() {
+        assert_eq!(crc16(b"123456789"), 0xD64E);
+        for bit in 0..8 {
+            assert_ne!(crc16(&[b'A' ^ (1 << bit)]), crc16(b"A"));
+        }
     }
 }

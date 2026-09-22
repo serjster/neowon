@@ -224,16 +224,122 @@ exactly once; h values in 0..=3). Values agree with the MIT reference
 
 ### 10.15.2 — MSC → subchannel bytes + DLS text
 
-Out of scope until DAB-G1 passes: CIF assembly, frequency and time de-interleaving,
-energy dispersal descrambling, UEP/EEP depuncturing, Viterbi per subchannel,
-subchannel extraction, and the PAD decoder for DLS text (song/artist strings) —
-which is the half of DAB+ that needs no audio codec at all.
+**Status 2026-09-20: work items specified below, implementation in progress.**
+DAB-G1 passed, so this tier is unblocked. It adds no dependency (D23) and is
+pure Rust.
 
-### 10.15.3 — Audio (behind DAB-G2)
+Work items, in order (each lands with its test):
 
-DAB: MPEG-1 Layer II (patent-free; a pure-Rust decoder exists). DAB+: HE-AAC v2
-(SBR + PS), which no pure-Rust decoder covers — the operator decision at DAB-G2, and
-the reason DAB+ audio is *last* in this program rather than assumed.
+1. **All-symbol demapping in the receiver.** The FIC path demaps 3 of the 76
+   symbols per frame; MSC needs the other 72 (72 symbols × 2K bits = 4 CIFs ×
+   55 296 bits). The receiver demaps every data symbol with the *same*
+   timing/carrier state the FIC path already tracks, hands the FIC's three
+   symbols to `fic` as today, and assembles the MSC symbols into four CIFs of
+   soft bits. The FIC path is hardware-proven: do not change its arithmetic,
+   only its inputs.
+2. **`dab::msc` — sub-channel handlers.** One `SubChannelDecoder` per
+   `SubChId`, created/reset when the FIC's sub-channel table (0/1) changes.
+   Each consumes the CIF soft bits and reverses, in order: capacity-unit
+   extraction (`start_cu`, `size_cu`; 1 CU = 64 bits), **time de-interleaving**
+   (clause 12 and table 21: 16 delay branches on bit positions,
+   `r' = r − D(ir mod 16)` with `D = [0,8,4,12,2,10,6,14,1,9,5,13,3,11,7,15]`;
+   per sub-channel state),
+   **energy dispersal descrambling** (clause 10.3; the MSC PRBS is not the
+   FIC's), **depuncturing** to the mother code (clause 11.3; EEP PI = 24 with
+   the sub-channel's option/level, UEP by the table-8 profile), a
+   **terminated soft Viterbi** (clause 11.3, not the FIC's tail-biting one),
+   and the EEP/UEP CRC check. Output: sub-channel bytes.
+
+   **Table 8 (UEP profiles, clause 11.3.1) lands here** — 64 profiles (bitrate ×
+   UEP level 1–5, with the two-level short form's "3-A" style entries), each
+   carrying its usable bit rate, puncturing vector and CU size, so UEP
+   sub-channels stop reporting an index with no bit rate (deviation 2 of tier 1
+   closes).
+3. **Porting reference and clause discipline.** The MIT-licensed `dabradio`
+   0.5.0 (`fec/eep.rs`, `fec/uep.rs`, `fec/viterbi.rs`,
+   `fec/energy_dispersal.rs`, `msc/mod.rs`) is the porting reference; the
+   notice goes in `docs/protocol-dab.md`. Every constant cites its EN 300 401
+   clause in the code that uses it. The reference's MSC order of operations is
+   checked against the standard, not assumed (the `tpeg-rust` failure mode is
+   exactly an ordering/polarity slip that looks like clean data).
+4. **`dab::pad` — PAD, F-PAD, X-PAD, DLS.** The 2-byte F-PAD + X-PAD carried by
+   the audio stream (for DAB MP2: the PAD region at the end of each MPEG frame;
+   for DAB+: the in-band PAD at the start of each AAC access unit — the same
+   parser serves both, fed from the two transports). DLS is user application
+   type 2: segment reassembly (a string may span frames), the update flag and
+   the charset. **Table 47 (EBU Latin) is transcribed** here so DLS text is not
+   `?`-mangled (deviation 3 of tier 1 was written for service labels; DLS is
+   mostly Latin text, so this is where it matters). Unknown applications are
+   skipped by their length: never guessed (D27).
+5. **Status and counters.** `DabStatus` gains per-sub-channel decode counters
+   (`frames`, `crc_failures`) and the DLS state; an unlocked receiver still
+   reports no table. The honesty rule of D27 applies to text too: publish a DLS
+   string only when its reassembly is complete and CRC-clean, never a partial.
+6. **Encoder: the MSC mirror.** `dab::encoder` gains the encode side of every
+   step above — UEP/EEP encoding (at least one EEP profile and one UEP profile
+   for the tests), CRC, energy dispersal, time interleaving, CU mapping — and
+   can carry a chosen set of sub-channels. The sim oracle then covers tier 2
+   the same way it covers the FIC: the decoder must recover exactly what the
+   encoder was told to send.
+
+**Status 2026-09-20: landed, sim-proven, wired into the app.** `dab::fec` gained
+the EEP/UEP tables and the terminated Viterbi (`fec/` split for budget),
+`dab::msc` the clause-12 interleaver and per-sub-channel decoders, `dab::pad`
+the PAD/DLS parser and `dab::charset` table 47. Rows 8–12 are green
+(`--test dab_msc`, 200 frames at 15 dB, EEP 3-A + UEP 3 bit-exact; multi-frame
+DLS). The app's `rf-dab` scene carries the ensemble (three services, EEP+UEP,
+DLS); `--test sdr_dab` proves FIC → MSC → DLS through the control socket.
+
+### 10.15.3 — Audio (DAB-G2 decided 2026-09-20: oxideav-aac, fdk-aac fallback)
+
+DAB: MPEG-1 Layer II; DAB+: HE-AAC v2 (SBR + PS). **DAB-G2 is decided**
+(operator, 2026-09-20, after the crates-landscape research): the primary codec
+is the **pure-Rust MIT `oxideav-aac`** (0.1.7, claims the full AAC-LC + SBR +
+PS chain with staged-fixture evidence and the mandatory 960 transform), with
+the **`fdk-aac` C binding as the documented fallback** if the primary fails its
+acceptance fixtures. `oxideav-mp2` (pure Rust, MIT, passes the official
+ISO/IEC 13818-4 suite) decodes DAB classic. Both live behind one adapter so the
+fallback is a feature flip, not a rewrite. New crate `neowon-codec` (engine-free,
+no Bevy/GPU) owns the DAB+ transport framing, the codec adapters and PAD/DLS,
+so `neowon-dsp` stays codec-free.
+
+Work items, in order:
+
+1. **`neowon-codec::dabplus` — DAB+ transport.** From TS 102 563: the audio
+   superframe (120 ms; `subchannel_index × 110` bytes of data plus RS parity),
+   the superframe header (Fire code, parameters, `au_start`), the per-AU CRC,
+   the access units (2/3/4/6 per superframe per table 2 — not five; five is the
+   number of DAB logical frames that carry one superframe), the in-band PAD in
+   a leading `data_stream_element()`, and the `AudioSpecificConfig` **derived
+   from the superframe header** (clause 7.2 — it is not transmitted, and not in
+   the PAD); RS(120,110) error correction (erasure-aware), then AU assembly.
+   Constants cite TS 102 563 clauses.
+2. **`neowon-codec::aac` — the adapter.** `AacDecoder::decode(au, asc) -> PCM`
+   wrapping `oxideav-aac` (LOAS/LATM carriage carrying the ASC, or the crate's
+   raw-AU entry point if one exists — the adapter hides which). Output: f32
+   interleaved, decoder rate (HE-AAC v2 = 48 kHz stereo), with `SbrSupport`
+   surfaced rather than assumed.
+3. **`neowon-codec::mp2` — DAB classic.** MPEG-1 Layer II frames out of the
+   sub-channel byte stream (PAD at the frame end), decoded with `oxideav-mp2`;
+   PAD bytes are returned alongside PCM for the DLS parser.
+4. **Acceptance fixtures.** The codec is the one part of this program whose
+   sim oracle cannot be our own encoder: an HE-AAC v2 fixture (a few frames,
+   DAB+ framed) is committed with reference PCM generated by an independent
+   decoder offline, and the acceptance test asserts our decode matches within
+   tolerance (energy/spectral, not bit-exact — the standard allows decoder
+   differences). The same for one MP2 frame. If `oxideav-aac` fails these, stop
+   and report to the operator before writing the fdk-aac feature.
+5. **PCM delivery.** Decoded PCM goes to the existing `neowon-audio` sink. If a
+   stream's rate differs from the sink's, resample with the crate's existing
+   windowed-sinc resampler (10.10) rather than opening a second device.
+
+**Status 2026-09-20: landed; playback works with the `fdk-aac` feature.** The
+primary failed its real use case (deviation 10), so the fallback is the
+playback backend: `AacDecoder::BACKEND` reports which is compiled in. The
+transport, MP2 and the HE-AAC v2 fixture suites pass (`neowon-codec`, rows
+13–15); the app plays both codings from the sim scene (`--test sdr_dab_audio`,
+`get dab.audio` with backend/rate/channels/peak). Row 17 (on-air listening) is
+the operator's and is the only available proof for real 960/SBR AUs.
 
 ### 10.15.4 — App, script and MCP surface
 
@@ -262,6 +368,30 @@ scene carrying a real ensemble, so the app can be seen locking without hardware.
 It is a small piece (the sim gains a buffer-backed `IqComponent`; the app builds
 the frame from `dab::encoder`, which is the layering deviation 1 already
 records), and the hardware run is the stronger evidence anyway.
+
+**Audio playback (lands with 10.15.3):** service selection by index or SId
+(`sdr dab service <n|sid>`), `sdr dab play|stop`, a DLS line (song/artist from
+the selected service's PAD) in the DAB dock section and the `get dab` JSON,
+which also gains `service`, `dls`, and `audio` (decoder state, rate, channels,
+underruns). MCP: `dab_control` gains the selected service and transport state,
+`dab_ensemble` carries DLS. Volume and mute reuse `sdr volume|mute` and the
+existing sink. The `rf-dab` sim scene is then built in the app from
+`dab::encoder` through a buffer-backed sim component (tier-1 deviation 1), so
+the positive demo needs no hardware.
+
+**Status 2026-09-21: the Band III channel selector answers "how do I tune to
+DAB without knowing the frequency by heart".** The DAB dock's block row and
+`sdr dab channel next|prev|<label>` land the hardware centre exactly on a
+block's centre — the front end measures ±500 Hz of carrier offset, so a
+band-plan click (which lands on the allocation's centre, 18 MHz off in Band
+III) locks nothing. `get dab` reports `channel` (label, centre, and whether
+the active plan allocates it) whether or not the receiver runs; MCP
+`dab_control` gains `channel`. The block catalogue is a table in
+`neowon-refdb::dab` (deviation 16); the picker draws its list from the active
+plan's DAB-named allocation, and a plan without one says so instead of
+inventing frequencies. Tests: `--test sdr_dab`'s
+`dab_channel_selects_a_band_iii_block_over_the_control_socket`, the refdb
+lookup tests, and the `sdr dab channel` round-trip.
 
 ## Verification contract
 
@@ -296,6 +426,31 @@ that the budget did not separate code from tests: 34 of those tests are inline
 reference and kept as is; the lesson recorded is that the next budget should
 count tests separately, since a spec that demands a published-value test per
 table cannot also be tight on lines.
+
+### Verification contract (tiers 2–3)
+
+Every row is quantity · unit · criterion · class · command, with the same rule
+as tier 1: a row with no command is not met. Rows 8–15 are sim/CI; row 16 is a
+windowed app test (`-- --ignored`, sim only); row 17 is manual.
+
+| # | Quantity · unit | Criterion | Class | Command |
+|---|---|---|---|---|
+| 8 | sub-channel bytes | bit-exact against the sim encoder for EEP (option A, level 3) and UEP (level 3) over 200 frames at 15 dB | exact (fixed-order) | `cargo test -p neowon-dsp --test dab_msc` |
+| 9 | MSC CRC pass rate | ≥ 95% over the same fixture | fixed-order | same |
+| 10 | time de-interleaver | the clause-12 CU permutation reproduced for a known input vector | exact | `cargo test -p neowon-dsp --lib dab` |
+| 11 | UEP table 8 | every profile's usable bit rate and CU size match clause 11.3.1 | exact | same |
+| 12 | DLS text | exact round-trip of a multi-segment string, including one spanning two frames | exact | `cargo test -p neowon-dsp --test dab_msc` |
+| 13 | DAB+ superframe | RS(120,110) parity and CRC match TS 102 563 vectors; 5 AUs per superframe; a damaged superframe is recovered by erasure correction | exact | `cargo test -p neowon-codec --test dabplus` |
+| 14 | HE-AAC v2 fixture | committed DAB+ fixture decodes to PCM within the stated tolerance of independently generated reference PCM | tolerance | `cargo test -p neowon-codec --test aac_fixture` |
+| 15 | MP2 fixture | committed MP2 frame decodes to PCM within the stated tolerance | tolerance | `cargo test -p neowon-codec --test mp2_fixture` |
+| 16 | end-to-end tone | a sim-encoded DAB+ tone survives IQ → FIC → MSC → DAB+ → codec with its dominant bin correct and a stated SNR floor | fixed-order | `cargo test -p neowon-app --test sdr_dab_audio -- --ignored` |
+| 17 | hardware listening | the operator hears a named 11C service and the DLS line tracks it — filed in `docs/protocol-dab.md` | manual | app, `--rtl`, never CI |
+
+**Budget (tiers 2–3):** ≤ 14 new files and ≤ 5 000 net lines across
+`neowon-dsp`, `neowon-codec`, `neowon-sim` and the app; tests counted
+separately (the tier-1 lesson). Overrun is a dated review against the
+references (`dabradio`'s MSC+PAD is ~2 400 lines; welle.io's whole backend
+~10k).
 
 ## Testing strategy
 
@@ -411,4 +566,84 @@ table cannot also be tight on lines.
    `T_NULL` samples beyond a frame's end, so with `n` frames pushed the receiver
    decodes `n - 1`. Tests account for it explicitly rather than pretending the
    latency is absent.
+9. **Tier-2 standard corrections (2026-09-20).** The spec's "M = 17 CUs" for
+   clause 12 does not exist in the standard: it is 16 delay branches on bit
+   positions (`D(ir mod 16)`, table 21). And EN 300 401 defines no MSC payload
+   CRC (only the FIB CRC and the X-PAD/DLS CRC), so the "MSC CRC pass rate"
+   row is met by an oracle-only CRC used when the encoder and decoder are
+   paired (`enable_msc_payload_crc`); on air the counters report zero checks
+   rather than an invented rate.
+10. **`oxideav-aac` 0.1.7 cannot decode DAB+ HE-AAC v2 (2026-09-20).** It
+    rejects SBR on non-1024 frame families, and DAB+ mandates the 960
+    transform with SBR (TS 102 563 clause 5.1). The committed 1024-line Apple
+    HE-AAC v2 fixture passes, so the adapter, SBR and PS paths are proven; a
+    real 960/SBR AU returns `Error::SbrUnsupportedFrameFamily`, surfaced, never
+    mis-decoded. The DAB-G2 fallback (`fdk-aac`, feature-gated) is therefore
+    being implemented as the playback backend.
+11. **DAB+ contract wording corrected from the standard (2026-09-20).** The
+    superframe carries 2/3/4/6 access units per table 2 (five is the number of
+    DAB logical frames per superframe), and the `AudioSpecificConfig` is
+    derived from the superframe header (clause 7.2), not carried in the PAD.
+    Code and tests follow the clause; the tier-2 PAD parser remains the DLS
+    path for both codings, and PAD is the only metadata transport.
+12. **PAD split across the seam (scope note).** The F-PAD/X-PAD and DLS parser
+    lives in `neowon-dsp::dab::pad` as §10.15.2 specifies; `neowon-codec` owns
+    the DAB+ transport framing and extracts the raw in-band PAD bytes
+    (`dabplus::extract_pad`) that the app feeds to that parser. MP2's PAD
+    (the ancillary tail) is returned by `neowon-codec::mp2` the same way. No
+    second DLS implementation.
+13. **The sim scene's loop seam is an interleaver continuity rule (2026-09-20,
+    found by a failing test).** Replaying a buffer-backed `rf-dab` scene is a
+    valid continuation of the transmitter only when (a) the buffer starts after
+    the clause-12 transient (`WARMUP_FRAMES` are generated and discarded) and
+    (b) every chosen stream's cycle *divides* the buffer's logical-frame count.
+    The MP2 fixture's 17-frame cycle did not divide the 60-frame buffer, so the
+    receiver's de-interleaver mixed two payload phases across each wrap and
+    corrupted the frames after it (`--test sdr_dab_audio` hard-failed; the
+    DAB+ stream, whose 3-superframe cycle divides 60, had hidden it). The scene
+    now cycles 15 MP2 frames and asserts the divisibility for every chosen
+    stream.
+14. **Playback carries a documented non-conformant sim stimulus.** The DAB+
+    programme in `rf-dab` is the 1024-line libfdk fixture with its own ASC
+    (`asc_override`), because no available open encoder emits the 960 transform
+    (deviation 10). The app labels it as a test stimulus; real 960/SBR AUs are
+    exercised only by the on-air run (row 17), where the ASC is derived from
+    the superframe header as the standard requires.
 
+15. **Tier-2's on-air failure was the receiver's frame-grid policy, not a
+    table (2026-09-21).** FIC clean at 100% FIB CRC while the DAB+ transport
+    never validated read like a shared encoder/decoder misreading — but every
+    suspect table checks against EN 300 401 (MSC PRBS clause 10.3, table 13
+    puncturing, tables 18/20 EEP, table 21 de-interleaver). The defect: the
+    frame start was re-derived from the null-symbol power dip every frame, and
+    on air most attempts fell below the PRS gate; each rejection discarded the
+    clause-12 delay line, so no sub-channel ever held 16 logical frames. The
+    fix predicts the grid from the last accepted frame, treats a weak frame at
+    the predicted start as a fade, and gives the super-frame search a
+    20-super-frame shape budget (a stream that ever aligned can never be
+    declared not-DAB+). Pinned on the archived 11C capture by disabling only
+    the prediction: FIC 180/180 CRCs and EId 0x8008 with **0** Fire-clean
+    super frames, against 346/754 AU CRCs through the fixed receiver and 707
+    through the app transport. Two bounds defects in the same search path
+    (refinement moving the start past the buffered frame; a scan guard missing
+    `T_G`) are fixed with tests. Regression tests:
+    `multipath_echo_keeps_the_clause_12_chain_contiguous` and
+    `frame_sized_feeds_never_overrun_the_sample_buffer` in
+    `crates/neowon-dsp/tests/dab_msc.rs`. Full evidence in
+    `docs/protocol-dab.md`.
+
+16. **The Band III block catalogue is a table, not a formula (2026-09-21).**
+    The channel selector was briefed to "use the refdb band-plan data — do
+    not hardcode a table". The plans carry DAB allocations as ranges, not
+    blocks, and the 5A–13F raster is not uniform (steps of 1.568, 1.712,
+    1.856 and 1.872 MHz), so its centres cannot be generated: a uniform
+    `174.928 + 1.712·n` formula puts 11C at 221.152 MHz, not 220.352. The
+    catalogue is therefore a 38-entry table in `neowon-refdb::dab`,
+    transcribed from `dabradio` 0.5.0 (MIT, the tier-1 porting reference;
+    notice in `docs/protocol-dab.md`) and checked against the four centres
+    this project has recorded. The **offer** is still plan-derived, not
+    hardcoded: `BandPlan::dab_blocks()` intersects the raster with the
+    plan's DAB-named allocation, and a plan that declares none (the default
+    `general`) yields an empty list — the dock and `get dab` say so instead
+    of inventing per-country frequencies. The earlier protocol-doc sentence
+    claiming a uniform raster formula is corrected in `docs/protocol-dab.md`.

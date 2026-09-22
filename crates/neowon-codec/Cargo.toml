@@ -1,0 +1,21 @@
+[package]
+name = "neowon-codec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Engine-free DAB+ transport framing and audio codec adapters (Phase 10.15.3)"
+
+[dependencies]
+oxideav-aac = "0.1.7"
+oxideav-mp2 = "0.0.10"
+# DAB-G2 fallback (operator decision, 2026-09-20): the C libfdk-aac,
+# vendored and built by the `fdk-aac-sys` crate. Optional so the default
+# build stays pure Rust; see docs/tasks/phase10-dab-spec.md 10.15.3.
+fdk-aac = { version = "0.8", optional = true }
+
+[features]
+default = []
+# DAB-G2 fallback: decode with libfdk-aac instead of the pure-Rust
+# `oxideav-aac`. Required for real DAB+ (960 transform + SBR + PS);
+# `oxideav-aac` 0.1.7 rejects that combination.
+fdk-aac = ["dep:fdk-aac"]

@@ -11,24 +11,16 @@
 //! walk (clause 5.2.2.0): an unknown FIG is legal and must be skipped by
 //! length, never guessed at.
 
+use super::fec::crc16;
 use super::fig;
 use super::{Ensemble, FIB_BYTES, FIB_DATA_BYTES};
 
 /// The CRC-16 of a FIB's data field, complemented as the standard requires
-/// (clause 5.2.1: "the CRC is complemented prior to transmission").
+/// (clause 5.2.1: "the CRC is complemented prior to transmission"). The
+/// parameters are annex E's, shared with the DLS and MSC checks via
+/// [`crc16`].
 pub fn fib_crc(fib: &[u8; FIB_BYTES]) -> u16 {
-    let mut crc: u16 = 0xFFFF;
-    for byte in &fib[..FIB_DATA_BYTES] {
-        crc ^= (*byte as u16) << 8;
-        for _ in 0..8 {
-            crc = if crc & 0x8000 != 0 {
-                (crc << 1) ^ 0x1021
-            } else {
-                crc << 1
-            };
-        }
-    }
-    crc ^ 0xFFFF
+    crc16(&fib[..FIB_DATA_BYTES])
 }
 
 /// The CRC carried in the last two bytes of the FIB, MSb first.
@@ -82,20 +74,7 @@ pub fn walk_figs(fib: &[u8; FIB_BYTES], ensemble: &mut Ensemble) -> usize {
 pub(crate) fn make_fib(data: &[u8; FIB_DATA_BYTES]) -> [u8; FIB_BYTES] {
     let mut fib = [0u8; FIB_BYTES];
     fib[..FIB_DATA_BYTES].copy_from_slice(data);
-    let crc = {
-        let mut crc: u16 = 0xFFFF;
-        for byte in data {
-            crc ^= (*byte as u16) << 8;
-            for _ in 0..8 {
-                crc = if crc & 0x8000 != 0 {
-                    (crc << 1) ^ 0x1021
-                } else {
-                    crc << 1
-                };
-            }
-        }
-        crc ^ 0xFFFF
-    };
+    let crc = crc16(data);
     fib[30] = (crc >> 8) as u8;
     fib[31] = crc as u8;
     fib

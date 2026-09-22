@@ -10,8 +10,11 @@
 //! reliably, and `locked` additionally requires an ensemble identity — a
 //! CRC-clean FIC with no `EId` is "receiving something", not "locked to a
 //! station". Service labels arrive on their own schedule (once per second), so
-//! the table grows from empty to complete; it is never cleared mid-lock, and
-//! nothing is invented to fill a gap.
+//! the table grows from empty to complete; a short input gap does not clear it,
+//! and nothing is invented to fill one. When the signal is gone, though — the
+//! receiver stops accepting frames, or its owner reports no input at all — the
+//! table **expires**: an unlocked receiver reporting no services is the honest
+//! state, and a stale table is the lie this rule exists to prevent.
 
 use std::collections::VecDeque;
 
@@ -48,6 +51,20 @@ impl FicState {
     /// Discard the lock and the table — for a retune, or an operator reset.
     pub fn reset(&mut self) {
         *self = Self::new();
+    }
+
+    /// Drop the lock and the ensemble after the signal has been undecodable
+    /// for long enough that publishing them would be a stale claim (D27).
+    ///
+    /// The window is emptied rather than filled with misses, so the window
+    /// rate reports "no window" until `LOCK_WINDOW_FRAMES` new frames arrive;
+    /// the cumulative FIB counters are history and stay. A **short** input
+    /// gap is different: `DabReceiver::discard_buffer` keeps the table
+    /// deliberately, because that is the behaviour that made air decoding
+    /// work. This is for "the signal is gone".
+    pub fn expire(&mut self) {
+        self.window.clear();
+        self.ensemble = Ensemble::default();
     }
 
     /// Feed one transmission frame's FIC soft bits (9216 of them, symbol
@@ -111,9 +128,15 @@ impl FicState {
         f64::from(ok) / f64::from(total) >= LOCK_CRC_RATE
     }
 
+    /// Is the FIC decoding well enough to be believed *and* identifying an
+    /// ensemble (D27)?
+    pub fn is_locked(&self) -> bool {
+        self.crc_rate_ok() && self.ensemble.eid.is_some()
+    }
+
     /// The current state of the receiver, for the UI, `get dab`, and MCP.
     pub fn status(&self) -> DabStatus {
-        let locked = self.crc_rate_ok() && self.ensemble.eid.is_some();
+        let locked = self.is_locked();
         DabStatus {
             locked,
             fib_crc_ok: self.fib_crc_ok,
@@ -126,6 +149,8 @@ impl FicState {
             } else {
                 Ensemble::default()
             },
+            // The receiver fills the MSC counters; the FIC alone has none.
+            msc: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -154,6 +179,7 @@ mod tests {
             eid: 0xF044,
             label: ensemble_label,
             services,
+            sub_channels: Vec::new(),
         }
     }
 
@@ -259,5 +285,49 @@ mod tests {
         assert_eq!(status.frames, 0);
         assert_eq!(status.fib_crc_ok, 0);
         assert!(status.ensemble.services.is_empty());
+    }
+
+    /// An expiry (the signal was gone for seconds) drops the lock and the
+    /// table but keeps the cumulative FIB counters: those are history, the
+    /// table is the claim (D27). New frames rebuild the table.
+    #[test]
+    fn expire_drops_the_table_and_keeps_the_history() {
+        let spec = spec(
+            "TEST",
+            vec![ServiceSpec {
+                sid: 0x1001,
+                label: "SERVICE",
+                sub_channel: 0,
+                ascty: 63,
+            }],
+        );
+        let soft = FicFrame::new(&spec).ideal_soft_bits();
+        let mut state = FicState::new();
+        for _ in 0..LOCK_WINDOW_FRAMES {
+            state.process_frame(&soft);
+        }
+        assert!(state.status().locked);
+        let frames = state.status().frames;
+
+        state.expire();
+        let status = state.status();
+        assert!(!status.locked, "expired lock still reported as locked");
+        assert_eq!(status.ensemble, Ensemble::default());
+        assert_eq!(status.frames, frames, "history is kept");
+        assert_eq!(
+            status.fib_total,
+            (FIBS_PER_FRAME * LOCK_WINDOW_FRAMES) as u64
+        );
+
+        // The window is empty, so the lock needs a full new window.
+        state.process_frame(&soft);
+        assert!(!state.status().locked);
+        for _ in 1..LOCK_WINDOW_FRAMES {
+            state.process_frame(&soft);
+        }
+        let status = state.status();
+        assert!(status.locked, "new frames should re-lock");
+        assert_eq!(status.ensemble.eid, Some(0xF044));
+        assert!(status.ensemble.services.contains_key(&0x1001));
     }
 }

@@ -27,6 +27,9 @@ pub fn switch(to_sdr: bool, sdr: &mut SdrState, link: &mut Link) -> Result<(), S
     sdr.analysis = None;
     sdr.classification = None;
     sdr.tracker.clear();
+    // The other instrument owns the signal now: a DAB table from the old
+    // stream would be a stale claim when this mode comes back (D27).
+    sdr.dab_reset();
     sdr.active = to_sdr;
     if to_sdr {
         link.sup.apply(InstrumentConfig::Sdr(sdr.config.clone()));

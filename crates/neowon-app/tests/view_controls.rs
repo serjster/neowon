@@ -86,6 +86,7 @@ fn view_controls_move_the_window_and_the_pixels() {
         .env("NEOWON_CONTROL", port.to_string())
         .env_remove("NEOWON_SCRIPT")
         .env("NEOWON_NO_STATE", "1")
+        .env("NEOWON_ORPHAN_EXIT", "15")
         .spawn()
         .expect("launch app");
 
@@ -115,7 +116,7 @@ fn view_controls_move_the_window_and_the_pixels() {
         loop {
             let _ = std::fs::remove_file(path);
             assert!(
-                conn.request(&format!("shot {}", path.display()))
+                conn.request(&format!("shotplot {}", path.display()))
                     .contains(r#""ok":true"#)
             );
             let file_deadline = Instant::now() + Duration::from_secs(10);

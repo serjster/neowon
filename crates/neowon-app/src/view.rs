@@ -367,6 +367,7 @@ mod tests {
             arrived: Vec::new(),
             stimulus: String::new(),
             selected: 0,
+            last_shot: None,
         }
     }
 

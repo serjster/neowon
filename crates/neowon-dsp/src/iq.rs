@@ -221,4 +221,63 @@ mod tests {
         assert!(iq_spectrum(&[0.0; 10], 1.0, Window::Hann, 8).is_none());
         assert!(iq_spectrum(&[0.0; 100], 1.0, Window::Hann, 12).is_none());
     }
+
+    /// The frequency axis must not depend on where the frame chunk starts.
+    /// A frame boundary lands wherever the transfer ends, so the row build
+    /// has to be blind to it: were the spectrum to depend on the chunk's
+    /// start phase (or length), row n's frequency axis would differ from row
+    /// n-1's by a fraction of a bin and a static signal would drift
+    /// diagonally through the waterfall.
+    #[test]
+    fn spectrum_is_blind_to_the_chunk_start_phase() {
+        // Off-bin tones: a bin-centred tone would hide a fractional-bin
+        // dependence in the window's sidelobes.
+        let scene = IqScene {
+            sample_rate: 2.048e6,
+            components: vec![
+                IqComponent::Tone {
+                    offset_hz: 100_037.0,
+                    amplitude: 0.5,
+                    phase: 0.0,
+                },
+                IqComponent::Tone {
+                    offset_hz: -250_411.0,
+                    amplitude: 0.3,
+                    phase: 0.25,
+                },
+            ],
+            noise_rms: 0.0,
+        };
+        let n = 4096;
+        let a = iq_spectrum(
+            &scene.samples(1, 0, 2 * n),
+            scene.sample_rate,
+            Window::Hann,
+            n,
+        )
+        .unwrap();
+        // The same signal read 1234 pairs later: same tones, same noise
+        // (none), same block count — only the start phase differs.
+        let b = iq_spectrum(
+            &scene.samples(1, 1234, 2 * n),
+            scene.sample_rate,
+            Window::Hann,
+            n,
+        )
+        .unwrap();
+        assert_eq!(a.bin_hz, b.bin_hz);
+        assert_eq!(a.len(), b.len());
+        assert_eq!(a.blocks, b.blocks);
+        // Compare in linear power. The residual is rounding — relative
+        // (~1e-6 where a sidelobe cancels large terms, less at the peaks)
+        // and absolute (1e-15, far sidelobes) — while a per-chunk axis error
+        // moves bins and columns, orders of magnitude more.
+        let close = |x: f64, y: f64| {
+            let (px, py) = (10f64.powf(x / 10.0), 10f64.powf(y / 10.0));
+            (px - py).abs() <= 1e-6 * (px + py) + 1e-12
+        };
+        for (k, (x, y)) in a.power_db.iter().zip(&b.power_db).enumerate() {
+            assert!(close(*x, *y), "bin {k}: {x} dB vs {y} dB");
+        }
+    }
 }

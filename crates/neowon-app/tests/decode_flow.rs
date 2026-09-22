@@ -52,6 +52,7 @@ fn decodes_uart_traffic_from_the_simulator() {
         .env("NEOWON_UI_SCALE", "1.0")
         .env_remove("NEOWON_SCRIPT")
         .env("NEOWON_NO_STATE", "1")
+        .env("NEOWON_ORPHAN_EXIT", "15")
         .spawn()
         .expect("launch app");
 
