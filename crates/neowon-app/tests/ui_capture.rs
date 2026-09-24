@@ -1,7 +1,6 @@
 //! Whole-window capture: `shot` must produce the UI the operator sees, not a
-//! black frame. The earlier `shot window` attempt wrote all-zero PNGs on
-//! macOS/Metal (see phase10-sdr-spec §10.9); this test is the guard that the
-//! capture can never silently regress to black.
+//! black frame (a naive capture writes all-zero PNGs on macOS/Metal); this
+//! test is the guard that the capture can never silently regress to black.
 //!
 //! Needs a window (briefly), so `#[ignore]` by default:
 //!   cargo test -p neowon-app --test ui_capture -- --ignored
@@ -31,7 +30,6 @@ fn find_rect(tree: &str, label: &str) -> [f64; 4] {
     [nums[0], nums[1], nums[2], nums[3]]
 }
 
-/// The logical window size from a uitree JSON.
 fn window_size(tree: &str) -> (f64, f64) {
     let at = tree.find("\"window\":[").expect("window") + 10;
     let end = tree[at..].find(']').expect("window end");
@@ -82,9 +80,7 @@ impl Shot {
 #[test]
 #[ignore = "opens a window"]
 fn a_window_shot_contains_the_sdr_ui() {
-    let dir = std::env::temp_dir().join(format!("neowon-ui-capture-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch("ui-capture");
     let png = dir.join("window.png");
 
     let (child, mut c) = launch(&["--sdr-sim"], &[]);
@@ -111,7 +107,6 @@ fn a_window_shot_contains_the_sdr_ui() {
             assert!(Instant::now() < deadline, "shot never written");
             std::thread::sleep(Duration::from_millis(100));
         }
-        // The status line names the file that was written.
         let status = c.request("get status");
         assert!(
             status.contains("window.png") && status.contains(r#""shot":"#),
@@ -200,9 +195,7 @@ fn waterfall_row(shot: &Shot, wf: [f64; 4], k: f64, i: usize) -> Vec<f64> {
 #[test]
 #[ignore = "opens a window"]
 fn a_stationary_carrier_stays_in_its_waterfall_column() {
-    let dir = std::env::temp_dir().join(format!("neowon-wf-stability-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch("wf-stability");
     let png = dir.join("tone.png");
 
     let (child, mut c) = launch(&["--sdr-sim"], &[]);
@@ -242,7 +235,6 @@ fn a_stationary_carrier_stays_in_its_waterfall_column() {
         let rows: Vec<Vec<f64>> = (0..320).map(|i| waterfall_row(&shot, wf, k, i)).collect();
         let n = rows[0].len();
 
-        // The tone is the brightest thing in the mean row.
         let mean: Vec<f64> = (0..n)
             .map(|x| rows.iter().map(|r| r[x]).sum::<f64>() / rows.len() as f64)
             .collect();

@@ -1,4 +1,4 @@
-//! Synchroniser and slicer (M1, M2, M6): take a linearly modulated signal
+//! Synchroniser and slicer: take a linearly modulated signal
 //! from raw IQ to decided symbols, bits, EVM and MER.
 //!
 //! Chain: remove the carrier offset (the `x^M` line), matched-filter with
@@ -160,7 +160,6 @@ pub fn recover(
         .map(|i| at(&y, first + (i as f64 + a0 + drift * i as f64) * sps))
         .collect();
 
-    // Blind phase and gain.
     let mom = s.iter().map(|z| z.powu(m)).sum::<Complex64>();
     let phase = (mom.arg() - ideal_phase) / m as f64;
     let energy = s.iter().map(|z| z.norm_sqr()).sum::<f64>() / s.len() as f64;

@@ -126,8 +126,8 @@ impl Backend for Vds1022Backend {
 
     fn poll_frame(&mut self, budget: Duration) -> Result<Option<SharedFrame>, BackendError> {
         // All channels off is a valid state, not a lost device: idle with a
-        // keep-alive instead of asking the hardware for zero frames (which
-        // used to surface as a fatal "no channel enabled" reconnect storm).
+        // keep-alive instead of asking the hardware for zero frames, which
+        // would surface as a fatal "no channel enabled" reconnect storm.
         if self
             .applied
             .as_ref()
@@ -343,7 +343,6 @@ fn part_trigger(c: &ScopeConfig) -> ScopeConfigPart {
             neowon_core::Sweep::Single => 2,
         },
     ];
-    // Fold the full trigger kind into comparable u64s.
     match &t.kind {
         TriggerKind::Edge { slope } => {
             v.push(0);

@@ -80,8 +80,7 @@ pub enum DabVerb {
     Reset,
     /// Select a service (`sdr dab service …`).
     Service(DabService),
-    /// Start audio transport (`sdr dab play`). The state is real; 10.15.3
-    /// consumes it.
+    /// Start audio transport (`sdr dab play`).
     Play,
     /// Stop audio transport (`sdr dab stop`).
     Stop,
@@ -210,7 +209,7 @@ pub fn run(a: SdrAction, sdr: &mut SdrState, link: &mut Link) {
 /// Apply a script action. Invalid values are refused, not clamped, so a
 /// script learns it asked for something the instrument cannot do.
 pub fn apply(a: SdrAction, sdr: &mut SdrState, link: &mut Link) -> Result<(), String> {
-    let caps = sdr.caps.clone();
+    let caps = link.sdr_caps().cloned();
     let in_range = |hz: f64| match &caps {
         Some(c) if !(c.freq_range_hz.0..=c.freq_range_hz.1).contains(&hz) => Err(format!(
             "{hz} Hz outside {}..={} Hz",
@@ -270,7 +269,7 @@ pub fn apply(a: SdrAction, sdr: &mut SdrState, link: &mut Link) -> Result<(), St
         SdrAction::Run(on) => {
             if !on {
                 // The switch stops the stream: there will be no frames to
-                // re-derive the table from, so it dies with the stream (D27).
+                // re-derive the table from, so it dies with the stream.
                 sdr.dab_reset();
             }
             sdr.config.running = on;
@@ -301,6 +300,7 @@ pub fn apply(a: SdrAction, sdr: &mut SdrState, link: &mut Link) -> Result<(), St
             sdr.analyse_on = on;
             if !on {
                 sdr.analysis = None;
+                sdr.classification = None;
             }
             return Ok(());
         }
@@ -314,7 +314,7 @@ pub fn apply(a: SdrAction, sdr: &mut SdrState, link: &mut Link) -> Result<(), St
             return Ok(());
         }
         SdrAction::Survey(Some(r)) => {
-            let plan = neowon_sdr::survey::SurveyPlan {
+            let plan = neowon_dsp::survey::SurveyPlan {
                 start_hz: r.start_hz,
                 stop_hz: r.stop_hz,
                 sample_rate: sdr.config.sample_rate,
@@ -373,15 +373,15 @@ pub fn apply(a: SdrAction, sdr: &mut SdrState, link: &mut Link) -> Result<(), St
             // old table would be a different station's.
             DabVerb::On => {
                 sdr.dab_reset();
-                sdr.dab = Some(neowon_dsp::dab::DabReceiver::new());
+                sdr.dab.rx = Some(neowon_dsp::dab::DabReceiver::new());
             }
             DabVerb::Off => {
                 sdr.dab_reset();
-                sdr.dab = None;
+                sdr.dab.rx = None;
             }
             DabVerb::Reset => sdr.dab_reset(),
             DabVerb::Service(choice) => {
-                let Some(rx) = sdr.dab.as_ref() else {
+                let Some(rx) = sdr.dab.rx.as_ref() else {
                     return Err("dab service: receiver is off (sdr dab on)".into());
                 };
                 let status = rx.status();
@@ -406,8 +406,8 @@ pub fn apply(a: SdrAction, sdr: &mut SdrState, link: &mut Link) -> Result<(), St
                         services[index]
                     }
                 };
-                sdr.dab_service = Some(sid);
-                sdr.dab_play_error = None;
+                sdr.dab.service = Some(sid);
+                sdr.dab.play_error = None;
                 // Selecting a service while playing is the cue the audio
                 // follows: the old worker stops (its decoders with it) and
                 // a fresh one starts on the new stream. If the new stream
@@ -415,7 +415,7 @@ pub fn apply(a: SdrAction, sdr: &mut SdrState, link: &mut Link) -> Result<(), St
                 if super::dab_audio::playing(sdr) {
                     super::dab_audio::stop(sdr);
                     if let Err(reason) = super::dab_audio::play(sdr) {
-                        sdr.dab_play_error = Some(reason.clone());
+                        sdr.dab.play_error = Some(reason.clone());
                         return Err(reason);
                     }
                 }
@@ -423,9 +423,9 @@ pub fn apply(a: SdrAction, sdr: &mut SdrState, link: &mut Link) -> Result<(), St
             }
             DabVerb::Play => {
                 match super::dab_audio::play(sdr) {
-                    Ok(()) => sdr.dab_play_error = None,
+                    Ok(()) => sdr.dab.play_error = None,
                     Err(reason) => {
-                        sdr.dab_play_error = Some(reason.clone());
+                        sdr.dab.play_error = Some(reason.clone());
                         return Err(reason);
                     }
                 }
@@ -433,7 +433,7 @@ pub fn apply(a: SdrAction, sdr: &mut SdrState, link: &mut Link) -> Result<(), St
             }
             DabVerb::Stop => {
                 super::dab_audio::stop(sdr);
-                sdr.dab_play_error = None;
+                sdr.dab.play_error = None;
                 return Ok(());
             }
             DabVerb::Channel(choice) => {
@@ -467,9 +467,7 @@ pub fn apply(a: SdrAction, sdr: &mut SdrState, link: &mut Link) -> Result<(), St
                 sdr.audio_buf.clear();
                 sdr.audio_rms = 0.0;
                 sdr.audio_squelched = false;
-                if let Some(out) = &sdr.audio {
-                    out.clear();
-                }
+                sdr.audio.clear();
             }
             sdr.demod = m;
             return Ok(());
@@ -479,16 +477,12 @@ pub fn apply(a: SdrAction, sdr: &mut SdrState, link: &mut Link) -> Result<(), St
                 return Err(format!("volume {v} outside 0..=1"));
             }
             sdr.volume = v;
-            if let Some(out) = &sdr.audio {
-                out.set_volume(v);
-            }
+            sdr.audio.set_volume(v);
             return Ok(());
         }
         SdrAction::Mute(on) => {
             sdr.mute = on;
-            if let Some(out) = &sdr.audio {
-                out.set_mute(on);
-            }
+            sdr.audio.set_mute(on);
             return Ok(());
         }
         SdrAction::Squelch(db) => {
@@ -513,6 +507,43 @@ pub fn apply(a: SdrAction, sdr: &mut SdrState, link: &mut Link) -> Result<(), St
     Ok(())
 }
 
+/// Which variant an action is. Exhaustive, so a new variant fails to
+/// compile here until `every_action_round_trips` covers it — and until
+/// `dab_state`'s one-owner sweep decides whether it clears the DAB state.
+#[cfg(test)]
+pub(super) fn variant(a: &SdrAction) -> usize {
+    match a {
+        SdrAction::Tune(_) => 0,
+        SdrAction::Step(_) => 1,
+        SdrAction::Rate(_) => 2,
+        SdrAction::Gain(_) => 3,
+        SdrAction::Agc(_) => 4,
+        SdrAction::Ppm(_) => 5,
+        SdrAction::Span(_) => 6,
+        SdrAction::Fft(_) => 7,
+        SdrAction::Level { .. } => 8,
+        SdrAction::Run(_) => 9,
+        SdrAction::Seed(_) => 10,
+        SdrAction::Detect(_) => 11,
+        SdrAction::Survey(_) => 12,
+        SdrAction::Analyse(_) => 13,
+        SdrAction::Modulation(_) => 14,
+        SdrAction::Threshold(_) => 15,
+        SdrAction::Instrument(_) => 16,
+        SdrAction::Pan(_) => 17,
+        SdrAction::List(_) => 18,
+        SdrAction::Centre(_) => 19,
+        SdrAction::Follow(_) => 20,
+        SdrAction::Width(_) => 21,
+        SdrAction::Demod(_) => 22,
+        SdrAction::Dab(_) => 26,
+        SdrAction::IqDump(_) => 27,
+        SdrAction::Volume(_) => 23,
+        SdrAction::Mute(_) => 24,
+        SdrAction::Squelch(_) => 25,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -521,41 +552,6 @@ mod tests {
     fn words<'a>(s: &'a str) -> impl FnMut() -> Result<&'a str, String> {
         let mut w = s.split_whitespace();
         move || w.next().ok_or_else(|| "missing argument".to_string())
-    }
-
-    /// Which variant an action is. Exhaustive, so a new variant fails to
-    /// compile here until `every_action_round_trips` covers it.
-    fn variant(a: &SdrAction) -> usize {
-        match a {
-            SdrAction::Tune(_) => 0,
-            SdrAction::Step(_) => 1,
-            SdrAction::Rate(_) => 2,
-            SdrAction::Gain(_) => 3,
-            SdrAction::Agc(_) => 4,
-            SdrAction::Ppm(_) => 5,
-            SdrAction::Span(_) => 6,
-            SdrAction::Fft(_) => 7,
-            SdrAction::Level { .. } => 8,
-            SdrAction::Run(_) => 9,
-            SdrAction::Seed(_) => 10,
-            SdrAction::Detect(_) => 11,
-            SdrAction::Survey(_) => 12,
-            SdrAction::Analyse(_) => 13,
-            SdrAction::Modulation(_) => 14,
-            SdrAction::Threshold(_) => 15,
-            SdrAction::Instrument(_) => 16,
-            SdrAction::Pan(_) => 17,
-            SdrAction::List(_) => 18,
-            SdrAction::Centre(_) => 19,
-            SdrAction::Follow(_) => 20,
-            SdrAction::Width(_) => 21,
-            SdrAction::Demod(_) => 22,
-            SdrAction::Dab(_) => 26,
-            SdrAction::IqDump(_) => 27,
-            SdrAction::Volume(_) => 23,
-            SdrAction::Mute(_) => 24,
-            SdrAction::Squelch(_) => 25,
-        }
     }
 
     /// Script parity: every action the UI can inject prints as a script
@@ -604,7 +600,6 @@ mod tests {
             SdrAction::Mute(true),
             SdrAction::Squelch(None),
             SdrAction::Squelch(Some(-30.0)),
-            // `Dab` was the one variant with no sample here (review M8).
             SdrAction::Dab(DabVerb::On),
             SdrAction::Dab(DabVerb::Off),
             SdrAction::Dab(DabVerb::Reset),

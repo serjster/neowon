@@ -1,4 +1,4 @@
-//! Scanning and survey (Phase 10.4): sweep a frequency range in tuning
+//! Scanning and survey: sweep a frequency range in tuning
 //! steps, keep the peaks each step detects, and record exactly what was
 //! and was not looked at, so a later survey can be compared honestly.
 //!
@@ -10,9 +10,9 @@
 //! or whose band was truncated at a peak cap with the signal below what
 //! was kept, is `unknown`, never `gone`; likewise nothing there is `new`.
 
-use neowon_catalog::BandCoverage;
-use neowon_core::CaptureFrame;
-use neowon_dsp::{DetectConfig, detect};
+use neowon_core::{BandCoverage, CaptureFrame};
+
+use crate::{DetectConfig, detect};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SurveyPlan {
@@ -51,7 +51,6 @@ impl Default for SurveyPlan {
     }
 }
 
-/// A signal a survey kept.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Peak {
     pub centre_hz: f64,
@@ -70,7 +69,6 @@ pub struct SurveyResult {
 }
 
 impl SurveyResult {
-    /// The step band containing `hz`, if any.
     pub fn band_of(&self, hz: f64) -> Option<&BandCoverage> {
         self.coverage
             .iter()
@@ -78,7 +76,6 @@ impl SurveyResult {
     }
 }
 
-/// Step centres covering the plan's range.
 pub fn steps(plan: &SurveyPlan) -> Vec<f64> {
     let width = plan.sample_rate * plan.usable;
     let mut v = Vec::new();
@@ -96,7 +93,6 @@ pub struct Survey {
     step: usize,
     /// Frames seen in the current step (settling included).
     seen: usize,
-    /// IQ gathered for the current step.
     iq: Vec<f32>,
     coverage: Vec<BandCoverage>,
     peaks: Vec<Peak>,
@@ -122,7 +118,6 @@ impl Survey {
         &self.plan
     }
 
-    /// Fraction of steps done.
     pub fn progress(&self) -> f64 {
         self.step as f64 / self.centres.len().max(1) as f64
     }
@@ -176,7 +171,12 @@ impl Survey {
         if self.seen <= self.plan.settle_frames {
             return false;
         }
-        self.iq.extend_from_slice(&frame.channels[0].data);
+        // A frame with no channels carries no signal; it is legal (every
+        // channel disabled) and must not panic the sweep.
+        let Some(ch) = frame.channels.first() else {
+            return false;
+        };
+        self.iq.extend_from_slice(&ch.data);
         if self.seen < self.plan.settle_frames + self.plan.dwell_frames {
             return false;
         }
@@ -203,7 +203,6 @@ impl Survey {
                 snr_db: o.snr_db,
             })
             .collect();
-        // Strongest first; keep the cap and say where the cut fell.
         found.sort_by(|a, b| b.power_dbfs.total_cmp(&a.power_dbfs));
         let truncated = found.len() > self.plan.peak_cap;
         found.truncate(self.plan.peak_cap);
@@ -276,7 +275,6 @@ pub struct DiffRow {
     pub after: Option<Peak>,
 }
 
-/// Whether `survey` could have seen a signal of `power` at `hz`.
 fn could_see(survey: &SurveyResult, hz: f64, power: f64) -> bool {
     match survey.band_of(hz) {
         Some(c) => c.scanned && (!c.truncated || power >= c.retained_power_floor_dbfs),
@@ -353,6 +351,35 @@ pub fn diff(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use neowon_core::{AcqMode, Acquisition, CaptureFrame, SampleLayout};
+
+    /// A frame with every channel disabled is legal and carries no signal:
+    /// feeding one must not index a channel that is not there.
+    #[test]
+    fn a_channel_less_frame_is_ignored_not_a_panic() {
+        let mut s = Survey::new(SurveyPlan {
+            start_hz: 100e6,
+            stop_hz: 101e6,
+            settle_frames: 0,
+            dwell_frames: 1,
+            ..Default::default()
+        });
+        let empty = CaptureFrame::new(
+            0,
+            None,
+            2.048e6,
+            AcqMode::Sample,
+            Acquisition::Stream { chunk: 0 },
+            SampleLayout::Complex,
+            Vec::new(),
+        )
+        .unwrap();
+        let before = s.next_centre();
+        assert!(!s.feed(&empty));
+        // The step did not close, so the sweep has not moved on.
+        assert_eq!(s.next_centre(), before);
+        assert_eq!(s.progress(), 0.0);
+    }
 
     #[test]
     fn steps_cover_the_range() {

@@ -1,5 +1,3 @@
-//! Floating windows for the waterfall spectrogram and the 3D viewport.
-
 use bevy_egui::egui;
 
 use crate::derived::FftState;

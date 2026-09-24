@@ -29,7 +29,6 @@ pub fn show(
             ui.horizontal_centered(|ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
 
-                // Channel descriptor boxes (manual 7.4).
                 for ch in 0..2 {
                     let c = link.config.channels[ch];
                     let coup = match c.coupling {
@@ -58,7 +57,6 @@ pub fn show(
                     }
                 }
 
-                // Math descriptor (F1) while the math trace is on.
                 if phosphor.mode != TraceMode::Xy
                     && meas.latest[2].is_some()
                     && chip(ui, MATH_COLOR, "F Math", true, false).clicked()
@@ -68,8 +66,7 @@ pub fn show(
 
                 ui.add_space(8.0);
 
-                // Timebase descriptor box (manual 7.5).
-                let record_len = link.caps.as_ref().map(|c| c.record_len()).unwrap_or(5000);
+                let record_len = crate::view::record_len(link);
                 let record_s = record_len as f64 / link.config.sample_rate;
                 let tb = format!(
                     "Main {}/div  {}  {} pts",
@@ -81,7 +78,6 @@ pub fn show(
                     menus.reveal(Menu::Horizontal);
                 }
 
-                // Trigger descriptor box (manual 7.5).
                 let t = link.config.trigger;
                 let slope_glyph = match t.kind {
                     TriggerKind::Edge { slope } => match slope {
@@ -113,7 +109,6 @@ pub fn show(
     (l.pixels(resp.response.rect), overlay)
 }
 
-/// Latest measurements per slot, source-colored, along the plot bottom.
 fn measurement_overlay(ctx: &egui::Context, l: &Layout, meas: &mut MeasureState) -> egui::Rect {
     let rect = l.points(Roi::MeasOverlay.rect(l));
     let r = egui::Area::new("meas-overlay".into())

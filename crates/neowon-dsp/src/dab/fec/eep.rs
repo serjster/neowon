@@ -243,7 +243,7 @@ mod tests {
         }
     }
 
-    /// Undefined combinations are refused, not guessed (D27).
+    /// Undefined combinations are refused, not guessed.
     #[test]
     fn undefined_combinations_are_refused() {
         assert_eq!(eep_profile(88, 1, 2), None, "no option 2");

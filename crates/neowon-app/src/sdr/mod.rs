@@ -1,4 +1,4 @@
-//! SDR mode (Phase 10.0–10.1): state and the frame → spectrum / waterfall /
+//! SDR mode: state and the frame → spectrum / waterfall /
 //! constellation / detection pipeline. Script actions live in `actions`,
 //! control-socket readouts in `readout`.
 //!
@@ -12,16 +12,19 @@
 
 use bevy::prelude::*;
 use neowon_backend::{InstrumentConfig, SdrCaps, SdrConfig};
-use neowon_core::{SampleLayout, SharedFrame};
+use neowon_core::{CaptureFrame, SampleLayout, SharedFrame};
 use neowon_dsp::{DetectConfig, IqSpectrum, Tracker, TrackerConfig, Window, detect, iq_spectrum};
 
 use crate::Link;
 
 mod actions;
 pub mod analysis;
+mod audio;
 pub mod dab;
 pub mod dab_audio;
+mod dab_gone;
 pub mod dab_scene;
+mod dab_state;
 mod display;
 mod instrument;
 pub mod iqdump;
@@ -31,7 +34,9 @@ pub mod scan;
 pub mod zoom;
 
 use crate::viz::waterfall::thermal;
-pub use actions::{DabChannel, DabService, DabVerb, SdrAction, run};
+pub use actions::{DabChannel, DabService, DabVerb, IqDumpVerb, SdrAction, run};
+pub use audio::{AudioDevice, AudioOwner};
+pub use dab_state::{DabState, Gone, GoneCause};
 use display::wf_level;
 pub use display::{columns, mask_dc};
 pub use parse::{parse, parse_hz, parse_instrument, parse_sim};
@@ -59,14 +64,25 @@ const WF_UNDER_FLOOR_DB: f64 = 5.0;
 #[derive(Resource)]
 pub struct SdrState {
     /// True once an SDR backend connected; the UI and flush follow it.
+    /// The instrument's capabilities are not duplicated here: the link
+    /// carries the one `Option<Capabilities>` and `Link::sdr_caps()`
+    /// answers with this half of it.
     pub active: bool,
-    pub caps: Option<SdrCaps>,
     pub config: SdrConfig,
     pub dirty: bool,
     /// Last seed sent to a generating backend.
     pub seed: u64,
     pub latest: Option<SharedFrame>,
     pub frames_seen: u64,
+    /// I/Q pairs the backend reported lost before the frames it delivered,
+    /// cumulative for the session (`CaptureFrame::dropped_before`): a USB
+    /// overflow, or the chunk discarded after a retune. This is what makes
+    /// the live-continuity claim falsifiable — without it a drop is
+    /// invisible everywhere downstream.
+    pub dropped_pairs: u64,
+    /// How many frames arrived after such a gap. Two numbers, because one
+    /// long stall and forty short ones are different faults.
+    pub drop_events: u64,
     pub fft_size: usize,
     /// Displayed span, Hz; 0 = the whole sample rate. The view sits
     /// `pan_hz` off the hardware centre, which is also where it sits by
@@ -98,41 +114,17 @@ pub struct SdrState {
     pub squelch_db: f64,
     /// The streaming demodulator, built while a mode is on.
     receiver: Option<neowon_dsp::Receiver>,
-    /// First sample index the next DAB frame should carry: frames whose
-    /// timestamps do not continue from it are spliced, not contiguous.
-    pub dab_next_sample: Option<i64>,
-    /// Wall time of the last complex IQ frame fed to the DAB receiver, or
-    /// `None` when none has arrived since the receiver started. A receiver
-    /// with no frames is looking at nothing, and past
-    /// `dab::NO_INPUT_TIMEOUT_S` the table expires (D27).
-    pub dab_last_frame_at: Option<f64>,
-    /// The DAB receiver (10.15.1), built while `sdr dab on` is in force.
-    /// It is fed the raw IQ frames, not the demodulated channel: DAB wants
-    /// the whole 1.536 MHz ensemble, so it is a wideband consumer sitting
-    /// beside the demodulator, not a mode of it.
-    pub dab: Option<neowon_dsp::dab::DabReceiver>,
-    /// PAD/DLS parser per MSC sub-channel (10.15.2), keyed by `SubChId`.
-    /// Fed each sub-channel's decoded logical-frame bytes; a retune, reset or
-    /// splice clears it rather than mixing partial segments across the seam.
-    pub dab_pad: std::collections::BTreeMap<u8, neowon_dsp::dab::pad::PadParser>,
-    /// Selected DAB service (`SId`), or `None` (`sdr dab service`).
-    pub dab_service: Option<u16>,
-    /// DAB audio playback (10.15.3): the decode worker while the selected
-    /// service is playing, `None` when the transport is stopped. Dropping
-    /// the worker is the stop — its decoders go with it, and its status is
-    /// what `get dab` reports.
-    pub dab_audio: Option<dab_audio::DabAudio>,
-    /// The last `sdr dab play` refusal, shown by the DAB panel. Without it a
-    /// refused Play looks like a dead button: no worker exists to report a
-    /// reason, so the message otherwise dies in the log (and the operator
-    /// running the GUI never sees it). Cleared by a successful Play, Stop, or
-    /// any change to the receiver/selection.
-    pub dab_play_error: Option<String>,
+    /// Everything the DAB consumer derived from the signal — receiver,
+    /// timing grid, selection, PAD parsers, playback — under one owner,
+    /// cleared only through [`SdrState::dab_reset`] and its siblings so no
+    /// site can forget half of it. See [`dab_state`].
+    pub dab: DabState,
     /// Active raw-IQ capture (`sdr iqdump`): frames are written as they
     /// arrive, so a hardware session can be replayed offline.
     pub iq_dump: Option<iqdump::IqDump>,
-    /// Output device, opened on first use.
-    pub audio: Option<neowon_audio::sink::AudioOut>,
+    /// The output device, opened on first use. One producer writes to it at
+    /// a time; see [`SdrState::audio_owner`] and [`SdrState::push_audio`].
+    pub audio: AudioDevice,
     /// Scratch audio buffer, kept to avoid a per-frame allocation.
     audio_buf: Vec<f32>,
     /// Audio of the last frame: RMS, channel power, and whether the squelch
@@ -157,7 +149,6 @@ pub struct SdrState {
     /// Rows pushed so far; the UI re-uploads the texture when it changes.
     pub wf_rows: u64,
     pub iq: Vec<[f32; 2]>,
-    /// Run detection on each frame.
     pub detect_on: bool,
     /// Detection threshold over the floor, dB.
     pub threshold_db: f64,
@@ -168,14 +159,16 @@ pub struct SdrState {
     pub analyse_on: bool,
     /// The modulation to assume, or `None` to pick it from cumulants.
     pub modulation: Option<neowon_core::Modulation>,
+    /// The lab's latest result and the classifier's verdict from the same
+    /// run. Each carries its target's track id; readouts reach them only
+    /// through `analysis_of` / `classification_of`, never bare.
     pub analysis: Option<analysis::Analysis>,
-    /// The DSP classifier's verdict on the same signal.
-    pub classification: Option<neowon_dsp::classify::Classification>,
+    pub classification: Option<analysis::Classified>,
     /// The lab's worker thread, started on first use.
     lab: Option<analysis::Lab>,
     /// A survey in progress, and the last completed ones (oldest first).
-    pub survey: Option<neowon_sdr::survey::Survey>,
-    pub surveys: Vec<neowon_sdr::survey::SurveyResult>,
+    pub survey: Option<neowon_dsp::survey::Survey>,
+    pub surveys: Vec<neowon_dsp::survey::SurveyResult>,
     last_seq: Option<u64>,
     /// The instruments `instrument scope|sdr` switches between.
     pub launch: crate::launch::Launch,
@@ -194,12 +187,13 @@ impl Default for SdrState {
     fn default() -> Self {
         Self {
             active: false,
-            caps: None,
             config: SdrConfig::default(),
             dirty: false,
             seed: 1,
             latest: None,
             frames_seen: 0,
+            dropped_pairs: 0,
+            drop_events: 0,
             fft_size: 4096,
             span_hz: 0.0,
             pan_hz: 0.0,
@@ -212,15 +206,9 @@ impl Default for SdrState {
             mute: false,
             squelch_db: -120.0,
             receiver: None,
-            dab_next_sample: None,
-            dab_last_frame_at: None,
-            dab: None,
-            dab_pad: Default::default(),
-            dab_service: None,
-            dab_audio: None,
-            dab_play_error: None,
+            dab: DabState::default(),
             iq_dump: None,
-            audio: None,
+            audio: AudioDevice::default(),
             audio_buf: Vec::new(),
             audio_rms: 0.0,
             audio_channel_dbfs: f64::NEG_INFINITY,
@@ -260,6 +248,25 @@ impl SdrState {
         }
     }
 
+    /// Account for one arriving IQ frame: it is one more frame seen, and
+    /// whatever the backend says was lost before it is a gap in the stream.
+    /// The counting lives here rather than in the ingest system so there is
+    /// one place a drop can be forgotten, instead of one per consumer.
+    pub fn note_frame(&mut self, frame: &CaptureFrame, now: f64) {
+        self.frames_seen += 1;
+        let dropped = frame.dropped_before();
+        if dropped > 0 {
+            self.dropped_pairs += dropped;
+            self.drop_events += 1;
+            tracing::warn!(
+                pairs = dropped,
+                total = self.dropped_pairs,
+                "IQ stream gap: samples lost before this frame"
+            );
+        }
+        self.dab.last_frame_at = Some(now);
+    }
+
     /// The span actually shown, Hz.
     pub fn span(&self) -> f64 {
         let rate = self.config.sample_rate;
@@ -287,6 +294,19 @@ impl SdrState {
             let d = |t: &&neowon_dsp::Track| (t.last.centre_hz - self.tuned_hz).abs();
             d(a).total_cmp(&d(b))
         })
+    }
+
+    /// The lab's result for track `id`, or `None` when its latest run
+    /// measured another signal (or none): a readout joins a lab result to a
+    /// detection by identity, so one signal's EVM is never shown beside
+    /// another's centre and power.
+    pub fn analysis_of(&self, id: u64) -> Option<&analysis::Analysis> {
+        self.analysis.as_ref().filter(|a| a.track == id)
+    }
+
+    /// The classifier's verdict on track `id`, joined the same way.
+    pub fn classification_of(&self, id: u64) -> Option<&analysis::Classified> {
+        self.classification.as_ref().filter(|c| c.track == id)
     }
 
     /// The channel width shown and filed: the nearest detection's measured
@@ -323,7 +343,7 @@ impl SdrState {
     ///
     /// A move is a new signal: the DAB receiver forgets its lock and table,
     /// because a table decoded from the old window would name a station that
-    /// may not be at the new one (D27).
+    /// may not be at the new one.
     pub fn set_centre(&mut self, hz: f64) {
         let moved = self.config.centre_hz != hz;
         self.config.centre_hz = hz;
@@ -336,10 +356,36 @@ impl SdrState {
         }
     }
 
-    /// Forget the DAB receiver's lock, table, selection and playback: the
-    /// hardware window moved, the stream stopped or the operator reset it.
+    /// Forget the DAB receiver's lock, table, timing, selection and
+    /// playback: the hardware window moved, the stream stopped or the
+    /// operator reset it.
+    ///
+    /// **The one entry point.** Every site that moves the hardware window,
+    /// stops the stream, switches instrument or cycles the receiver calls
+    /// this; `DabState` does the clearing and this adds the half it does
+    /// not own — flushing the device so a stopped service cannot play on.
     pub fn dab_reset(&mut self) {
-        dab::reset(self);
+        if self.dab.reset() {
+            self.audio.clear();
+        }
+        debug_assert!(!self.dab.holds_derived(), "a reset left DAB state behind");
+    }
+
+    /// The frame stream stopped, so the lock, table and timing grid
+    /// describe a stream that is no longer there (`dab::NO_INPUT_TIMEOUT_S`).
+    pub fn dab_no_input(&mut self) {
+        if self.dab.no_input() {
+            self.audio.clear();
+        }
+        debug_assert!(!self.dab.holds_derived(), "no_input left DAB state behind");
+    }
+
+    /// The receiver's table expired under a selection: drop the selection,
+    /// its parsers and playback, and leave the running receiver alone.
+    pub fn dab_forget_selection(&mut self) {
+        if self.dab.forget_selection() {
+            self.audio.clear();
+        }
     }
 
     /// Strongest displayed signal: `(absolute Hz, dBFS)`.
@@ -361,30 +407,10 @@ impl SdrState {
     pub fn level(&self, db: f64) -> f32 {
         (1.0 - (self.ref_db - db) / self.range_db).clamp(0.0, 1.0) as f32
     }
-
-    /// The audio state the UI and `get audio` report. All of `off`,
-    /// `no device`, `starting`, `muted` and `squelched` mean silence, so
-    /// they are told apart by name. The sink opens off this thread (M17),
-    /// so `starting` is a state that can be caught in the act.
-    pub fn audio_state(&self) -> &'static str {
-        if self.demod.is_none() {
-            return "off";
-        }
-        match &self.audio {
-            None => "starting",
-            Some(a) => match a.state() {
-                neowon_audio::sink::SinkState::Starting => "starting",
-                neowon_audio::sink::SinkState::Unavailable => "no device",
-                neowon_audio::sink::SinkState::Ready if self.mute => "muted",
-                neowon_audio::sink::SinkState::Ready if self.audio_squelched => "squelched",
-                neowon_audio::sink::SinkState::Ready => "playing",
-            },
-        }
-    }
 }
 
 /// Fold newly arrived frames into the displays.
-pub fn update(mut sdr: ResMut<SdrState>) {
+pub fn update(mut sdr: ResMut<SdrState>, link: Res<Link>) {
     // Decoded DAB audio and its PAD reach the sink and the parsers every
     // frame, including frames with no new IQ.
     dab_audio::drain(&mut sdr);
@@ -392,7 +418,7 @@ pub fn update(mut sdr: ResMut<SdrState>) {
     let Some(frame) = sdr.latest.clone() else {
         return;
     };
-    if !sdr.active || sdr.last_seq == Some(frame.seq) || frame.layout != SampleLayout::Complex {
+    if !sdr.active || sdr.last_seq == Some(frame.seq) || frame.layout() != SampleLayout::Complex {
         return;
     }
     sdr.last_seq = Some(frame.seq);
@@ -426,7 +452,7 @@ pub fn update(mut sdr: ResMut<SdrState>) {
     sdr.spectrum = Some(spec);
     scan::feed(&mut sdr, &frame);
     if sdr.detect_on {
-        track(&mut sdr, &frame);
+        track(&mut sdr, &frame, link.sdr_caps());
     }
     // The lab is costly (a channel filter and two recoveries), so it runs
     // on its own thread, a few times a second, on the signal nearest the
@@ -436,6 +462,18 @@ pub fn update(mut sdr: ResMut<SdrState>) {
         let (centre, setting) = (sdr.config.centre_hz, sdr.modulation);
         match sdr.nearest_track().cloned() {
             Some(target) => {
+                // The target moved to another signal: what the lab holds
+                // belongs to the old one and is dropped, not relabelled.
+                if sdr.analysis.as_ref().is_some_and(|a| a.track != target.id) {
+                    sdr.analysis = None;
+                }
+                if sdr
+                    .classification
+                    .as_ref()
+                    .is_some_and(|c| c.track != target.id)
+                {
+                    sdr.classification = None;
+                }
                 sdr.lab
                     .get_or_insert_with(analysis::Lab::spawn)
                     .submit(&frame, centre, target, setting);
@@ -447,75 +485,35 @@ pub fn update(mut sdr: ResMut<SdrState>) {
         }
     }
     if let Some(mode) = sdr.demod {
-        feed_audio(&mut sdr, &frame, mode);
+        audio::feed(&mut sdr, &frame, mode);
     }
 }
 
 /// Adopt the lab's finished run, unless the operator has since turned the
-/// lab off, retuned the hardware or changed the modulation setting.
+/// lab off, retuned the hardware, changed the modulation setting, or moved
+/// the cursor to another signal (the run's target is no longer the one
+/// nearest the tuned frequency).
 fn take_lab_result(sdr: &mut SdrState) {
-    let Some(r) = sdr.lab.as_mut().and_then(|l| l.poll()) else {
-        return;
-    };
+    if let Some(r) = sdr.lab.as_mut().and_then(|l| l.poll()) {
+        adopt(sdr, r);
+    }
+}
+
+fn adopt(sdr: &mut SdrState, r: analysis::LabResult) {
     if sdr.active
         && sdr.analyse_on
         && r.centre_hz == sdr.config.centre_hz
         && r.setting == sdr.modulation
+        && sdr.nearest_track().map(|t| t.id) == Some(r.track)
     {
         sdr.analysis = r.analysis;
         sdr.classification = r.classification;
     }
 }
 
-/// Demodulate the tuned channel from `frame` and push it to the sink. The
-/// receiver and sink persist; only the config changes frame to frame.
-fn feed_audio(sdr: &mut SdrState, frame: &neowon_core::CaptureFrame, mode: neowon_dsp::DemodMode) {
-    // The device opens on its own thread (M17): until it reports, the
-    // receiver runs at the sink's default rate and `configure` below picks
-    // the real one up on a later frame.
-    let audio_rate = sdr
-        .audio
-        .get_or_insert_with(neowon_audio::sink::AudioOut::spawn)
-        .rate();
-    let cfg = neowon_dsp::ReceiverConfig {
-        mode,
-        offset_hz: sdr.tuned_hz - sdr.config.centre_hz,
-        width_hz: sdr.channel_width().clamp(200.0, 0.9 * frame.sample_rate),
-        sample_rate: frame.sample_rate,
-        audio_rate,
-        deemphasis_tau_s: matches!(
-            mode,
-            neowon_dsp::DemodMode::Nfm | neowon_dsp::DemodMode::Wfm
-        )
-        .then_some(75e-6),
-    };
-    let mut audio = std::mem::take(&mut sdr.audio_buf);
-    {
-        let rx = sdr
-            .receiver
-            .get_or_insert_with(|| neowon_dsp::Receiver::new(cfg));
-        rx.configure(cfg);
-        audio.clear();
-        rx.process(&frame.channels[0].data, &mut audio);
-        sdr.audio_channel_dbfs = rx.channel_dbfs();
-    }
-    sdr.audio_rms = if audio.is_empty() {
-        0.0
-    } else {
-        (audio.iter().map(|x| x * x).sum::<f32>() / audio.len() as f32).sqrt()
-    };
-    sdr.audio_squelched = sdr.audio_channel_dbfs < sdr.squelch_db;
-    if sdr.audio_squelched {
-        // Silence, but keep the receiver's filters warm (no reset).
-    } else if let Some(out) = &sdr.audio {
-        out.push(&audio);
-    }
-    sdr.audio_buf = audio;
-}
-
 /// Detect in the frame (one detection frame per SDR frame) and fold the
 /// observations into the tracker.
-fn track(sdr: &mut SdrState, frame: &neowon_core::CaptureFrame) {
+fn track(sdr: &mut SdrState, frame: &neowon_core::CaptureFrame, caps: Option<&SdrCaps>) {
     let (centre, rate) = (sdr.config.centre_hz, frame.sample_rate);
     if sdr.tracked != (centre, rate) {
         sdr.tracker.clear();
@@ -527,7 +525,7 @@ fn track(sdr: &mut SdrState, frame: &neowon_core::CaptureFrame) {
         blocks: (pairs / sdr.fft_size).max(1),
         threshold_db: sdr.threshold_db,
         // The RTL2832's DC spike is not a signal; the simulator has none.
-        dc_guard: if sdr.caps.as_ref().is_some_and(|c| c.tuner == "sim") {
+        dc_guard: if caps.is_some_and(|c| c.tuner == "sim") {
             0
         } else {
             DC_GUARD
@@ -553,6 +551,9 @@ pub fn flush(mut sdr: ResMut<SdrState>, mut link: ResMut<Link>) {
         link.sup.apply(InstrumentConfig::Sdr(sdr.config.clone()));
     }
 }
+
+#[cfg(test)]
+pub(crate) mod join_tests;
 
 #[cfg(test)]
 mod tests {
@@ -614,7 +615,7 @@ mod tests {
         };
         let mut frame = next(&mut b);
         for _ in 0..100 {
-            track(&mut sdr, &frame);
+            track(&mut sdr, &frame, None);
             if sdr.nearest_track().is_some() {
                 break;
             }

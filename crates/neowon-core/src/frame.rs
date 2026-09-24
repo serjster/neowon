@@ -2,9 +2,8 @@ use std::sync::Arc;
 
 use crate::{AcqMode, Acquisition};
 
-/// Sample domain of a frame's channel data (D1b: the one layout home is the
-/// frame, so every consumer can read it without guessing from channel
-/// shapes).
+/// Sample domain of a frame's channel data. The frame is the layout's one
+/// home, so every consumer can read it without guessing from channel shapes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SampleLayout {
     /// One real scalar per sample.
@@ -49,7 +48,7 @@ impl IqCal {
 /// Why a frame could not be constructed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameError {
-    /// `Complex` data only makes sense for sampled streams (D6): a record,
+    /// `Complex` data only makes sense for sampled streams: a record,
     /// or a peak/average acquisition, cannot be complex.
     ComplexRecordRejected,
 }
@@ -88,21 +87,39 @@ pub struct CaptureFrame {
     /// **pairs** per second; Real frames are samples/second.
     pub sample_rate: f64,
     /// How the samples were produced (affects interpretation: peak-detect
-    /// records are min/max pairs).
-    pub acq: AcqMode,
+    /// records are min/max pairs). Private with [`CaptureFrame::layout`]:
+    /// the pair is a matrix with invalid cells, so it is only ever
+    /// set through [`CaptureFrame::new`], which checks it.
+    acq: AcqMode,
     /// Sample domain of every channel in this frame.
-    pub layout: SampleLayout,
+    layout: SampleLayout,
+    /// Units (samples, or I/Q pairs) the producer *knows* were lost
+    /// immediately before this frame's first sample — a USB overflow, a
+    /// host-side ring overrun, a chunk deliberately discarded after a
+    /// retune. Zero means "none lost", not "unknown": a producer that
+    /// cannot lose samples leaves it at zero, and one that can must say so.
+    ///
+    /// Private with [`CaptureFrame::dropped_before`] and set only through
+    /// [`CaptureFrame::with_dropped_before`], for the same reason `acq` and
+    /// `layout` are: a frame is immutable once produced.
+    ///
+    /// This is what makes a continuity claim falsifiable. `t_capture` alone
+    /// cannot: it is arrival-derived for a polled instrument, so a gap check
+    /// on it fires on ordinary jitter (see `docs/tasks/phase10-dab-spec.md`
+    /// deviation 19).
+    dropped_before: u64,
     pub channels: Vec<ChannelCapture>,
 }
 
 pub type SharedFrame = Arc<CaptureFrame>;
 
 impl CaptureFrame {
-    /// Construct a frame, rejecting the invalid cells (D6): `Complex` is
+    /// Construct a frame, rejecting the invalid cells: `Complex` is
     /// only valid on a `Stream` delivered in `AcqMode::Sample`. `delivery` is
     /// the producing instrument's `Acquisition`; it is checked, not stored.
-    /// Direct struct-literal construction remains possible but skips this
-    /// check.
+    ///
+    /// This is the only way to set `acq`/`layout` — they are private, so
+    /// there is no struct-literal path around the check.
     pub fn new(
         seq: u64,
         t_capture: Option<f64>,
@@ -123,6 +140,59 @@ impl CaptureFrame {
             sample_rate,
             acq,
             layout,
+            dropped_before: 0,
+            channels,
+        })
+    }
+
+    /// Declare that `units` samples (I/Q pairs for a complex frame) were
+    /// lost immediately before this frame. A producer that counts drops
+    /// calls this on every frame it emits, including with 0.
+    ///
+    /// A builder rather than an eighth `new` parameter: `new` already takes
+    /// seven, and the drop count is the one field a producer discovers
+    /// *while* assembling the frame rather than before it.
+    #[must_use]
+    pub fn with_dropped_before(mut self, units: u64) -> Self {
+        self.dropped_before = units;
+        self
+    }
+
+    /// Units lost immediately before this frame's first sample. See
+    /// [`CaptureFrame::with_dropped_before`].
+    pub fn dropped_before(&self) -> u64 {
+        self.dropped_before
+    }
+
+    pub fn acq(&self) -> AcqMode {
+        self.acq
+    }
+
+    pub fn layout(&self) -> SampleLayout {
+        self.layout
+    }
+
+    /// The same record with different channel data and a different
+    /// acquisition mode — what host-side averaging produces. The matrix
+    /// still holds: a complex frame has no peak or averaged form, so
+    /// that combination is refused rather than written.
+    pub fn with_acq(
+        &self,
+        acq: AcqMode,
+        channels: Vec<ChannelCapture>,
+    ) -> Result<Self, FrameError> {
+        if self.layout == SampleLayout::Complex && !matches!(acq, AcqMode::Sample) {
+            return Err(FrameError::ComplexRecordRejected);
+        }
+        Ok(Self {
+            seq: self.seq,
+            t_capture: self.t_capture,
+            sample_rate: self.sample_rate,
+            acq,
+            layout: self.layout,
+            // Averaging or peak-detecting a record does not un-lose what was
+            // lost before it.
+            dropped_before: self.dropped_before,
             channels,
         })
     }
@@ -268,6 +338,55 @@ mod tests {
     }
 
     #[test]
+    fn with_acq_keeps_the_matrix() {
+        let complex = CaptureFrame::new(
+            1,
+            None,
+            1.0,
+            AcqMode::Sample,
+            STREAM,
+            SampleLayout::Complex,
+            vec![real_cap(vec![1.0, 2.0])],
+        )
+        .unwrap();
+        // The only door onto `acq` is checked too: a complex record has no
+        // averaged form, so the supervisor cannot mint one.
+        assert_eq!(
+            complex
+                .with_acq(AcqMode::Average(4), vec![real_cap(vec![0.0, 0.0])])
+                .unwrap_err(),
+            FrameError::ComplexRecordRejected
+        );
+        assert_eq!(
+            complex
+                .with_acq(AcqMode::Sample, vec![real_cap(vec![0.0, 0.0])])
+                .unwrap()
+                .acq(),
+            AcqMode::Sample
+        );
+        let real = CaptureFrame::new(
+            7,
+            Some(0.25),
+            10.0,
+            AcqMode::Sample,
+            STREAM,
+            SampleLayout::Real,
+            vec![real_cap(vec![1.0, 2.0])],
+        )
+        .unwrap();
+        let avg = real
+            .with_acq(AcqMode::Average(4), vec![real_cap(vec![3.0, 4.0])])
+            .unwrap();
+        assert_eq!(avg.acq(), AcqMode::Average(4));
+        assert_eq!(avg.layout(), SampleLayout::Real);
+        assert_eq!(
+            (avg.seq, avg.t_capture, avg.sample_rate),
+            (7, Some(0.25), 10.0)
+        );
+        assert_eq!(avg.channels[0].data, vec![3.0, 4.0]);
+    }
+
+    #[test]
     fn duration_counts_pairs_for_complex() {
         let cap = real_cap(vec![0.0; 20]);
         let real = CaptureFrame::new(
@@ -312,5 +431,29 @@ mod tests {
         assert!((cap.cal.volts_i(10.0) - 6.0).abs() < 1e-12);
         assert!((cap.cal.volts_q(-10.0) + 21.0).abs() < 1e-12);
         assert_eq!(cap.iter_iq().collect::<Vec<_>>(), vec![(10.0, -10.0)]);
+    }
+
+    #[test]
+    fn a_frame_reports_no_drop_unless_its_producer_says_so() {
+        let f = CaptureFrame::new(
+            1,
+            None,
+            10.0,
+            AcqMode::Sample,
+            STREAM,
+            SampleLayout::Real,
+            vec![real_cap(vec![0.0; 4])],
+        )
+        .unwrap();
+        // Zero means "none lost", and it is the only value a producer that
+        // does not count can produce.
+        assert_eq!(f.dropped_before(), 0);
+        let gap = f.clone().with_dropped_before(16_384);
+        assert_eq!(gap.dropped_before(), 16_384);
+        // Averaging or peak-detecting does not un-lose the gap.
+        let avg = gap
+            .with_acq(AcqMode::Average(4), vec![real_cap(vec![0.0; 4])])
+            .unwrap();
+        assert_eq!(avg.dropped_before(), 16_384);
     }
 }

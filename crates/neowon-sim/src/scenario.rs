@@ -8,7 +8,6 @@ use std::sync::Arc;
 use crate::figures::XyFigure;
 use crate::signal::{Component, SignalSpec, Xorshift};
 
-/// Two-channel stimulus definition.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Scenario {
     PerChannel([SignalSpec; 2]),
@@ -213,7 +212,6 @@ impl Scenario {
         }
     }
 
-    /// Load a stereo WAV as an XY playback scenario.
     pub fn from_wav(path: &std::path::Path, amp: f64) -> std::io::Result<Scenario> {
         let (rate, samples) = neowon_core::wav::read_pcm16(path)?;
         Ok(Scenario::XyWav {
@@ -239,10 +237,8 @@ mod tests {
     #[test]
     fn probe_comp_matches_hardware_signal() {
         let s = Scenario::preset("probe-comp").unwrap();
-        // Mid high-dwell of the CH1 square: ~ +5 V minus nothing.
         let v = s.sample_quiet(250e-6); // quarter into the 1 kHz period
         assert!((v[0] - 5.0).abs() < 1e-9, "{v:?}");
-        // Low dwell: 0 V.
         let v = s.sample_quiet(750e-6);
         assert!(v[0].abs() < 1e-9, "{v:?}");
     }

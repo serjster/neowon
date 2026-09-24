@@ -4123,6 +4123,7 @@ dependencies = [
  "neowon-sdr",
  "neowon-sim",
  "neowon-vds1022",
+ "objc2-app-kit 0.3.2",
  "png",
  "tracing",
 ]
@@ -4167,6 +4168,7 @@ dependencies = [
  "neowon-backend",
  "neowon-core",
  "neowon-dsp",
+ "neowon-sdr",
  "neowon-sim",
  "neowon-vds1022",
  "tracing",
@@ -4193,6 +4195,7 @@ dependencies = [
 name = "neowon-dsp"
 version = "0.2.1"
 dependencies = [
+ "neowon-backend",
  "neowon-core",
  "neowon-sim",
  "rustfft",
@@ -4227,7 +4230,6 @@ dependencies = [
  "anyhow",
  "crossbeam-channel",
  "neowon-backend",
- "neowon-catalog",
  "neowon-core",
  "neowon-dsp",
  "neowon-sim",

@@ -1,8 +1,11 @@
 //! Engine-free core types shared by every neowon crate: capture frames,
-//! channel/trigger vocabulary. No I/O, no device specifics, no GPU.
+//! channel/trigger vocabulary. No device specifics, no GPU; the only I/O is
+//! the capture file formats and `atomic_file`, the one way the app writes.
 
+pub mod atomic_file;
 pub mod frame;
 pub mod instrument;
+pub mod ladders;
 pub mod modulation;
 pub mod nwc;
 pub mod observation;
@@ -15,9 +18,9 @@ pub use instrument::{
     SdrConfig, SdrGain, TriggerConfig, stream_chunk_pairs,
 };
 pub use modulation::Modulation;
-pub use observation::SignalObservation;
+pub use observation::{BandCoverage, SignalObservation};
 
-/// Input coupling. Hardware encodings are backend-specific.
+/// Hardware encodings are backend-specific.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Coupling {
     Ac,
@@ -25,7 +28,6 @@ pub enum Coupling {
     Gnd,
 }
 
-/// Trigger edge slope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Slope {
     Rising,
@@ -101,14 +103,12 @@ impl PulseCondition {
     }
 }
 
-/// Video trigger sync mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VideoSync {
     Line,
     Field,
     OddField,
     EvenField,
-    /// Trigger on a specific line number.
     LineNumber,
 }
 
@@ -177,5 +177,38 @@ impl TriggerKind {
             TriggerKind::Slope { .. } => "Slope",
             TriggerKind::Video { .. } => "Video",
         }
+    }
+}
+
+/// A fresh directory for one test's files, no other test or process shares
+/// it (`<tmp>/neowon-<label>-<pid>-<n>`), removed when dropped. A fixed name
+/// under the temp dir would let two concurrent `cargo test` runs truncate
+/// each other's files mid-read.
+#[cfg(test)]
+pub(crate) struct TestDir(std::path::PathBuf);
+
+#[cfg(test)]
+pub(crate) fn test_scratch(label: &str) -> TestDir {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static SEQ: AtomicU32 = AtomicU32::new(0);
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("neowon-{label}-{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    TestDir(dir)
+}
+
+#[cfg(test)]
+impl std::ops::Deref for TestDir {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
     }
 }

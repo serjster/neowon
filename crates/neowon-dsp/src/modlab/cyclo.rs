@@ -1,4 +1,4 @@
-//! Cyclostationary estimates (M4): spectral lines that a linearly
+//! Cyclostationary estimates: spectral lines that a linearly
 //! modulated signal's nonlinear transforms carry. `|x|²` of a pulse-shaped
 //! signal has a line at the symbol rate (for roll-off > 0); `x^M` of an
 //! M-fold symmetric constellation has one at M × the carrier offset.

@@ -2,9 +2,9 @@
 //! IQ constellation. Every control injects a script action.
 
 use bevy_egui::egui;
-use neowon_backend::SdrGain;
+use neowon_backend::{SdrCaps, SdrGain};
 
-use super::sdr_view::{BG, GRID, TRACE, fmt_mhz, inject};
+use super::sdr_view::{fmt_mhz, inject};
 use crate::Link;
 use crate::refmap::RefMap;
 use crate::script::{Action, Script};
@@ -13,39 +13,43 @@ use crate::uitree;
 
 const SPANS: [f64; 6] = [0.0, 1e6, 500e3, 200e3, 100e3, 50e3];
 
-/// Mouse gestures on the canvas, shown on hover rather than as fine print.
-const GESTURES: &str = "click: tune\n\
-    drag a channel edge: width\n\
-    drag: pan (vertical: reference level)\n\
-    right-drag: move the hardware window\n\
-    scroll: span + sample rate · shift+scroll: pan\n\
-    ctrl+scroll: dB range\n\
-    double-click: reset the view";
-
 /// The whole dock: titled, collapsible sections like the scope's, labels
 /// in the left column. Run/stop, tune steps and the views live on the
 /// front panel; the device is named in the app bar.
-pub fn show(ui: &mut egui::Ui, sdr: &SdrState, link: &Link, rm: &RefMap, script: &mut Script) {
+pub fn show(
+    ui: &mut egui::Ui,
+    sdr: &SdrState,
+    link: &Link,
+    rm: &RefMap,
+    script: &mut Script,
+    now: f64,
+) {
     section(ui, "Tuning", true, |ui| tuning(ui, sdr, rm, script));
-    section(ui, "Receiver", true, |ui| receiver(ui, sdr, script));
+    section(ui, "Receiver", true, |ui| {
+        receiver(ui, sdr, link.sdr_caps(), script)
+    });
     section(ui, "Display", false, |ui| display(ui, sdr, script));
     section(ui, "Audio", true, |ui| audio(ui, sdr, script));
     // While the receiver runs the section is held open: turning DAB on is a
     // request to see the ensemble, and a collapsed section would hide the
-    // table, the DLS line and the service list the switch exists for.
-    section_state(
+    // table, the DLS line and the service list the switch exists for. The
+    // moment it turns on — from the dock, View → DAB receiver or a script —
+    // the section is scrolled to the top of the rail, so the switch that
+    // reveals DAB actually reveals it.
+    let header = section_state(
         ui,
         "DAB",
-        sdr.dab.is_some(),
-        sdr.dab.is_some().then_some(true),
-        |ui| super::dab_dock::show(ui, sdr, rm, script),
+        sdr.dab.on(),
+        sdr.dab.on().then_some(true),
+        |ui| super::dab_dock::show(ui, sdr, link.sdr_caps(), rm, script, now),
     );
+    super::dab_dock::reveal(ui, &header, sdr.dab.on());
     section(ui, "Signals", true, |ui| signals(ui, sdr, script));
     section(ui, "Analysis", sdr.analyse_on, |ui| {
         lab(ui, sdr, script);
-        constellation(ui, sdr);
+        super::sdr_iq::constellation(ui, sdr);
     });
-    if sdr.caps.as_ref().is_some_and(|c| c.tuner == "sim") {
+    if link.sdr_caps().is_some_and(|c| c.tuner == "sim") {
         section(ui, "Simulator", false, |ui| {
             egui::ComboBox::from_label("Scene")
                 .selected_text(link.stimulus.clone())
@@ -72,7 +76,7 @@ fn section_state(
     default_open: bool,
     force_open: Option<bool>,
     body: impl FnOnce(&mut egui::Ui),
-) {
+) -> egui::Response {
     let r = egui::CollapsingHeader::new(egui::RichText::new(title).strong())
         .id_salt(("sdr-dock", title))
         .default_open(default_open)
@@ -87,9 +91,9 @@ fn section_state(
             .rect
             .union(r.body_response.map_or(r.header_response.rect, |b| b.rect)),
     );
+    r.header_response
 }
 
-/// A two-column grid: label left, control right.
 fn grid(ui: &mut egui::Ui, id: &str, body: impl FnOnce(&mut egui::Ui)) {
     egui::Grid::new(id)
         .num_columns(2)
@@ -99,9 +103,9 @@ fn grid(ui: &mut egui::Ui, id: &str, body: impl FnOnce(&mut egui::Ui)) {
 
 fn tuning(ui: &mut egui::Ui, sdr: &SdrState, rm: &RefMap, script: &mut Script) {
     let c = &sdr.config;
-    ui.label("Tuned (MHz)").on_hover_text(GESTURES);
+    ui.label("Tuned (MHz)")
+        .on_hover_text(super::sdr_marks::GESTURES);
     let mut mhz = sdr.tuned_hz / 1e6;
-    // The primary readout: larger than everything else in the dock.
     ui.style_mut().override_text_style = Some(egui::TextStyle::Heading);
     let tuned = ui
         .add(
@@ -184,13 +188,9 @@ fn tuning(ui: &mut egui::Ui, sdr: &SdrState, rm: &RefMap, script: &mut Script) {
     });
 }
 
-fn receiver(ui: &mut egui::Ui, sdr: &SdrState, script: &mut Script) {
+fn receiver(ui: &mut egui::Ui, sdr: &SdrState, caps: Option<&SdrCaps>, script: &mut Script) {
     let c = &sdr.config;
-    let rates = sdr
-        .caps
-        .as_ref()
-        .map(|c| c.sample_rates.clone())
-        .unwrap_or_default();
+    let rates = caps.map(|c| c.sample_rates.clone()).unwrap_or_default();
     grid(ui, "sdr-receiver", |ui| {
         ui.label("Rate");
         egui::ComboBox::from_id_salt("sdr-rate")
@@ -216,7 +216,7 @@ fn receiver(ui: &mut egui::Ui, sdr: &SdrState, script: &mut Script) {
                     SdrAction::Gain(if want_auto { None } else { Some(29.7) }),
                 );
             }
-            if let (SdrGain::Manual(db), Some(caps)) = (c.gain, &sdr.caps) {
+            if let (SdrGain::Manual(db), Some(caps)) = (c.gain, caps) {
                 let mut g = db;
                 let max = caps.gains_db.last().copied().unwrap_or(50.0);
                 if ui
@@ -247,6 +247,31 @@ fn receiver(ui: &mut egui::Ui, sdr: &SdrState, script: &mut Script) {
         {
             inject(script, SdrAction::Ppm(ppm));
         }
+        ui.end_row();
+        // Continuity, stated rather than assumed: what the backend says it
+        // lost. It sits in Receiver, with the stream it describes, because
+        // that section is open by default — a drop count nobody expands to
+        // see is not much better than no drop count. `get sdr` reports the
+        // same two numbers (script parity).
+        ui.label("Drops");
+        // Two lines once there are gaps: on one, the counts outgrew the
+        // rail's second column and were cut off at its edge.
+        let drops = ui.monospace(if sdr.drop_events == 0 {
+            format!("none in {} frames", sdr.frames_seen)
+        } else {
+            format!(
+                "{} gaps\n{} pairs ({:.0} ms)",
+                sdr.drop_events,
+                sdr.dropped_pairs,
+                1e3 * sdr.dropped_pairs as f64 / sdr.config.sample_rate.max(1.0)
+            )
+        });
+        drops.on_hover_text(
+            "I/Q pairs the backend reported lost before a delivered frame \
+             (a USB overflow, a frame the app could not take, or the chunk \
+             discarded after a retune), counted since the SDR connected. \
+             `get sdr` → dropped_pairs / drop_events.",
+        );
         ui.end_row();
     });
 }
@@ -325,6 +350,9 @@ fn display(ui: &mut egui::Ui, sdr: &SdrState, script: &mut Script) {
             None => "-".into(),
         });
         ui.end_row();
+        // The dip under the hardware centre is display makeup, named where
+        // the display's other settings are; the canvas tags it too.
+        super::sdr_marks::notch_row(ui, sdr);
     });
 }
 
@@ -429,7 +457,11 @@ fn lab(ui: &mut egui::Ui, sdr: &SdrState, script: &mut Script) {
     });
     // Always five lines, so the constellation and signal list below never
     // jump as results come and go.
-    let results = match &sdr.analysis {
+    // The lab's result and verdict are shown only for the signal the lab
+    // targets now (joined by track id): a result on another signal is not
+    // relabelled as this one's.
+    let target = sdr.nearest_track().map(|t| t.id);
+    let results = match target.and_then(|id| sdr.analysis_of(id)) {
         Some(a) => format!(
             "#{} {}{}  {:.1} ksym/s\nEVM {:.2} %  MER {:.1} dB\nC42 {:+.3}  |C40| {:.3}",
             a.track,
@@ -441,21 +473,24 @@ fn lab(ui: &mut egui::Ui, sdr: &SdrState, script: &mut Script) {
             a.cumulants.c42,
             a.cumulants.c40.norm()
         ),
-        None if sdr.analyse_on => "no signal near the tuned frequency\n\n".into(),
-        None => "\n\n".into(),
+        None if !sdr.analyse_on => "\n\n".into(),
+        None => match target {
+            Some(id) => format!("#{id} measuring…\n\n"),
+            None => "no signal near the tuned frequency\n\n".into(),
+        },
     };
-    let class = match &sdr.classification {
+    let class = match target.and_then(|id| sdr.classification_of(id)) {
         Some(c) => format!(
             "class {}  {:.2} ({})\n  next {} (margin {:.2})",
-            if c.unknown {
+            if c.verdict.unknown {
                 "unknown"
             } else {
-                c.class.label()
+                c.verdict.class.label()
             },
-            c.confidence,
-            c.trust.label(),
-            c.runner_up.label(),
-            c.margin
+            c.verdict.confidence,
+            c.verdict.trust.label(),
+            c.verdict.runner_up.label(),
+            c.verdict.margin
         ),
         None => "\n".into(),
     };
@@ -488,7 +523,6 @@ fn signals(ui: &mut egui::Ui, sdr: &SdrState, script: &mut Script) {
         .max_height(sdr.list_px)
         .auto_shrink([false, false])
         .show(ui, |ui| track_rows(ui, sdr, &tracks, script));
-    // Resize handle.
     let (r, resp) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 8.0), egui::Sense::drag());
     let color = if resp.hovered() || resp.dragged() {
@@ -538,79 +572,5 @@ fn track_rows(
     }
     if tracks.is_empty() && sdr.detect_on {
         ui.weak("no active signals");
-    }
-}
-
-/// I/Q scatter of the latest frame's decimated samples. Scaled to the
-/// samples' peak (real signals sit tens of dB below full scale, so a fixed
-/// full-scale box shows a dot); the zoom factor is printed, and 1× means
-/// the box edge is full scale.
-fn constellation(ui: &mut egui::Ui, sdr: &SdrState) {
-    if let Some(a) = &sdr.analysis {
-        return recovered(ui, a);
-    }
-    let peak = sdr
-        .iq
-        .iter()
-        .flat_map(|p| [p[0].abs(), p[1].abs()])
-        .fold(0.0f32, f32::max);
-    let zoom = if peak > 0.0 {
-        (0.9 / peak).max(1.0)
-    } else {
-        1.0
-    };
-    ui.label(format!("IQ  ×{zoom:.0}"));
-    let side = ui.available_width().min(360.0);
-    let (r, _) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
-    let p = ui.painter_at(r);
-    p.rect_filled(r, 0.0, BG);
-    p.line_segment(
-        [
-            egui::pos2(r.center().x, r.min.y),
-            egui::pos2(r.center().x, r.max.y),
-        ],
-        (1.0, GRID),
-    );
-    p.line_segment(
-        [
-            egui::pos2(r.min.x, r.center().y),
-            egui::pos2(r.max.x, r.center().y),
-        ],
-        (1.0, GRID),
-    );
-    p.circle_stroke(r.center(), side / 2.0, (1.0, GRID));
-    let half = side / 2.0 * zoom;
-    for [i, q] in &sdr.iq {
-        let pos = r.center() + egui::vec2(i * half, -q * half);
-        p.rect_filled(
-            egui::Rect::from_center_size(pos, egui::vec2(1.5, 1.5)),
-            0.0,
-            TRACE,
-        );
-    }
-}
-
-/// The lab's recovered decision points (unit energy) over the ideal
-/// constellation.
-fn recovered(ui: &mut egui::Ui, a: &crate::sdr::analysis::Analysis) {
-    ui.label(format!("recovered {}", a.modulation.label()));
-    let side = ui.available_width().min(360.0);
-    let (r, _) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
-    let p = ui.painter_at(r);
-    p.rect_filled(r, 0.0, BG);
-    // ±1.6 of unit-energy constellation fills the box (64QAM's corners
-    // sit at ±1.08).
-    let half = side / 2.0 / 1.6;
-    for [i, q] in &a.symbols {
-        let pos = r.center() + egui::vec2(i * half, -q * half);
-        p.rect_filled(
-            egui::Rect::from_center_size(pos, egui::vec2(1.5, 1.5)),
-            0.0,
-            TRACE,
-        );
-    }
-    for (i, q) in a.modulation.points() {
-        let c = r.center() + egui::vec2(i as f32 * half, -(q as f32) * half);
-        p.circle_stroke(c, 3.0, (1.0, egui::Color32::YELLOW));
     }
 }

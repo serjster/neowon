@@ -1,7 +1,7 @@
 //! Minimal RIFF/WAVE PCM16 reader + writer — enough for the XY demo files
 //! and capture export, with no external dependency.
 
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::path::Path;
 
 /// Read a 16-bit PCM WAV; returns (sample_rate, per-frame channel samples
@@ -85,7 +85,7 @@ pub fn write_pcm16(path: &Path, rate: u32, channels: &[&[i16]]) -> io::Result<()
             out.extend_from_slice(&c[i].to_le_bytes());
         }
     }
-    std::fs::File::create(path)?.write_all(&out)
+    crate::atomic_file::write(path, &out)
 }
 
 #[cfg(test)]
@@ -94,8 +94,7 @@ mod tests {
 
     #[test]
     fn round_trip_stereo() {
-        let dir = std::env::temp_dir().join("neowon-wav-test");
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::test_scratch("wav");
         let path = dir.join("rt.wav");
         let left: Vec<i16> = (0..1000).map(|i| (i * 13 % 32767) as i16).collect();
         let right: Vec<i16> = (0..1000).map(|i| -((i * 7 % 32767) as i16)).collect();

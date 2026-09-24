@@ -1,5 +1,3 @@
-//! Math dialog — operator, scale.
-
 use bevy_egui::egui;
 use neowon_dsp::MathOp;
 

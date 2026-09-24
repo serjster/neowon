@@ -11,7 +11,8 @@ use tracing::{debug, info};
 
 use neowon_backend::MultiMode;
 use neowon_core::{
-    AcqMode, CaptureFrame, ChannelCapture, Coupling, IqCal, SampleLayout, Slope, Sweep, TriggerKind,
+    AcqMode, Acquisition, CaptureFrame, ChannelCapture, Coupling, IqCal, SampleLayout, Slope,
+    Sweep, TriggerKind,
 };
 
 use crate::consts::{self, ADC_CLIP, FLASH_SIZE, FRAME_SIZE, HTP_ERR, reg, status};
@@ -153,7 +154,6 @@ impl Vds1022 {
             other => return Err(Error::WrongMachine(other)),
         }
 
-        // Factory calibration + identity from flash.
         let flash = dev.read_flash()?;
         dev.cal = FlashCal::parse(&flash)?;
         info!(
@@ -178,8 +178,6 @@ impl Vds1022 {
         dev.init()?;
         Ok(dev)
     }
-
-    // ---- low-level transport ----
 
     fn write_raw(&mut self, data: &[u8], timeout: Duration) -> Result<()> {
         let mut buf = self.ep_out.allocate(data.len());
@@ -225,8 +223,6 @@ impl Vds1022 {
         self.write_raw(&cmd_bytes(addr, width, value), DEFAULT_TIMEOUT)?;
         self.read_resp(DEFAULT_TIMEOUT)
     }
-
-    // ---- boot / identity ----
 
     fn read_flash(&mut self) -> Result<Vec<u8>> {
         self.write_raw(&cmd_bytes(reg::READ_FLASH, 1, 1), DEFAULT_TIMEOUT)?;
@@ -280,8 +276,6 @@ impl Vds1022 {
         );
         Ok(())
     }
-
-    // ---- register init & configuration ----
 
     /// The vendor init sequence: everything off, sane defaults, 250 kS/s.
     fn init(&mut self) -> Result<()> {
@@ -361,7 +355,6 @@ impl Vds1022 {
         Ok(())
     }
 
-    /// Is roll mode currently engaged?
     pub fn roll(&self) -> bool {
         self.roll
     }
@@ -538,8 +531,6 @@ impl Vds1022 {
         Ok(())
     }
 
-    // ---- acquisition ----
-
     /// Request one record. Returns `Error::NotReady` when the device has no
     /// data yet (caller retries after ~60 ms, per the vendor apps).
     pub fn get_frames(&mut self) -> Result<Vec<RawFrame>> {
@@ -632,18 +623,20 @@ impl Vds1022 {
                 }
             })
             .collect();
-        CaptureFrame {
-            seq: self.seq,
-            sample_rate: self.sample_rate,
-            t_capture: Some(t_capture),
-            acq: if self.peak {
+        CaptureFrame::new(
+            self.seq,
+            Some(t_capture),
+            self.sample_rate,
+            if self.peak {
                 AcqMode::Peak
             } else {
                 AcqMode::Sample
             },
-            layout: SampleLayout::Real,
+            Acquisition::Record { samples: n },
+            SampleLayout::Real,
             channels,
-        }
+        )
+        .expect("a real record is a valid frame")
     }
 
     pub fn channel(&self, ch: usize) -> ChannelSetup {

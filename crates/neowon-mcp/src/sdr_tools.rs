@@ -140,13 +140,13 @@ impl Scope {
         self.req("get detections")
     }
 
-    #[tool(
-        description = "Measurements of the strongest tracked signal (occupied \
-        bandwidth, channel power, SNR, spectral flatness) and, once `sdr analyse \
-        on` has run, the modulation lab's results for the signal nearest the \
-        tuned frequency: modulation (auto or set with `sdr modulation`), symbol \
-        rate, EVM, MER and cumulants C20–C63."
-    )]
+    #[tool(description = "Measurements of the tracked signal nearest the tuned \
+        frequency (occupied bandwidth, channel power, SNR, spectral flatness) \
+        and, once `sdr analyse on` has run, the modulation lab's results for \
+        that same signal: modulation (auto or set with `sdr modulation`), symbol \
+        rate, EVM, MER and cumulants C20–C63. The detection and the lab block \
+        always describe one track; if the lab's latest result belongs to \
+        another track, its numbers are withheld and `lab_other_track` names it.")]
     async fn sdr_modmeas(&self) -> Result<String, ErrorData> {
         self.req("get modmeas")
     }

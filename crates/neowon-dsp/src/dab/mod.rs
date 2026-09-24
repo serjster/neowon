@@ -1,20 +1,14 @@
-//! DAB (Eureka-147) decoding — Phase 10.15, tier 1: the Fast Information
-//! Channel.
+//! DAB (Eureka-147) decoding.
 //!
 //! This is the part of DAB that answers *what is on the air* rather than
 //! guessing it: an ensemble announces its identity and its service list in the
 //! FIC, error-protected and CRC-checked ([`detect`] is the classifier guessing;
 //! this module is the standard telling us).
 //!
-//! Scope of tier 1: an ensemble and service table, no audio, no MSC. Tier 2
-//! (sub-channel bytes, DLS text) and tier 3 (audio codecs) are separate work in
-//! `docs/tasks/phase10-dab-spec.md`; nothing here anticipates them.
-//!
 //! Every constant below cites its clause of **ETSI EN 300 401 V2.1.1
 //! (2017-01)**. The normative tables live in [`tables`], machine-transcribed
 //! from the standard (see that module). Anything the standard does not define
-//! is not invented here: see [`Protection`] for what tier 1 honestly does not
-//! know.
+//! is not invented here.
 //!
 //! Portions of this module follow the MIT-licensed reference `dabradio` 0.5.0
 //! (`xoolive/desperado`) for algorithm structure; the notice is recorded in
@@ -109,7 +103,7 @@ pub const MSC_SOFT_BITS: usize = CIFS_PER_FRAME * CIF_SOFT_BITS;
 /// How a sub-channel is protected.
 ///
 /// The short (UEP) form carries a table *index*; the size, level and bit rate
-/// live in the standard's table 8 (clause 11.3.1), which tier 2 transcribes in
+/// live in the standard's table 8 (clause 11.3.1), transcribed in
 /// [`fec::uep`], so [`SubChannel`]'s `size_cu` and `bitrate_kbps` are filled
 /// for UEP sub-channels too. The index is kept because it is what the FIC
 /// actually signalled.
@@ -144,7 +138,6 @@ pub struct SubChannel {
     pub start_cu: u16,
     /// Size in capacity units; known exactly only for EEP (long form).
     pub size_cu: Option<u16>,
-    /// Protection, as signalled.
     pub protection: Protection,
     /// Bit rate in kbit/s. One capacity unit is 64 bits per 24 ms, so this is
     /// exact whenever `size_cu` is known.
@@ -192,7 +185,7 @@ pub struct Ensemble {
     pub services: BTreeMap<u16, Service>,
     /// Sub-channels, keyed by `SubChId`.
     pub sub_channels: BTreeMap<u8, SubChannel>,
-    /// Data services seen (`P/D = 1`). Tier 1 counts them without tabling them,
+    /// Data services seen (`P/D = 1`), counted without tabling them,
     /// so a readout can say they exist without implying they were decoded.
     pub data_services: usize,
 }
@@ -235,8 +228,8 @@ pub struct DabStatus {
     pub ensemble: Ensemble,
     /// Per-sub-channel MSC counters, keyed by `SubChId`, for the sub-channels
     /// the decoder could build a handler for. DLS text is *not* here: it comes
-    /// from PAD inside the audio stream, which is the codec tier's transport
-    /// (10.15.3), and the receiver does not guess it.
+    /// from PAD inside the audio stream, which is the audio transport's job,
+    /// and the receiver does not guess it.
     pub msc: BTreeMap<u8, SubChannelStatus>,
 }
 

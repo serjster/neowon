@@ -1,18 +1,20 @@
-//! The persistent signal / source / emitter catalog (Phase 10.2, D4/D7):
+//! The persistent signal / source / emitter catalog:
 //! engine-free, file-based (manifest + snapshot + fsynced WAL), single
 //! writer, with merges that leave redirect tombstones, explicit cascades,
 //! pinning, session undo, and schema migration.
 
 pub mod exchange;
+mod history;
 pub mod migrate;
 pub mod model;
 pub mod op;
+mod refs;
 pub mod state;
 pub mod store;
 pub mod wal;
 
 pub use model::{
-    Alias, BandCoverage, BandPlanEntry, Emitter, Entity, Id, ObsRecord, Observation, ProvKind,
+    Alias, BandPlanEntry, CoverageRecord, Emitter, Entity, Id, ObsRecord, Observation, ProvKind,
     Provenance, Signal, Source, Survey, Transmission,
 };
 pub use op::{Op, edit_from_text};

@@ -1,4 +1,4 @@
-//! D8: the counter-indexed SplitMix64 against the published reference
+//! The counter-indexed SplitMix64 against the published reference
 //! sequence (Vigna's `splitmix64.c`, seed 0), independent of any fixture.
 
 use neowon_sim::iq::splitmix64;

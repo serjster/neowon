@@ -1,4 +1,4 @@
-//! `neowon sim …`: simulator output for determinism checks (D8). Nothing
+//! `neowon sim …`: simulator output for determinism checks. Nothing
 //! here touches USB.
 
 use std::path::PathBuf;

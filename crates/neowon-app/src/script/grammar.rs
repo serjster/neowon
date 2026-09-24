@@ -1,6 +1,5 @@
 //! Script grammar: the parse table that turns one text line into an
-//! `Action`. Split out of `script/mod.rs` (the runtime) so the file that
-//! grows with every new control stays inside the repo's size budget.
+//! `Action`.
 
 use std::collections::VecDeque;
 

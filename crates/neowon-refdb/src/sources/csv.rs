@@ -1,9 +1,9 @@
-//! A hand-written delimiter-separated-values reader (D19: no `csv` crate).
+//! A hand-written delimiter-separated-values reader (no `csv` crate).
 //! RFC 4180-ish: quotes protect separators, newlines and doubled quotes at
 //! the start of a field; CR is ignored; blank lines vanish.
 
 /// Whether `;`, tab or `,` separates the fields of a header line — the
-/// FMLIST export's delimiter is not fixed (D17).
+/// FMLIST export's delimiter is not fixed.
 pub(crate) fn detect_delimiter(header: &str) -> u8 {
     (*b",;\t")
         .into_iter()

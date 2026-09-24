@@ -41,12 +41,20 @@ pub fn scope_config(cfg: &InstrumentConfig) -> Result<&ScopeConfig, BackendError
         .ok_or_else(|| BackendError::Transient("SDR config sent to a scope backend".into()))
 }
 
+/// The SDR half of `cfg`, or the error an SDR backend returns when handed
+/// a scope config. The mirror of [`scope_config`]: one refusal, one
+/// message, whichever instrument the backend drives.
+pub fn sdr_config(cfg: &InstrumentConfig) -> Result<&SdrConfig, BackendError> {
+    cfg.sdr()
+        .ok_or_else(|| BackendError::Transient("scope config sent to an SDR backend".into()))
+}
+
 pub trait Backend: Send {
     fn capabilities(&self) -> &Capabilities;
 
     /// Drive the instrument to `cfg`. Called from the supervisor thread.
     /// A config for the other instrument mode is an error (see
-    /// [`scope_config`]).
+    /// [`scope_config`] and [`sdr_config`]).
     fn apply(&mut self, cfg: &InstrumentConfig) -> Result<(), BackendError>;
 
     /// Wait up to `budget` for the next frame. `Ok(None)` means no data yet.
@@ -109,6 +117,17 @@ mod tests {
         let sdr = InstrumentConfig::from(SdrConfig::default());
         assert!(matches!(
             scope_config(&sdr),
+            Err(BackendError::Transient(_))
+        ));
+    }
+
+    #[test]
+    fn sdr_backends_refuse_scope_config() {
+        let sdr = InstrumentConfig::from(SdrConfig::default());
+        assert_eq!(sdr_config(&sdr).unwrap(), &SdrConfig::default());
+        let scope = InstrumentConfig::from(ScopeConfig::default());
+        assert!(matches!(
+            sdr_config(&scope),
             Err(BackendError::Transient(_))
         ));
     }

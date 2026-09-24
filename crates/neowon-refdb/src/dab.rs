@@ -14,7 +14,6 @@
 //! The block letters are administrative (the Wiesbaden arrangement); EN 300
 //! 401 defines the modulation, not the channel plan.
 
-/// A Band III block: its label (`11C`) and centre frequency.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DabBlock {
     pub label: &'static str,
@@ -67,7 +66,6 @@ const BAND_III: &[(&str, f64)] = &[
     ("13F", 239_200_000.0),
 ];
 
-/// Every Band III block, in raster order.
 pub fn band_iii_blocks() -> impl Iterator<Item = DabBlock> + 'static {
     BAND_III
         .iter()

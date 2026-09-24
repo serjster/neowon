@@ -1,4 +1,4 @@
-//! The Catalog window (Phase 10.2): browse, filter and manage catalogued
+//! The Catalog window: browse, filter and manage catalogued
 //! signals. Every control injects a `catalog …` script action, so a script
 //! reaches everything the window does.
 
@@ -21,6 +21,9 @@ pub struct Edits {
     cascade: bool,
     merge_into: Option<Id>,
 }
+
+/// Rows the signal list draws per frame.
+const ROWS: usize = 500;
 
 fn act(script: &mut Script, a: CatalogAction) {
     script.inject(Action::Catalog(a));
@@ -76,13 +79,20 @@ pub fn show(
                 st.path.display(),
                 cat.seq(),
                 cat.state().entities.len(),
-                match cat.state().integrity().len() {
+                match st.integrity_problems() {
                     0 => "ok".to_string(),
                     n => format!("{n} problems"),
                 }
             ));
             ui.separator();
-            let signals = st.signals();
+            // A page per frame, not every signal.
+            let (listed, signals) = st.signals_page(ROWS);
+            if listed > signals.len() {
+                ui.weak(format!(
+                    "{listed} signals, the first {} shown — narrow with the filter",
+                    signals.len()
+                ));
+            }
             egui::ScrollArea::vertical()
                 .max_height(220.0)
                 .show(ui, |ui| {

@@ -125,7 +125,7 @@ pub fn survey(id: Id) -> Entity {
         id,
         name: "FM sweep".into(),
         started: AT.into(),
-        coverage: vec![BandCoverage {
+        coverage: vec![CoverageRecord {
             lo_hz: 88e6,
             hi_hz: 108e6,
             scanned: true,

@@ -439,7 +439,7 @@ mod tests {
         // Every offered rate stays in bounds, on the 64-byte transfer grid,
         // and the length never falls as the rate rises.
         let mut prev = 0;
-        for &r in crate::backend::SAMPLE_RATES.iter() {
+        for &r in neowon_core::ladders::RTL_SAMPLE_RATES.iter() {
             let len = transfer_len(r);
             assert!((32_768..=262_144).contains(&len), "{r}: {len}");
             assert_eq!(len % 64, 0, "{r}: {len}");

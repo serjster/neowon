@@ -1,20 +1,15 @@
-//! The Stations window (10.14.6): browse the reference store — search,
-//! filters, sorting, click-to-tune (D21) and Add to catalog (D20) — plus
-//! the Sources tab (fetch/import/clear, provenance) and the Location tab
-//! (manual fix, Maidenhead locator, the one-time IP lookup with its
-//! consent dialog). Every control injects a `stations …` / `location …` /
-//! `refdb …` script action, so a script reaches everything here.
+//! Every control injects a `stations …` / `location …` / `refdb …` script
+//! action, so a script reaches everything here.
 
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
 use neowon_refdb::{LocationSource, Source};
 
-use crate::refmap::{LocationSet, RefMap, RefMapAction, Scope, to_locator};
+use crate::refmap::{LocationSet, RefMap, RefMapAction, Scope, StationRows, to_locator};
 use crate::script::{Action, Script};
 use crate::sdr::SdrState;
 use crate::uitree;
 
-/// Text the window's fields hold between frames.
 #[derive(Default)]
 pub struct Edits {
     tab: Tab,
@@ -43,6 +38,7 @@ pub fn show(
     sdr: Res<SdrState>,
     mut script: ResMut<Script>,
     mut ed: Local<Edits>,
+    mut rows: Local<StationRows>,
 ) {
     if !rm.stations_window {
         return;
@@ -72,7 +68,7 @@ pub fn show(
             });
             ui.separator();
             match ed.tab {
-                Tab::Stations => stations_tab(ui, &rm, &sdr, &mut ed, &mut script),
+                Tab::Stations => stations_tab(ui, &rm, &sdr, &mut ed, &mut rows, &mut script),
                 Tab::Sources => sources_tab(ui, &rm, &mut ed, &mut script),
                 Tab::Location => location_tab(ui, &rm, &mut ed, &mut script),
             }
@@ -87,6 +83,7 @@ fn stations_tab(
     rm: &RefMap,
     sdr: &SdrState,
     ed: &mut Edits,
+    cache: &mut StationRows,
     script: &mut Script,
 ) {
     ui.horizontal_wrapped(|ui| {
@@ -150,10 +147,10 @@ fn stations_tab(
             ed.find.clear();
         }
     });
-    let rows = rm.query(rm.scope, sdr);
+    // Built once per change of the set or the filters, not per frame.
+    let (total, rows) = cache.page(rm, sdr, 500);
     ui.weak(format!(
-        "{} rows · click a frequency to tune (and pick the demod) · + cat copies the row into the catalog",
-        rows.len()
+        "{total} rows · click a frequency to tune (and pick the demod) · + cat copies the row into the catalog",
     ));
     egui::ScrollArea::vertical().show(ui, |ui| {
         egui::Grid::new("stations-grid")
@@ -163,7 +160,7 @@ fn stations_tab(
                     ui.strong(h);
                 }
                 ui.end_row();
-                for (s, km) in rows.iter().take(500) {
+                for (s, km) in &rows {
                     let key = RefMap::key(s);
                     let selected = rm.selected.as_deref() == Some(key.as_str());
                     if ui
@@ -305,7 +302,9 @@ fn sources_tab(ui: &mut egui::Ui, rm: &RefMap, ed: &mut Edits, script: &mut Scri
                     if fetch.clicked() {
                         act(script, RefMapAction::Fetch(src, None));
                     }
-                    let has = meta.is_some();
+                    // A damaged source has no metadata shown but must
+                    // still be clearable.
+                    let has = meta.is_some() || rm.problems.iter().any(|p| p.source == Some(src));
                     if ui
                         .add_enabled(has && rm.job.is_none(), egui::Button::new("Clear"))
                         .clicked()
@@ -316,6 +315,9 @@ fn sources_tab(ui: &mut egui::Ui, rm: &RefMap, ed: &mut Edits, script: &mut Scri
                 ui.end_row();
             }
         });
+    for p in &rm.problems {
+        ui.colored_label(ui.visuals().warn_fg_color, p.to_string());
+    }
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         ui.label("import");

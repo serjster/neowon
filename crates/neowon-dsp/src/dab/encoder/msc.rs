@@ -8,8 +8,8 @@
 //! (clause 12) — and placed at its `start_cu` in the CIF.
 //!
 //! **The payload CRC is an oracle transport, not DAB.** EN 300 401 defines no
-//! CRC on an MSC logical frame (DAB+ has its own at the superframe level, tier
-//! 3), so [`MscEncoder`] can append one — annex E's CRC-16 over the payload —
+//! CRC on an MSC logical frame (DAB+ has its own at the superframe level),
+//! so [`MscEncoder`] can append one — annex E's CRC-16 over the payload —
 //! and the decoder checks it only when told to. On air the flag is off and
 //! `crc_checks` stays zero, which is the honest "not checked".
 
@@ -77,7 +77,7 @@ impl MscCif {
 
     /// The CIF as soft bits at full confidence — what [`crate::dab::msc`] sees
     /// on a noiseless channel, which isolates the MSC FEC chain from the OFDM
-    /// layer (the same split tier 1's `ideal_soft_bits` makes).
+    /// layer (the same split `FicFrame::ideal_soft_bits` makes).
     pub fn soft_bits(&self) -> Vec<i8> {
         self.bits
             .iter()

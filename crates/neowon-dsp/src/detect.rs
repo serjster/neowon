@@ -1,4 +1,4 @@
-//! Signal detection over IQ (Phase 10.1): frame the capture, estimate the
+//! Signal detection over IQ: frame the capture, estimate the
 //! noise floor with a rolling median across frequency, keep the bins well
 //! above it, group them into clusters, and report each as a
 //! `SignalObservation` whose edges are its 99% occupied band. A `Tracker`

@@ -1,7 +1,6 @@
 //! FPGA bitstream selection. The host must upload a bitstream at every
 //! device cold start; which one depends on the hardware version string read
-//! from flash. Bitstream files are vendor blobs and are NOT redistributed
-//! with neowon — point at an OWON-VDS1022 checkout's `fwr/` directory.
+//! from flash. The bitstreams are OWON's vendor blobs (`3rdparty/fw/`).
 
 use std::path::{Path, PathBuf};
 

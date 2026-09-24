@@ -45,7 +45,6 @@ pub fn show(
             ui.horizontal_centered(|ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
 
-                // Vertical (manual 8.2): channel + math keys.
                 group(ui, "VERTICAL", |ui| {
                     // CH keys toggle the channel on/off only — configuring
                     // happens in the dock or via the descriptor box.
@@ -61,7 +60,6 @@ pub fn show(
                     }
                 });
 
-                // Horizontal (manual 8.3).
                 group(ui, "HORIZONTAL", |ui| {
                     if key(ui, "H", menus.is_open(Menu::Horizontal)) {
                         if menus.is_open(Menu::Horizontal) {
@@ -76,7 +74,6 @@ pub fn show(
                     }
                 });
 
-                // Trigger (manual 8.4): mode keys + level-to-50%.
                 group(ui, "TRIGGER", |ui| {
                     for (label, s) in [
                         ("Auto", Sweep::Auto),
@@ -101,7 +98,6 @@ pub fn show(
                     }
                 });
 
-                // Run control (manual 8.5/8.6).
                 group(ui, "RUN", |ui| {
                     let running = link.config.running;
                     let color = if running { RUN_COLOR } else { STOP_COLOR };
@@ -173,7 +169,6 @@ pub(super) fn group(ui: &mut egui::Ui, name: &str, content: impl FnOnce(&mut egu
     ui.separator();
 }
 
-/// Channel-colored key; lit while `on`.
 pub(super) fn color_key(ui: &mut egui::Ui, label: String, color: egui::Color32, on: bool) -> bool {
     let fill = if on {
         color.gamma_multiply(0.35)

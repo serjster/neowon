@@ -1,4 +1,5 @@
-//! Headless bring-up and debugging tool for the VDS1022 driver.
+//! Headless bring-up and debugging tool for the VDS1022 driver, plus the
+//! SDR hardware smoke (`neowon sdr smoke`).
 
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -11,6 +12,7 @@ use neowon_core::{Coupling, Slope, Sweep};
 use neowon_dsp::{basic_stats, estimate_frequency};
 use neowon_vds1022::{ChannelSetup, Vds1022};
 
+mod sdr;
 mod sim;
 
 #[derive(Parser)]
@@ -52,6 +54,11 @@ enum Cmd {
     },
     /// Run the backend auto-set against the live signal and print the result
     Autoset,
+    /// SDR checks (the RTL dongle, or a simulated scene with `--sim`)
+    Sdr {
+        #[command(subcommand)]
+        cmd: sdr::SdrCmd,
+    },
     /// Deterministic simulator output; never opens a device
     Sim {
         #[command(subcommand)]
@@ -122,6 +129,7 @@ fn main() -> Result<()> {
         Cmd::Stream { secs, acq } => stream(&cli, secs, acq),
         Cmd::Smoke { acq } => smoke(&cli, acq),
         Cmd::Autoset => autoset(&cli),
+        Cmd::Sdr { ref cmd } => sdr::run(cmd),
         Cmd::Sim { ref cmd } => sim::run(cmd),
     }
 }
@@ -142,7 +150,6 @@ fn autoset(cli: &Cli) -> Result<()> {
                 "autoset: {} V/div, {} S/s, trigger {:.3} V",
                 ch.volts_div, cfg.sample_rate, cfg.trigger.level
             );
-            // Show what it looks like with the chosen settings.
             let frame = be
                 .poll_frame(Duration::from_secs(2))
                 .map_err(|e| anyhow::anyhow!(e.to_string()))?

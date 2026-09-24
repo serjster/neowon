@@ -3,7 +3,7 @@
 //! i8 encoding as real hardware so every downstream consumer is exercised
 //! identically. Also the golden-signal source for DSP tests.
 
-use neowon_core::{AcqMode, CaptureFrame, ChannelCapture, IqCal, SampleLayout};
+use neowon_core::{AcqMode, Acquisition, CaptureFrame, ChannelCapture, IqCal, SampleLayout};
 
 pub mod backend;
 pub mod dataset;
@@ -17,13 +17,12 @@ pub use backend::SimBackend;
 pub use figures::XyFigure;
 pub use iq::{IqBuffer, IqComponent, IqScene};
 pub use scenario::Scenario;
-pub use sdr::{Emitter, RfScene, SimSdrBackend, em};
+pub use sdr::{Emitter, EmitterKind, RfScene, SimSdrBackend, em};
 pub use signal::{Component, SignalSpec, Xorshift};
 
 /// Samples per record, matching the VDS1022 frame shape.
 pub const SAMPLES: usize = 5000;
 
-/// Deterministic signal generator over a [`Scenario`].
 #[derive(Debug, Clone)]
 pub struct SimSource {
     pub sample_rate: f64,
@@ -131,19 +130,18 @@ impl SimSource {
         self.t0
     }
 
-    /// Reposition the sample-time origin; used to align a trigger crossing
-    /// with the requested horizontal trigger position.
     /// Acquisition duty cycle, 0 < duty <= 1. Below 1 the source leaves
     /// dead time between records.
     pub fn set_duty(&mut self, duty: f64) {
         self.duty = duty.clamp(0.01, 1.0);
     }
 
-    /// Hardware peak detect emulation (`AcqMode::Peak`).
     pub fn set_peak(&mut self, on: bool) {
         self.peak = on;
     }
 
+    /// Reposition the sample-time origin; used to align a trigger crossing
+    /// with the requested horizontal trigger position.
     pub fn set_time(&mut self, t: f64) {
         self.t0 = t;
     }
@@ -228,18 +226,20 @@ impl SimSource {
                 freq_meter: self.scenario.fundamental(ch),
             })
             .collect();
-        CaptureFrame {
-            seq: self.seq,
-            t_capture: Some(t_capture),
-            sample_rate: self.sample_rate,
-            acq: if self.peak {
+        CaptureFrame::new(
+            self.seq,
+            Some(t_capture),
+            self.sample_rate,
+            if self.peak {
                 AcqMode::Peak
             } else {
                 AcqMode::Sample
             },
-            layout: SampleLayout::Real,
+            Acquisition::Record { samples: n },
+            SampleLayout::Real,
             channels,
-        }
+        )
+        .expect("a real record is a valid frame")
     }
 }
 
@@ -298,8 +298,7 @@ mod tests {
         );
     }
 
-    /// The reported failure, reproduced and fixed in the simulator: sampling
-    /// a 1 kHz signal at 500 S/s aliases it away, while peak detect keeps
+    /// Sampling a 1 kHz signal at 500 S/s aliases it away, while peak detect keeps
     /// the envelope because each pair holds the extremes of its interval.
     #[test]
     fn peak_detect_survives_a_time_base_that_aliases() {
@@ -323,7 +322,7 @@ mod tests {
         };
         let plain_span = span(&plain.next_frame());
         let peak_frame = peak.next_frame();
-        assert_eq!(peak_frame.acq, AcqMode::Peak);
+        assert_eq!(peak_frame.acq(), AcqMode::Peak);
         let peak_span = span(&peak_frame);
 
         // The true amplitude is +-1 V on a +-1 V range = +-125 counts.

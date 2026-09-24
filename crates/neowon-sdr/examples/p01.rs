@@ -1,4 +1,4 @@
-//! P0.1 driver check (Phase 10 D2 / SDR-G1) on the in-tree RTL-SDR driver.
+//! P0.1 driver check on the in-tree RTL-SDR driver.
 //! Hardware only — run it by hand with the dongle attached:
 //!
 //! `cargo run -p neowon-sdr --example p01 [-- --json <path>]`
@@ -77,7 +77,6 @@ fn main() -> Result<()> {
         best.1
     );
 
-    // Stream throughput.
     let mut pairs_per_s = Vec::new();
     for want in [2_400_000u32, 2_048_000] {
         rate = sdr.set_sample_rate(want)?;
@@ -90,7 +89,6 @@ fn main() -> Result<()> {
         pairs_per_s.push((rate, r));
     }
 
-    // Tune.
     let c0 = carrier as u32 - SHIFT;
     sdr.set_center_freq(c0)?;
     let before = spectrum(&take(&stream, 1.0)?.iq);
@@ -99,7 +97,6 @@ fn main() -> Result<()> {
     let moved = shift_hz(&before, &after, rate, 700);
     println!("tune: band moved {:+.2} kHz", moved / 1e3);
 
-    // ppm, on the carrier.
     let mut at = Vec::new();
     for ppm in [100, -100, 0] {
         sdr.set_ppm(ppm)?;
@@ -116,7 +113,6 @@ fn main() -> Result<()> {
         shift_hz(&at[2], &at[0], rate, 100) / 1e3
     );
 
-    // Gain and RTL AGC.
     let mut sweep = Vec::new();
     let mut clip = 0.0;
     for g in [0, 144, 297, 496] {

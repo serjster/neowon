@@ -1,12 +1,17 @@
 //! Offline harness for the on-air DAB MSC / DAB+ transport work.
 //!
 //! Ignored and env-gated: set `NEOWON_IQ_CAPTURE` to a raw interleaved-f32 IQ
-//! file (2.048 MS/s, Band III) and run
+//! file (2.048 MS/s, Band III) and run **from the repo root** — `$PWD` is
+//! expanded by the shell, because cargo runs the test binary with CWD
+//! `crates/neowon-app`:
 //!
 //! ```text
-//! NEOWON_IQ_CAPTURE=tmp-inspiration/dab-11c.f32 \
+//! NEOWON_IQ_CAPTURE=$PWD/tmp-inspiration/dab-11c.f32 \
 //!   cargo test -p neowon-app --release --test dab_air_capture -- --ignored --nocapture
 //! ```
+//!
+//! A missing `NEOWON_IQ_CAPTURE` or a missing file is a **panic**, not a green
+//! run: a harness that measured nothing must not look like one that measured.
 //!
 //! It feeds the capture through `DabReceiver`, then treats each FIC-resolved
 //! sub-channel's emitted bytes as a stream to be examined with the only
@@ -14,6 +19,15 @@
 //! per-AU **CRC-16** (TS 102 563 clause 5.2). The scan is exhaustive over
 //! byte offsets, so it measures what the MSC chain delivered, not whether a
 //! particular sync policy happened to lock.
+//!
+//! Set `NEOWON_DAB_NO_PREDICTION=1` for the counterfactual that pinned the
+//! tier-2 root cause — frame-grid prediction disabled — which must collapse
+//! the MSC chain to zero Fire-clean superframes while the FIC stays locked:
+//!
+//! ```text
+//! NEOWON_IQ_CAPTURE=$PWD/tmp-inspiration/dab-11c.f32 NEOWON_DAB_NO_PREDICTION=1 \
+//!   cargo test -p neowon-app --release --test dab_air_capture -- --ignored --nocapture
+//! ```
 //!
 //! `NEOWON_IQ_DUMP_DIR` writes each sub-channel's raw MSC byte stream.
 //! `NEOWON_IQ_FIRST_FRAMES` limits transmission frames processed.
@@ -27,7 +41,9 @@ use neowon_dsp::dab::msc::SubChannelDecoder;
 
 /// Read an interleaved little-endian f32 (I, Q) capture.
 fn read_iq(path: &str) -> Vec<f32> {
-    let bytes = std::fs::read(path).expect("read capture");
+    let bytes = std::fs::read(path).unwrap_or_else(|error| {
+        panic!("NEOWON_IQ_CAPTURE={path}: {error} — there is no capture to measure")
+    });
     assert_eq!(bytes.len() % 8, 0, "capture must be interleaved f32 pairs");
     bytes
         .chunks_exact(4)
@@ -77,10 +93,21 @@ fn au_crc_ok(window: &[u8], index: usize) -> (usize, usize) {
 #[ignore = "requires NEOWON_IQ_CAPTURE (operator-recorded air capture); sim/offline only"]
 fn air_capture_dabplus_transport() {
     let Some(path) = std::env::var_os("NEOWON_IQ_CAPTURE") else {
-        eprintln!("set NEOWON_IQ_CAPTURE to run this harness");
-        return;
+        panic!(
+            "NEOWON_IQ_CAPTURE is not set — set it to a raw interleaved-f32 IQ capture \
+             (2.048 MS/s, Band III); this harness must not pass without measuring anything"
+        );
     };
     let path = path.to_string_lossy().to_string();
+    let no_prediction = std::env::var_os("NEOWON_DAB_NO_PREDICTION").is_some();
+    eprintln!(
+        "frame-grid prediction: {}",
+        if no_prediction {
+            "disabled (NEOWON_DAB_NO_PREDICTION)"
+        } else {
+            "enabled"
+        }
+    );
     let limit: usize = std::env::var("NEOWON_IQ_FIRST_FRAMES")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -240,8 +267,41 @@ fn air_capture_dabplus_transport() {
     }
     eprintln!("\ntotal: {total_sf} Fire-clean superframes, {total_au} AUs, {total_crc} AU CRCs ok");
 
-    assert!(
-        total_sf > 0 && total_crc > 0,
-        "the capture produced no Fire-clean, CRC-clean DAB+ superframe"
-    );
+    if no_prediction {
+        // Without the frame grid every weak frame discards the MSC chain, so
+        // no sub-channel completes a Fire-clean superframe — while the FIC,
+        // which needs no inter-frame memory, stays locked and clean.
+        assert!(
+            status.locked,
+            "the counterfactual is only meaningful with the FIC locked"
+        );
+        assert!(
+            status.fib_total > 0 && status.fib_crc_ok * 10 >= status.fib_total * 9,
+            "the FIC must stay clean without the frame grid: {}/{}",
+            status.fib_crc_ok,
+            status.fib_total
+        );
+        assert_eq!(
+            total_sf, 0,
+            "with prediction disabled the capture must collapse: no Fire-clean superframe"
+        );
+        assert_eq!(
+            total_crc, 0,
+            "with prediction disabled no AU CRC may pass by luck"
+        );
+    } else {
+        // Capture-derived floors: measured on the archived 11C capture
+        // (path, revision, date and SHA-256 in `docs/protocol-dab.md`) as
+        // 525 Fire-clean superframes / 1280 AUs / 1100 AU CRCs; the floors
+        // sit ~25% below so a regression that collapses the chain fails
+        // while the exact run-to-run count is free to move.
+        assert!(
+            total_sf >= 400,
+            "MSC chain collapsed: {total_sf} Fire-clean superframes (measured 525)"
+        );
+        assert!(
+            total_au >= 1000 && total_crc >= 800,
+            "AU decoding collapsed: {total_au} AUs, {total_crc} CRCs ok (measured 1280/1100)"
+        );
+    }
 }

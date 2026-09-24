@@ -14,7 +14,6 @@ use super::waterfall::thermal;
 use crate::Link;
 use crate::derived::FftState;
 
-/// Offscreen render-target size.
 pub const RT_W: u32 = 768;
 pub const RT_H: u32 = 512;
 
@@ -265,7 +264,6 @@ pub fn update(
         return;
     }
 
-    // Ingest the newest record.
     if let Some(frame) = &link.latest
         && frame.seq != viz.last_seq
     {

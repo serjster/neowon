@@ -1,5 +1,3 @@
-//! Measure dialog — full measurement table with running statistics.
-
 use bevy_egui::egui;
 
 use crate::derived::{Band, METRICS, MeasureState, SLOT_NAMES, SLOTS, fmt, fmt_opt_sticky};

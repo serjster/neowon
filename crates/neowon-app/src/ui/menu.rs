@@ -19,7 +19,6 @@ use super::{
 
 use crate::record::Recorder;
 
-/// Which function's dialog box is open. Exactly one at a time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Menu {
     Channel(usize),
@@ -128,7 +127,6 @@ impl MenuState {
         }
     }
 
-    /// Ask for this section to be scrolled into view.
     pub fn reveal(&mut self, m: Menu) {
         self.open(m);
         self.focus = Some(m);
@@ -156,12 +154,10 @@ impl MenuState {
         self.open = m.into_iter().collect();
     }
 
-    /// Open exactly these sections, in this order (`dock`).
     pub fn set_open(&mut self, open: Vec<Menu>) {
         self.open = open;
     }
 
-    /// Open sections, in opening order (for the layout dump).
     pub fn open_list(&self) -> &[Menu] {
         &self.open
     }
@@ -363,8 +359,6 @@ fn view_toolbar(ui: &mut egui::Ui, link: &mut crate::Link, phosphor: &mut crate:
     ui.add_space(4.0);
 }
 
-/// Accordion section: a full-width header that expands its body (collapsing
-/// any other open section).
 fn section(
     ui: &mut egui::Ui,
     menus: &mut MenuState,
@@ -404,7 +398,6 @@ fn section(
     }
 }
 
-/// Disclosure triangle, painted so it cannot fall back to tofu.
 fn caret(ui: &egui::Ui, rect: egui::Rect, open: bool) {
     let c = egui::pos2(rect.left() + 12.0, rect.center().y);
     let r = 4.0;

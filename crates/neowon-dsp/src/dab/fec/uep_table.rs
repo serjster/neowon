@@ -1,7 +1,6 @@
 //! The UEP protection-profile table, transcribed from **ETSI EN 300 401
 //! V2.1.1 (2017-01)**, tables 8 and 15 (see [`super::uep`] for what the columns
-//! mean and how they are checked). Split from the logic so neither file grows
-//! past the workspace's budget.
+//! mean and how they are checked).
 //!
 //! Do not edit by hand: each entry's (bit rate, level, size) is table 8's row
 //! and its (L1..L4, PI1..PI4, padding) is table 15's, in the same order.

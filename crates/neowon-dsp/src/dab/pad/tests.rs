@@ -1,4 +1,3 @@
-//! Unit tests for the PAD/DLS parser (see `super`).
 use super::*;
 
 /// One DLS data group (segment): header, characters, CRC.
@@ -202,7 +201,7 @@ fn toggle_change_clears_the_partial_message() {
 }
 
 /// Unknown applications are skipped by their declared length and cannot
-/// disturb the DLS group beside them (D27).
+/// disturb the DLS group beside them.
 #[test]
 fn unknown_applications_are_skipped_by_length() {
     let group = dls_group(true, true, true, 0, b"MIXED");

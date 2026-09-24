@@ -6,6 +6,7 @@
 //! minimap to go there. Every segment is a node in the UI tree.
 
 use bevy_egui::egui::{self, accesskit::Role};
+use neowon_backend::SdrCaps;
 use neowon_refdb::Band;
 
 use super::sdr_view::{CURSOR, inject};
@@ -125,12 +126,12 @@ fn view(sdr: &SdrState) -> (f64, f64) {
     (sdr.view_centre() - half, sdr.view_centre() + half)
 }
 
+/// Default tuner range before the instrument's capabilities arrive, Hz.
+const FALLBACK_RANGE: (f64, f64) = (500e3, 1.766e9);
+
 /// The tuner's whole range, Hz.
-pub fn range(sdr: &SdrState) -> (f64, f64) {
-    sdr.caps
-        .as_ref()
-        .map(|c| c.freq_range_hz)
-        .unwrap_or((500e3, 1.766e9))
+pub fn range(caps: Option<&SdrCaps>) -> (f64, f64) {
+    caps.map(|c| c.freq_range_hz).unwrap_or(FALLBACK_RANGE)
 }
 
 /// Log-frequency x over `r` for the tuner range.
@@ -146,8 +147,15 @@ fn log_hz(r: egui::Rect, (lo, hi): (f64, f64), x: f32) -> f64 {
 
 /// The minimap over `r`: every band of the plan on a log axis across the
 /// tuner's range, decade ticks, the IQ window bracket and the tuned tick.
-pub fn minimap(ui: &mut egui::Ui, r: egui::Rect, rm: &RefMap, sdr: &SdrState, script: &mut Script) {
-    let range = range(sdr);
+pub fn minimap(
+    ui: &mut egui::Ui,
+    r: egui::Rect,
+    rm: &RefMap,
+    sdr: &SdrState,
+    caps: Option<&SdrCaps>,
+    script: &mut Script,
+) {
+    let range = range(caps);
     let p = ui.painter_at(r);
     p.rect_filled(r, 0.0, egui::Color32::from_rgb(18, 20, 26));
     let bar = egui::Rect::from_min_max(r.min + egui::vec2(0.0, 12.0), r.max);

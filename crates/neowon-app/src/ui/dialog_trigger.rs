@@ -1,5 +1,3 @@
-//! Trigger dialog — source, type, sweep, level, holdoff.
-
 use bevy_egui::egui;
 use neowon_core::{PulseCondition, Slope, Sweep, TriggerKind, VideoSync};
 

@@ -1,7 +1,6 @@
-//! One importer per station source (D17). Every importer is pure — bytes
-//! in, stations plus a report out — so the whole of 10.14.2 is testable
-//! against small fixtures and never touches the network. Fetching the
-//! bytes is `crate::fetch`'s job (10.14.3).
+//! One importer per station source. Every importer is pure — bytes in,
+//! stations plus a report out — so each is testable against small fixtures
+//! and never touches the network. Fetching the bytes is `crate::fetch`'s job.
 
 pub mod eibi;
 pub mod fcc;
@@ -24,6 +23,14 @@ pub struct Report {
 impl Report {
     pub fn skip(&mut self, row: usize, reason: impl Into<String>) {
         self.skipped.push((row, reason.into()));
+    }
+
+    /// Every row rejected and none kept: the document is not this
+    /// source's format (or is damaged), not an empty source. Such an
+    /// import must not replace the snapshot it was meant to update. An
+    /// empty document (no rows, nothing skipped) is an honest empty fetch.
+    pub fn unusable(&self) -> bool {
+        self.kept == 0 && !self.skipped.is_empty()
     }
 
     /// "412 rows, 409 stations, 3 skipped (row 7: bad frequency; …)".
@@ -52,8 +59,13 @@ pub(crate) fn decode_latin1(bytes: &[u8]) -> String {
 /// FNV-1a, for a station id derived from the row's own text: stable across
 /// re-imports, unlike a file position.
 pub(crate) fn fnv1a(s: &str) -> u64 {
+    fnv1a_bytes(s.as_bytes())
+}
+
+/// FNV-1a over raw bytes: the store's snapshot digest.
+pub(crate) fn fnv1a_bytes(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in s.as_bytes() {
+    for b in bytes {
         h ^= u64::from(*b);
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }

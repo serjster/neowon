@@ -1,4 +1,4 @@
-//! Phase 10.15.3: DAB audio playback over the control socket, on the sim.
+//! DAB audio playback over the control socket, on the sim.
 //!
 //! The `rf-dab` scene carries two real audio programmes (see
 //! `src/sdr/dab_scene.rs`): a DAB+ sub-channel fed by the committed
@@ -48,7 +48,7 @@ fn dab_audio_plays_both_codings_and_surfaces_errors() {
         c.wait("get dab", 30, |r| r.contains(r#""locked":true"#));
 
         // DAB+: the worker decodes the fixture's HE-AAC v2 super frames; the
-        // backend is whichever this build links (DAB-G2's feature flip).
+        // backend is whichever this build links.
         select(&mut c, DABPLUS_SID);
         c.ok("sdr dab play");
         // The first decoded blocks are the codec's priming frames, which
@@ -68,10 +68,49 @@ fn dab_audio_plays_both_codings_and_surfaces_errors() {
         assert_eq!(field(&dab, "rate"), 48_000.0, "{dab}");
         assert_eq!(field(&dab, "channels"), 2.0, "{dab}");
         assert_eq!(raw(&dab, "state"), "\"playing\"", "{dab}");
+        // Continuity: **once the queue is primed, playback does not
+        // starve**, and the worker never drops a logical frame. Decoding
+        // runs at about real time, so that invariant only holds because
+        // the transport builds a cushion before it reports `playing`
+        // (`dab_audio::decode::PRIME_SECONDS`, half a second handed to the
+        // device in one piece). That makes this sample the right baseline:
+        // everything the device played before it — the callbacks between
+        // `play` and the cushion, which had an empty queue by construction
+        // — is pre-roll, and nothing after it may starve. A single extra
+        // underrun here is a real hole in the output, which is what
+        // state/rate/peak cannot see.
+        let pre_roll = field(&dab, "underruns");
+        assert_eq!(field(&dab, "dropped"), 0.0, "worker drops: {dab}");
         // The block counter only moves forward, and the peak tracks the
         // fixture's tone (the first AUs are the codec's silent warm-up).
         let blocks = field(&dab, "blocks");
-        c.wait("get dab", 10, |r| field(r, "blocks") > blocks);
+        let advanced = c.wait("get dab", 10, |r| field(r, "blocks") >= blocks + 48.0);
+        assert_eq!(
+            field(&advanced, "underruns"),
+            pre_roll,
+            "the sink starved while playing: {advanced}"
+        );
+        assert_eq!(field(&advanced, "dropped"), 0.0, "{advanced}");
+
+        // **One owner of the device.** `get audio` and `get dab`'s
+        // `audio.state` are printed from the same `SdrState::audio_state`,
+        // so they cannot disagree: while a transport runs the device
+        // belongs to DAB, and `get audio` says so.
+        let dab = c.wait("get dab", 10, |r| raw(r, "state") == "\"playing\"");
+        let aud = c.wait("get audio", 10, |r| raw(r, "state") == "\"playing\"");
+        assert_eq!(raw(&aud, "owner"), "\"dab\"", "{aud}");
+        assert_eq!(raw(&aud, "state"), raw(&dab, "state"), "{aud} / {dab}");
+
+        // Starting the demodulator does not take the device back: the
+        // transport keeps it, so two producers never share one sink.
+        c.ok("sdr demod nfm");
+        let aud = c.wait("get audio", 10, |r| raw(r, "demod") == "\"nfm\"");
+        assert_eq!(
+            raw(&aud, "owner"),
+            "\"dab\"",
+            "the demodulator took the sink from a running transport: {aud}"
+        );
+        c.ok("sdr demod off");
 
         // MP2: selecting a service while playing switches the stream. The
         // backend is the MP2 adapter, never the AAC one.
@@ -83,6 +122,7 @@ fn dab_audio_plays_both_codings_and_surfaces_errors() {
         });
         assert_eq!(field(&dab, "rate"), 48_000.0, "{dab}");
         assert_eq!(field(&dab, "channels"), 2.0, "{dab}");
+        assert_eq!(field(&dab, "dropped"), 0.0, "worker drops: {dab}");
 
         // Stop: the worker is gone with its decoders and the sink is
         // cleared, so the readout settles on `off` with no peak left to
@@ -90,6 +130,10 @@ fn dab_audio_plays_both_codings_and_surfaces_errors() {
         c.ok("sdr dab stop");
         let off = c.wait("get dab", 5, |r| r.contains(r#""audio":{"state":"off"}"#));
         assert!(!off.contains(r#""peak""#), "stopped readout: {off}");
+        // The device is handed back with the transport: no owner, and both
+        // readouts say the same `off`.
+        let aud = c.wait("get audio", 5, |r| raw(r, "owner") == "\"none\"");
+        assert_eq!(raw(&aud, "state"), "\"off\"", "{aud}");
 
         // A sub-channel that carries no codec stream is an error with a
         // typed reason, not a silent `playing`.

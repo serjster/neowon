@@ -1,4 +1,4 @@
-//! RF reference in the app (Phase 10.14): the band plans loaded at startup,
+//! RF reference in the app: the band plans loaded at startup,
 //! the station store (`~/.neowon/refdb`), the operator's location, and what
 //! the SDR screen shows of them — the band strip under the spectrum, the
 //! whole-range minimap, the RF map window, the station overlay and the
@@ -9,9 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use bevy::prelude::*;
 use bevy_egui::egui;
-use neowon_refdb::{
-    Band, BandPlan, Index, Location, Meta, NamedPlan, Query, Source, Station, Store,
-};
+use neowon_refdb::{Band, BandPlan, Index, Location, Meta, NamedPlan, Source, Station, Store};
 
 use crate::Link;
 use crate::control::escape;
@@ -20,10 +18,12 @@ use crate::sdr::SdrState;
 mod actions;
 mod jobs;
 mod readout;
+mod rows;
 
 pub use actions::{LocationSet, RefMapAction, parse, run};
 use jobs::{Job, JobDone};
 pub use readout::{location_json, refdb_json, stations_query};
+pub use rows::StationRows;
 
 pub use neowon_refdb::geo::{haversine_km, to_locator};
 
@@ -32,17 +32,12 @@ pub struct RefMap {
     pub plans: Vec<NamedPlan>,
     /// Index into `plans`.
     pub active: usize,
-    /// The band strip between the spectrum and the waterfall.
     pub strip: bool,
     /// The whole-range minimap across the top of the SDR canvas.
     pub mini: bool,
-    /// The RF map window.
     pub window: bool,
 
-    // ---- 10.14.6: stations, location and the reference store ----
-    /// The stations window.
     pub stations_window: bool,
-    /// The station overlay on the spectrum.
     pub overlay: bool,
     /// Radius for "near me", km; `None` = per-service defaults.
     pub radius_km: Option<f64>,
@@ -50,19 +45,17 @@ pub struct RefMap {
     pub store: Option<Store>,
     pub index: Index,
     pub metas: Vec<Meta>,
-    /// The last import/fetch report or error, for the status line.
+    /// What the last load could not use, by source.
+    pub problems: Vec<neowon_refdb::Problem>,
     pub status: String,
     pub job: Option<Job>,
-    /// Search box text.
     pub find: String,
     pub filter_source: Option<Source>,
     pub filter_service: Option<neowon_refdb::Service>,
     pub filter_modulation: Option<neowon_refdb::Modulation>,
     pub on_air: bool,
-    /// All / in the IQ view / near me.
     pub scope: Scope,
     pub sort: neowon_refdb::SortBy,
-    /// The selected station, keyed `source:id`.
     pub selected: Option<String>,
     /// UTC weekday (0 = Monday) and minute, for schedules and EiBi.
     pub utc: (u8, u16),
@@ -77,7 +70,29 @@ impl RefMap {
         let user = std::env::var_os("HOME")
             .map(|h| std::path::Path::new(&h).join(".neowon/bandplans"))
             .unwrap_or_default();
-        let (plans, errors) = neowon_refdb::load_plans(&shipped_dir(), &user);
+        Self::load_from(
+            &user,
+            neowon_refdb::store::default_dir(),
+            neowon_refdb::geo::location_path(),
+        )
+    }
+
+    /// The shipped plans alone: no user plans, no station store, no
+    /// location. A unit test's refmap, so it neither reads nor creates
+    /// anything under the operator's `~`.
+    #[cfg(test)]
+    pub fn shipped_only() -> Self {
+        Self::load_from(std::path::Path::new(""), None, None)
+    }
+
+    /// [`load`](Self::load) from explicit per-user paths; `None` leaves the
+    /// station store or the location unset.
+    fn load_from(
+        user: &std::path::Path,
+        refdb: Option<std::path::PathBuf>,
+        location: Option<std::path::PathBuf>,
+    ) -> Self {
+        let (plans, errors) = neowon_refdb::load_plans(&shipped_dir(), user);
         for (path, e) in errors {
             warn!("bandplan: {} not loaded: {e}", path.display());
         }
@@ -102,6 +117,7 @@ impl RefMap {
             store: None,
             index: Index::default(),
             metas: Vec::new(),
+            problems: Vec::new(),
             status: String::new(),
             job: None,
             find: String::new(),
@@ -114,7 +130,7 @@ impl RefMap {
             selected: None,
             utc: utc_now(),
         };
-        match neowon_refdb::store::default_dir() {
+        match refdb {
             Some(dir) => match Store::open(&dir) {
                 Ok(store) => {
                     rm.store = Some(store);
@@ -124,26 +140,31 @@ impl RefMap {
             },
             None => rm.status = "no refdb directory (set HOME or NEOWON_REFDB)".into(),
         }
-        rm.location =
-            neowon_refdb::geo::location_path().and_then(|p| Location::load(&p).ok().flatten());
+        rm.location = location.and_then(|p| Location::load(&p).ok().flatten());
         rm
     }
 
     /// Re-read every snapshot from the store; cheap enough per job finish.
+    /// A source that cannot be read is named in the status line and
+    /// `get refdb`; the others load regardless.
     pub fn reload(&mut self) {
         let Some(store) = &self.store else { return };
-        match store.load_all() {
-            Ok((index, metas)) => {
-                info!(
-                    "refdb: {} stations from {} sources",
-                    index.len(),
-                    metas.len()
-                );
-                self.index = index;
-                self.metas = metas;
-            }
-            Err(e) => self.status = format!("refdb: {e}"),
+        let loaded = store.load();
+        info!(
+            "refdb: {} stations from {} sources",
+            loaded.index.len(),
+            loaded.metas.len()
+        );
+        for p in &loaded.problems {
+            warn!("refdb: {p}");
         }
+        if !loaded.problems.is_empty() {
+            let named: Vec<String> = loaded.problems.iter().map(ToString::to_string).collect();
+            self.status = format!("refdb: {}", named.join("; "));
+        }
+        self.index = loaded.index;
+        self.metas = loaded.metas;
+        self.problems = loaded.problems;
     }
 
     pub fn plan(&self) -> Option<&BandPlan> {
@@ -162,7 +183,6 @@ impl RefMap {
         v
     }
 
-    /// `source:id`, the key every station verb and the catalog bridge use.
     pub fn key(s: &Station) -> String {
         format!("{}:{}", s.source.stem(), s.id)
     }
@@ -171,40 +191,6 @@ impl RefMap {
         let (stem, id) = key.split_once(':')?;
         let src = Source::from_stem(stem)?;
         self.index.iter().find(|s| s.source == src && s.id == id)
-    }
-
-    /// The window's filters as a range query.
-    pub fn query(&self, scope: Scope, sdr: &SdrState) -> Vec<(&Station, Option<f64>)> {
-        let at = self.location.as_ref().map(Location::at);
-        let (lo, hi) = match scope {
-            Scope::View => {
-                let half = sdr.span() / 2.0;
-                (sdr.view_centre() - half, sdr.view_centre() + half)
-            }
-            Scope::All => (0.0, f64::INFINITY),
-            // `near` keeps the frequency range open; the radius does the work.
-            Scope::Near => (0.0, f64::INFINITY),
-        };
-        let (near, radius) = match scope {
-            Scope::Near => (at, Some(self.radius_km.unwrap_or(150.0))),
-            _ => (at, None),
-        };
-        let q = Query {
-            text: self.find.clone(),
-            lo_hz: lo,
-            hi_hz: hi,
-            near,
-            radius_km: radius,
-            on_air_at: self.on_air.then_some(self.utc),
-            sources: self.filter_source.into_iter().collect(),
-            sort: self.sort,
-        };
-        let mut rows = self.index.query(&q);
-        rows.retain(|(s, _)| {
-            self.filter_modulation.is_none_or(|m| s.modulation == m)
-                && self.filter_service.is_none_or(|v| s.service == v)
-        });
-        rows
     }
 
     /// The stations the spectrum overlay shows: in view, radius-filtered
@@ -241,7 +227,7 @@ impl RefMap {
             .is_none_or(|sch| sch.on_air(self.utc.0, self.utc.1))
     }
 
-    /// Per-service radius defaults (D17/spec): broadcast FM/TV 150 km,
+    /// Per-service radius defaults: broadcast FM/TV 150 km,
     /// aviation 100 km, shortwave and everything else unconstrained. An
     /// operator radius overrides all of them. No coordinates and no
     /// location is never hidden.
@@ -300,7 +286,6 @@ impl Scope {
     }
 }
 
-/// Session-level tick: the UTC clock for schedules, and job completion.
 pub fn tick(mut rm: ResMut<RefMap>, mut link: ResMut<Link>) {
     rm.utc = utc_now();
     let Some(rx) = rm.job.as_ref().map(|j| j.rx.clone()) else {
@@ -507,7 +492,7 @@ mod tests {
 
     #[test]
     fn every_shipped_kind_gets_a_colour_or_grey() {
-        let rm = RefMap::load();
+        let rm = RefMap::shipped_only();
         assert!(rm.plans.len() >= 21, "{}", rm.plans.len());
         assert_eq!(rm.stem(), "general");
         assert_eq!(colour("broadcast"), egui::Color32::from_rgb(80, 120, 235));

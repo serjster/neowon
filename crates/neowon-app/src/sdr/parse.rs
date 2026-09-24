@@ -1,7 +1,6 @@
 //! The script parser for SDR actions (`sdr <verb> …`, `sim iq …`,
-//! `instrument scope|sdr`). Split from `actions.rs` along its second job
-//! (review M12): the action type and its application live there, the words
-//! live here.
+//! `instrument scope|sdr`). The action type and its application live in
+//! `actions.rs`.
 
 use super::actions::{DabChannel, DabService, DabVerb, IqDumpVerb, SdrAction, SurveyRequest};
 

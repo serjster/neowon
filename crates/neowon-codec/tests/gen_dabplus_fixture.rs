@@ -37,10 +37,10 @@ fn fixture_path(name: &str) -> std::path::PathBuf {
 fn header() -> SuperframeHeader {
     SuperframeHeader {
         rfa: false,
-        dac_rate: true,          // 48 kHz DAC
-        sbr_flag: true,          // SBR
+        dac_rate: true, // 48 kHz DAC
+        sbr_flag: true,
         aac_channel_mode: false, // mono core
-        ps_flag: true,           // parametric stereo
+        ps_flag: true,
         mpeg_surround_config: 0,
     }
 }

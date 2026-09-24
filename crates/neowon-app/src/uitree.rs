@@ -38,7 +38,6 @@ impl UiTree {
         }
     }
 
-    /// The last tree as JSON, or `None` before the first one.
     pub fn json(&self, layout: &Layout, rects: &UiRects) -> Option<String> {
         self.last.as_ref().map(|t| render(t, layout, rects))
     }
@@ -94,7 +93,7 @@ pub fn capture(
     tree.last = Some(update);
     for path in std::mem::take(&mut tree.pending) {
         let json = tree.json(&layout, &rects).unwrap_or_default();
-        match std::fs::write(&path, json) {
+        match neowon_core::atomic_file::write(&path, json) {
             Ok(()) => info!("uitree: wrote {path}"),
             Err(e) => error!("uitree: cannot write {path}: {e}"),
         }

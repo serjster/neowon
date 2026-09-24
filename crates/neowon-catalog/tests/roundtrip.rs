@@ -69,7 +69,6 @@ fn every_entity_survives_wal_replay_and_snapshot() {
     assert_eq!(s.aliases[0].name, "BBC R2");
     drop(after_snapshot);
 
-    // Export/import round-trips the content under fresh ids.
     let doc = {
         let cat = Catalog::open(&dir).unwrap();
         exchange::export(&cat)

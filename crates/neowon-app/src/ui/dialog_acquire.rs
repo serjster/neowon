@@ -1,5 +1,3 @@
-//! Acquire dialog — acquisition mode.
-
 use bevy_egui::egui;
 use neowon_core::AcqMode;
 

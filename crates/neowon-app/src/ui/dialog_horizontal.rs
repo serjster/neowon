@@ -103,7 +103,6 @@ fn timeline_group(
                 deep.anchor = None;
             }
         });
-        // What the instrument actually saw, and what it missed.
         ui.label(
             egui::RichText::new(format!(
                 "≈{:.0}% not acquired · {} breaks · {} records",

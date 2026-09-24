@@ -1,4 +1,3 @@
-//! Unit tests for the MSC decoder (see `super`).
 use super::*;
 use crate::dab::fec::{depuncture_regions, eep_profile, uep_profile};
 

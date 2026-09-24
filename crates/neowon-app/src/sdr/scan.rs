@@ -1,10 +1,10 @@
-//! Surveys in SDR mode (Phase 10.4): the `neowon_sdr::survey` state
+//! Surveys in SDR mode: the `neowon_dsp::survey` state
 //! machine driven through the supervisor. Each completed step retunes to
 //! the next; the last two results are kept so `get surveydiff` can
 //! compare them.
 
 use neowon_core::CaptureFrame;
-use neowon_sdr::survey::{Survey, SurveyPlan, SurveyResult, diff};
+use neowon_dsp::survey::{Survey, SurveyPlan, SurveyResult, diff};
 
 use super::SdrState;
 
@@ -47,7 +47,7 @@ pub fn feed(sdr: &mut SdrState, frame: &CaptureFrame) {
             sdr.config.centre_hz = next;
             sdr.dirty = true;
             // The survey moved the hardware: the DAB table was decoded from
-            // the previous step's window (D27).
+            // the previous step's window.
             sdr.dab_reset();
         }
         None => {
@@ -132,7 +132,7 @@ pub fn diff_json(sdr: &SdrState) -> String {
     let rows: Vec<String> = diff(a, b, 2e3, 3.0)
         .iter()
         .map(|r| {
-            let p = |x: &Option<neowon_sdr::survey::Peak>| {
+            let p = |x: &Option<neowon_dsp::survey::Peak>| {
                 x.as_ref().map_or("null".into(), |p| num(p.power_dbfs))
             };
             format!(

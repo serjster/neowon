@@ -1,6 +1,5 @@
 //! Can the VDS1022 stream gaplessly, so the host can hold a long record at
-//! full sample rate? (Phase 7.8 follow-up, docs/tasks/phase78-lab-semantics
-//! -spec.md G2.)
+//! full sample rate?
 //!
 //! Roll mode is the device's streaming mode: it fills the 5000-sample buffer
 //! progressively and reports the write position in each frame's `cursor`.
@@ -27,7 +26,6 @@ use std::time::{Duration, Instant};
 use neowon_core::Coupling;
 use neowon_vds1022::device::{ChannelSetup, Vds1022};
 
-/// Samples per record.
 const SAMPLES: f64 = 5000.0;
 
 fn main() {

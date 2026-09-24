@@ -1,6 +1,6 @@
-//! FCC importer (D17; US public domain): the `fmq`/`amq` pipe-delimited
+//! FCC importer (US public domain): the `fmq`/`amq` pipe-delimited
 //! output (`list=4`). That format has **no header row**; the columns were
-//! confirmed against the live service on 2026-09-19 (spec Deviations):
+//! confirmed against the live service:
 //!
 //! ```text
 //! 1 call sign | 2 "89.3 MHz" | 3 service | … | 10 city | 11 state |

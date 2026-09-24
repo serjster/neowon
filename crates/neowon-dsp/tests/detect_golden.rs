@@ -1,10 +1,14 @@
-//! Phase 10.1 golden fixtures for detection and tracking (spec table:
+//! Golden fixtures for detection and tracking (spec table:
 //! seed 7, N 8192). The spec leaves the sample rate implicit; it is
 //! 8192 Hz here, so N is one second, a frame (`nfft 256 × 4 blocks`) is
 //! 125 ms and one bin is 32 Hz. SNR is signal power over total noise power.
-//! Each row prints a JSON readout.
+//! Each row files a JSON readout at
+//! `target/tmp/readouts/detect-<row>.json` (the path is printed
+//! as `readout: …`) as well as printing it; see `tests/common/mod.rs`.
 //!
 //! `cargo test -p neowon-dsp --test detect_golden -- --nocapture`
+
+mod common;
 
 use neowon_core::SignalObservation;
 use neowon_dsp::iq::iq_spectrum;
@@ -74,12 +78,14 @@ fn readout(row: &str, obs: &[SignalObservation], tr: &Tracker) {
             )
         })
         .collect();
-    println!(
+    let document = format!(
         r#"{{"row":"{row}","observations":{},"tracks":{},"active":[{}]}}"#,
         obs.len(),
         tr.tracks().len(),
         active.join(",")
     );
+    println!("{document}");
+    common::file_readout(&format!("detect-{row}"), &document);
 }
 
 fn tone(offset_hz: f64) -> IqComponent {
@@ -139,10 +145,12 @@ fn burst_10ms_at_half_time_is_present_with_its_own_bandwidth() {
         .iter()
         .max_by(|a, b| a.power_dbfs.total_cmp(&b.power_dbfs))
         .expect("burst not detected");
-    println!(
-        r#"{{"row":"burst","truth_obw99_hz":{truth:.1},"measured_hz":{:.1}}}"#,
+    let document = format!(
+        r#"{{"row":"burst_bandwidth","truth_obw99_hz":{truth:.1},"measured_hz":{:.1},"tolerance_hz":{BIN:.1}}}"#,
         o.bandwidth_hz()
     );
+    println!("{document}");
+    common::file_readout("detect-burst-bandwidth", &document);
     assert!(
         (o.bandwidth_hz() - truth).abs() <= BIN,
         "{} vs {truth}",

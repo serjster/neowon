@@ -11,33 +11,51 @@
 //! JSON object per line back. Commands are injected into the script queue
 //! and acked immediately (`{"ok":true}`) — effects apply on the next frame.
 //!
+//! Because it is on by default, verbs that leave the process — writing a
+//! file, reading one the caller named, reaching the network, ending the
+//! process — need the connection to have sent `auth <token>` first. What
+//! needs it is decided in [`privilege`]; how a client gets
+//! the token is in [`conn`]. Queries and instrument control stay open.
+//!
 //! Test and tooling launches set `NEOWON_ORPHAN_EXIT=<seconds>` so a harness
 //! that is killed cannot leave the app behind: the [`orphan`] watchdog ends
 //! the process once no client has been live for that long.
 
+pub mod conn;
+mod json;
 mod orphan;
+mod privilege;
 
 use bevy::prelude::*;
-use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
-use std::io::{BufRead, BufReader, Write};
+use crossbeam_channel::{Receiver, Sender, unbounded};
 use std::net::TcpListener;
+use std::sync::Arc;
 
 use crate::Link;
-use crate::derived::{FftState, METRICS, MathState, MeasureState, PfState};
-use crate::gpu::{Palette, Persistence, Phosphor, TraceMode};
+use crate::derived::{FftState, MathState, MeasureState, PfState};
+use crate::gpu::Phosphor;
 use crate::record::{History, Recorder};
 use crate::script::Script;
 use crate::viz::three_d::Viz3dState;
 use crate::viz::waterfall::WaterfallState;
+pub(crate) use json::escape;
+use json::{config_json, decode_json, measure_json, status_json};
 
 pub struct Request {
     line: String,
+    /// Whether this connection has sent a good `auth <token>`. Trust is
+    /// per-connection, so it travels with the request rather than sitting
+    /// in a resource every connection would share.
+    authed: bool,
     reply: Sender<String>,
 }
 
 #[derive(Resource)]
 pub struct ControlServer {
     rx: Option<Receiver<Request>>,
+    /// The process token, so a refusal can say where to find it. `None`
+    /// when no socket was opened.
+    auth: Option<Arc<conn::Auth>>,
 }
 
 /// The control socket's port: `NEOWON_CONTROL` when set (`off`/`0`/`none`
@@ -60,68 +78,39 @@ pub fn configured_port() -> Option<u16> {
 /// watchdog either way (see [`orphan`]).
 pub fn start_from_env() -> ControlServer {
     let guard = orphan::OrphanGuard::from_env();
-    let Some(port) = configured_port() else {
+    let inert = |guard: Option<Arc<orphan::OrphanGuard>>| {
         // A scripted launch can ask for the guard with no socket at all:
         // the watchdog then just watches the start clock.
         if let Some(g) = guard {
             g.watch();
         }
-        return ControlServer { rx: None };
+        ControlServer {
+            rx: None,
+            auth: None,
+        }
+    };
+    let Some(port) = configured_port() else {
+        return inert(guard);
     };
     let listener = match TcpListener::bind(("127.0.0.1", port)) {
         Ok(l) => l,
         Err(e) => {
             error!("control: cannot bind 127.0.0.1:{port}: {e}");
-            if let Some(g) = guard {
-                g.watch();
-            }
-            return ControlServer { rx: None };
+            return inert(guard);
         }
     };
     info!("control: listening on 127.0.0.1:{port}");
     if let Some(g) = &guard {
         g.watch();
     }
+    let auth = conn::Auth::for_port(port);
     let (tx, rx) = unbounded::<Request>();
-    std::thread::spawn(move || {
-        for conn in listener.incoming() {
-            let Ok(conn) = conn else { continue };
-            let tx = tx.clone();
-            let guard = guard.clone();
-            std::thread::spawn(move || {
-                // Live for as long as the connection is: dropping the token
-                // on any exit path restarts the orphan watchdog's clock.
-                let _live = guard.as_ref().map(|g| g.connect());
-                let mut out = match conn.try_clone() {
-                    Ok(c) => c,
-                    Err(_) => return,
-                };
-                for line in BufReader::new(conn).lines() {
-                    let Ok(line) = line else { break };
-                    if line.trim().is_empty() {
-                        continue;
-                    }
-                    let (reply_tx, reply_rx) = bounded(1);
-                    if tx
-                        .send(Request {
-                            line,
-                            reply: reply_tx,
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
-                    let reply = reply_rx
-                        .recv_timeout(std::time::Duration::from_secs(5))
-                        .unwrap_or_else(|_| r#"{"ok":false,"error":"timeout"}"#.into());
-                    if writeln!(out, "{reply}").is_err() {
-                        break;
-                    }
-                }
-            });
-        }
-    });
-    ControlServer { rx: Some(rx) }
+    let served = Arc::clone(&auth);
+    std::thread::spawn(move || conn::accept_loop(listener, tx, guard, served));
+    ControlServer {
+        rx: Some(rx),
+        auth: Some(auth),
+    }
 }
 
 /// Later-phase resources bundled into one system param (Bevy caps systems
@@ -171,13 +160,13 @@ pub fn poll(
             }
             Some("measure") => measure_json(&meas),
             Some("decode") => decode_json(dec),
-            Some("sdr") => crate::sdr::sdr_json(sdr),
+            Some("sdr") => crate::sdr::sdr_json(sdr, link.sdr_caps()),
             Some("audio") => crate::sdr::audio_json(sdr),
             Some("iq") => crate::sdr::iq_json(sdr),
             Some("detections") => crate::sdr::detections_json(sdr),
             Some("modmeas") => crate::sdr::modmeas_json(sdr),
             Some("classify") => crate::sdr::classify_json(sdr),
-            Some("dab") => crate::sdr::dab_json(sdr, &extra.9),
+            Some("dab") => crate::sdr::dab_json(sdr, &extra.9, now),
             Some("survey") => crate::sdr::survey_json(sdr),
             Some("surveydiff") => crate::sdr::survey_diff_json(sdr),
             Some("catalog") => crate::catalog::catalog_json(cat),
@@ -201,320 +190,24 @@ pub fn poll(
                 r#"{{"ok":false,"error":"unknown query {}"}}"#,
                 escape(other)
             ),
-            None => match crate::script::parse(line) {
-                Ok(actions) => {
+            // Not a query: a script line. Everything that leaves the
+            // process needs the connection's token first.
+            None => match server
+                .auth
+                .as_deref()
+                .map(|auth| conn::authorize(line, req.authed, auth))
+            {
+                Some(Ok(actions)) => {
                     for (dt, a) in actions {
                         script.inject_at(now + dt, a);
                     }
                     r#"{"ok":true}"#.into()
                 }
-                Err(e) => format!(r#"{{"ok":false,"error":"{}"}}"#, escape(&e)),
+                Some(Err(reply)) => reply,
+                // Unreachable: no `auth` means no listener means no request.
+                None => r#"{"ok":false,"error":"control socket is off"}"#.into(),
             },
         };
         let _ = req.reply.try_send(reply);
-    }
-}
-
-pub(crate) fn escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out
-}
-
-/// A JSON number: finite floats as-is, everything else null.
-fn num(v: f64) -> String {
-    if v.is_finite() {
-        format!("{v}")
-    } else {
-        "null".into()
-    }
-}
-
-fn status_json(link: &Link, rec: &Recorder, hist: &History) -> String {
-    let (name, serial) = link
-        .caps
-        .as_ref()
-        .map(|c| (c.name.clone(), c.serial.clone()))
-        .unwrap_or_default();
-    format!(
-        concat!(
-            r#"{{"ok":true,"running":{},"frames_seen":{},"backend":"{}","serial":"{}","#,
-            r#""status":"{}","stimulus":"{}","shot":{},"#,
-            r#""recorder":{{"on":{},"frames":{},"bytes":{},"budget":{},"seconds":{}}},"dropped":{},"#,
-            r#""history":{},"last_export":{}}}"#
-        ),
-        link.config.running,
-        link.frames_seen,
-        escape(&name),
-        escape(&serial),
-        escape(&link.status),
-        escape(&link.stimulus),
-        link.last_shot
-            .as_ref()
-            .map_or("null".to_string(), |p| format!("\"{}\"", escape(p))),
-        rec.on,
-        rec.frames.len(),
-        rec.bytes(),
-        rec.budget,
-        num(rec.span_seconds()),
-        link.sup.dropped.load(std::sync::atomic::Ordering::Relaxed),
-        hist.active.map_or("null".to_string(), |i| i.to_string()),
-        rec.last_export
-            .as_ref()
-            .map_or("null".to_string(), |p| format!("\"{}\"", escape(p))),
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn config_json(
-    link: &Link,
-    phosphor: &Phosphor,
-    math: &MathState,
-    fft: &FftState,
-    pf: &PfState,
-    wf: &WaterfallState,
-    viz: &Viz3dState,
-    fx: &crate::effects::Effects,
-    ap: &crate::autopeak::AutoPeak,
-    deep: &crate::deep::DeepView,
-) -> String {
-    use neowon_core::{Coupling, Slope, TriggerKind};
-    let c = &link.config;
-    let mut channels = String::new();
-    for (i, ch) in c.channels.iter().enumerate().take(2) {
-        if i > 0 {
-            channels.push(',');
-        }
-        let coup = match ch.coupling {
-            Coupling::Dc => "dc",
-            Coupling::Ac => "ac",
-            Coupling::Gnd => "gnd",
-        };
-        channels.push_str(&format!(
-            r#"{{"enabled":{},"volts_div":{},"coupling":"{coup}","probe":{},"offset":{}}}"#,
-            ch.enabled,
-            num(ch.volts_div),
-            num(ch.probe),
-            num(ch.offset),
-        ));
-    }
-    let t = &c.trigger;
-    let sweep = match t.sweep {
-        neowon_core::Sweep::Auto => "auto",
-        neowon_core::Sweep::Normal => "normal",
-        neowon_core::Sweep::Single => "single",
-    };
-    let kind = match t.kind {
-        TriggerKind::Edge { slope } => format!(
-            r#""kind":"edge","slope":"{}""#,
-            match slope {
-                Slope::Rising => "rising",
-                Slope::Falling => "falling",
-            }
-        ),
-        TriggerKind::Pulse { condition, width } => {
-            let (pol, cmp) = crate::session::condition_words(condition);
-            format!(
-                r#""kind":"pulse","condition":"{pol} {cmp}","width":{}"#,
-                num(width)
-            )
-        }
-        TriggerKind::Slope {
-            condition,
-            width,
-            upper,
-            lower,
-        } => {
-            let (pol, cmp) = crate::session::condition_words(condition);
-            format!(
-                r#""kind":"slope","condition":"{pol} {cmp}","width":{},"upper":{},"lower":{}"#,
-                num(width),
-                num(upper),
-                num(lower)
-            )
-        }
-        TriggerKind::Video { sync, line } => {
-            let sync = match sync {
-                neowon_core::VideoSync::Line => "line",
-                neowon_core::VideoSync::Field => "field",
-                neowon_core::VideoSync::OddField => "odd",
-                neowon_core::VideoSync::EvenField => "even",
-                neowon_core::VideoSync::LineNumber => "linenum",
-            };
-            format!(r#""kind":"video","sync":"{sync}","line":{line}"#)
-        }
-    };
-    let acq = match c.acq {
-        neowon_core::AcqMode::Sample => "sample".to_string(),
-        neowon_core::AcqMode::Peak => "peak".to_string(),
-        neowon_core::AcqMode::Average(n) => format!("avg{n}"),
-    };
-    let mode = match phosphor.mode {
-        TraceMode::Vectors => "vectors",
-        TraceMode::Dots => "dots",
-        TraceMode::Xy => "xy",
-    };
-    let persist = match phosphor.persistence {
-        Persistence::Off => "\"off\"".to_string(),
-        Persistence::Infinite => "\"inf\"".to_string(),
-        Persistence::Seconds(s) => format!("{s}"),
-    };
-    let palette = match phosphor.palette {
-        Palette::Phosphor => "phosphor",
-        Palette::Thermal => "thermal",
-        Palette::Green => "green",
-    };
-    format!(
-        concat!(
-            r#"{{"ok":true,"sample_rate":{},"trigger_position":{},"acq":"{}","running":{},"#,
-            r#""channels":[{}],"#,
-            r#""trigger":{{"source":{},{},"level":{},"sweep":"{}","holdoff":{}}},"#,
-            r#""display":{{"mode":"{}","persist":{},"gain":{},"crt":{},"palette":"{}","hview":[{},{}]}},"#,
-            r#""math":{{"enabled":{}}},"fft":{{"enabled":{},"source":{}}},"#,
-            r#""pf":{{"enabled":{},"source":{},"pass":{},"fail":{}}},"#,
-            r#""viz":{{"waterfall":{},"mode":"{}","effect":{}}},"#,
-            r#""autopeak":{{"on":{},"engaged":{}}},"#,
-            r#""deep":{{"on":{},"span":{},"coverage":{},"gaps":{},"records":{},"anchored":{},"follow":"{}"}}}}"#
-        ),
-        num(c.sample_rate),
-        num(c.position),
-        acq,
-        c.running,
-        channels,
-        t.source,
-        kind,
-        num(t.level),
-        sweep,
-        num(t.holdoff),
-        mode,
-        persist,
-        num(phosphor.gain as f64),
-        phosphor.crt,
-        palette,
-        num(phosphor.hview.0),
-        num(phosphor.hview.1),
-        math.enabled,
-        fft.enabled,
-        fft.source,
-        pf.enabled,
-        pf.source_slot,
-        pf.pass,
-        pf.fail,
-        wf.on,
-        viz.mode.name(),
-        fx.active
-            .as_ref()
-            .map_or("null".to_string(), |n| format!("\"{}\"", escape(n))),
-        ap.on,
-        ap.engaged,
-        deep.on,
-        num(deep.span),
-        num(deep.coverage),
-        deep.gap_count,
-        deep.records,
-        deep.anchor.is_some(),
-        deep.follow.name(),
-    )
-}
-
-/// Decoder results: enough for a script or an LLM to read the bus without
-/// looking at the screen.
-fn decode_json(st: &crate::decode::DecodeState) -> String {
-    use neowon_dsp::decode::EventKind;
-    let rate = st.sample_rate.max(1.0);
-    let mut events = String::new();
-    for (i, e) in st.events.iter().enumerate() {
-        if i > 0 {
-            events.push(',');
-        }
-        let (t0, t1) = e.seconds(rate);
-        let kind = match &e.kind {
-            EventKind::Word { value, bits } => {
-                format!(r#""kind":"word","value":{value},"bits":{bits}"#)
-            }
-            EventKind::Marker(m) => format!(r#""kind":"marker","name":"{}""#, escape(m)),
-            EventKind::Ack(ok) => format!(r#""kind":"ack","ok":{ok}"#),
-            EventKind::Error(e) => format!(r#""kind":"error","reason":"{}""#, escape(e)),
-        };
-        events.push_str(&format!(
-            r#"{{"t":{},"t_end":{},{kind}}}"#,
-            num(t0),
-            num(t1)
-        ));
-    }
-    format!(
-        r#"{{"ok":true,"protocol":"{}","errors":{},"error":{},"events":[{events}]}}"#,
-        st.protocol.name(),
-        st.error_count(),
-        st.error
-            .as_ref()
-            .map_or("null".to_string(), |e| format!("\"{}\"", escape(e))),
-    )
-}
-
-fn measure_json(meas: &MeasureState) -> String {
-    let mut slots = String::new();
-    for slot in 0..crate::derived::SLOTS {
-        if slot > 0 {
-            slots.push(',');
-        }
-        let Some(m) = &meas.latest[slot] else {
-            slots.push_str("null");
-            continue;
-        };
-        let mut metrics = String::new();
-        for (i, (name, get, _)) in METRICS.iter().enumerate() {
-            if i > 0 {
-                metrics.push(',');
-            }
-            let value = get(m).map_or("null".to_string(), num);
-            let stats = meas
-                .stats
-                .get(slot)
-                .map(|s| &s[i])
-                .filter(|t| t.count > 0)
-                .map_or("null".to_string(), |t| {
-                    format!(
-                        r#"{{"mean":{},"min":{},"max":{},"std":{},"n":{}}}"#,
-                        num(t.mean),
-                        num(t.min),
-                        num(t.max),
-                        num(t.std_dev()),
-                        t.count
-                    )
-                });
-            metrics.push_str(&format!(
-                r#"{{"name":"{}","value":{value},"stats":{stats}}}"#,
-                escape(name)
-            ));
-        }
-        slots.push_str(&format!(r#"{{"metrics":[{metrics}]}}"#));
-    }
-    format!(
-        r#"{{"ok":true,"slots":[{slots}],"sample_rate":{}}}"#,
-        num(meas.sample_rate)
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{escape, num};
-
-    #[test]
-    fn json_escaping_and_numbers() {
-        assert_eq!(escape(r#"a"b\c"#), r#"a\"b\\c"#);
-        assert_eq!(escape("x\ny"), "x\\ny");
-        assert_eq!(num(0.2), "0.2");
-        assert_eq!(num(250e3), "250000");
-        assert_eq!(num(f64::NAN), "null");
-        assert_eq!(num(f64::INFINITY), "null");
     }
 }

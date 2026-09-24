@@ -1,7 +1,6 @@
 //! Stream-shaping helpers for playback: the DAB+ super-frame sync search
 //! (`SuperframeDecoder` assumes a boundary the caller knows; an app starting
-//! mid-stream has none) and the sink rate converter. Split from `mod.rs`
-//! along that seam so each file keeps its budget.
+//! mid-stream has none) and the sink rate converter.
 
 use neowon_codec::dabplus::{DecodedSuperframe, SuperframeDecoder};
 
@@ -17,16 +16,15 @@ const CONFIRM_WINDOWS: u32 = 2;
 /// window before the stream is declared not to be the signalled DAB+ shape.
 /// Twenty super frames is 2.4 s of stream at every sub-channel index, and no
 /// working receiver emits that much of a real DAB+ stream with zero valid
-/// headers; a shorter budget condemned streams whose receiver was still
-/// acquiring (the `14 windows` verdict on air).
+/// headers; a shorter budget condemns streams whose receiver is still
+/// acquiring.
 const SHAPE_VERDICT_SUPERFRAMES: u64 = 20;
 
 /// DAB+ super-frame synchronisation at the only granularity this transport
 /// has: the MSC hands over whole logical frames, so a super-frame boundary
 /// is at 0, 1, 2, 3 or 4 logical frames into the pending buffer. Each phase
 /// is trial-decoded until the header Fire code passes (TS 102 563 annex C's
-/// search; `SuperframeDecoder` itself starts from a boundary the caller is
-/// assumed to know, which an app starting mid-stream does not).
+/// search).
 ///
 /// Two consecutive clean windows are needed before the phase is trusted, so
 /// a single random RS "correction" cannot lock it. Once aligned, a bad
@@ -163,8 +161,8 @@ impl DabPlusSync {
 }
 
 /// Streaming rate conversion for the sink. Identity unless the device rate
-/// differs from the stream's; then linear interpolation (see the module
-/// docs for why 10.10's windowed-sinc resampler is not used here).
+/// differs from the stream's; then linear interpolation (see the
+/// `dab_audio` module docs for why the windowed-sinc resampler is not used).
 pub(super) struct RateConverter {
     in_rate: f64,
     out_rate: f64,
@@ -281,17 +279,15 @@ mod tests {
 
     /// The shape verdict is evidence, not impatience: junk that fills several
     /// super frames before the real stream starts is a ragged start, not a
-    /// verdict, and must not condemn the stream — the defect behind the air
-    /// session's "no valid DAB+ super frame in 14 windows" (12 windows of
-    /// search, which a receiver still acquiring produces on a real stream).
+    /// verdict, and must not condemn the stream (12 windows of search is what
+    /// a receiver still acquiring produces on a real stream).
     #[test]
     fn a_ragged_start_is_not_a_shape_verdict() {
         let fixture: &[u8] = include_bytes!("../../../tests/fixtures/dabplus_heaacv2.sf");
         let index = 10u8;
         let sf = 120 * index as usize;
-        // Six super frames of junk in front: enough to have tripped the old
-        // 12-window gate several times over, far short of the 20-super-frame
-        // shape budget.
+        // Six super frames of junk in front: well over 12 search windows, far
+        // short of the 20-super-frame shape budget.
         let mut bytes = vec![0xA5u8; 6 * sf];
         bytes.extend_from_slice(fixture);
         let mut sync = DabPlusSync::new(index).expect("index 10");
@@ -334,16 +330,21 @@ mod tests {
 
     /// Offline harness for the on-air transport failure: the real receiver
     /// and this transport, driven from a recorded IQ capture. Not a CI test —
-    /// it needs `NEOWON_IQ_CAPTURE` and 15 s of 2.048 MS/s samples:
+    /// it needs `NEOWON_IQ_CAPTURE` and 15 s of 2.048 MS/s samples, and it
+    /// must run **from the repo root** (`$PWD` is expanded by the shell;
+    /// cargo runs the test binary with CWD `crates/neowon-app`):
     ///
     /// ```text
-    /// NEOWON_IQ_CAPTURE=tmp-inspiration/dab-11c.f32 \
+    /// NEOWON_IQ_CAPTURE=$PWD/tmp-inspiration/dab-11c.f32 \
     ///   cargo test -p neowon-app --release --bin neowon-app \
     ///   -- --ignored air_capture --nocapture
     /// ```
     ///
-    /// `NEOWON_IQ_HOLE=<n>` drops one 32 k-sample chunk every `n` to emulate
-    /// the USB drops a live session sees (0 = contiguous).
+    /// A missing `NEOWON_IQ_CAPTURE` or a missing file is a panic, not a green
+    /// run. `NEOWON_IQ_HOLE=<n>` drops one 32 k-sample chunk every `n` to
+    /// emulate the USB drops a live session sees (0 = contiguous). With
+    /// `NEOWON_DAB_NO_PREDICTION=1` the receiver's frame grid is disabled: the transport must
+    /// then see no CRC-clean AU while the FIC still locks.
     #[test]
     #[ignore = "requires NEOWON_IQ_CAPTURE (a real air capture); offline only"]
     fn air_capture_through_the_real_transport() {
@@ -351,14 +352,22 @@ mod tests {
         use std::collections::BTreeMap;
 
         let Some(path) = std::env::var_os("NEOWON_IQ_CAPTURE") else {
-            eprintln!("set NEOWON_IQ_CAPTURE to run this harness");
-            return;
+            panic!(
+                "NEOWON_IQ_CAPTURE is not set — set it to a raw interleaved-f32 IQ capture \
+                 (2.048 MS/s, Band III); this harness must not pass without measuring anything"
+            );
         };
+        let no_prediction = std::env::var_os("NEOWON_DAB_NO_PREDICTION").is_some();
         let hole: usize = std::env::var("NEOWON_IQ_HOLE")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(0);
-        let bytes = std::fs::read(path.to_string_lossy().to_string()).expect("capture");
+        let bytes = std::fs::read(path.to_string_lossy().to_string()).unwrap_or_else(|error| {
+            panic!(
+                "NEOWON_IQ_CAPTURE={}: {error} — there is no capture to measure",
+                path.to_string_lossy()
+            )
+        });
         let iq: Vec<f32> = bytes
             .chunks_exact(4)
             .map(|w| f32::from_le_bytes([w[0], w[1], w[2], w[3]]))
@@ -428,14 +437,45 @@ mod tests {
                 }
             );
         }
+        let status = receiver.status();
+        eprintln!(
+            "frame-grid prediction: {}",
+            if no_prediction { "disabled" } else { "enabled" }
+        );
+        eprintln!(
+            "FIC: locked {} fib_crc {}/{} eid {:?}",
+            status.locked, status.fib_crc_ok, status.fib_total, status.ensemble.eid
+        );
         eprintln!(
             "total AU CRCs ok: {total_ok}, sub-channels declared a shape mismatch: {mismatches}"
         );
-        assert!(total_ok > 0, "no sub-channel produced a CRC-clean AU");
-        assert_eq!(
-            mismatches, 0,
-            "the transport must not declare a real DAB+ ensemble not-DAB+"
-        );
+        if no_prediction {
+            // The counterfactual through the app's real transport: without the
+            // frame grid the clause-12 chain never completes, so no
+            // sub-channel can hand the transport a CRC-clean AU — while the
+            // FIC, which needs no inter-frame memory, still locks.
+            assert!(
+                status.locked,
+                "the counterfactual is only meaningful with the FIC locked"
+            );
+            assert_eq!(
+                total_ok, 0,
+                "with prediction disabled the transport must see no CRC-clean AU"
+            );
+        } else {
+            // Capture-derived floor: measured on the archived 11C capture as
+            // 1110 AU CRCs ok (path, revision, date and SHA-256 in
+            // `docs/protocol-dab.md`); ~25% below leaves room for the exact
+            // count to move while a collapse fails.
+            assert!(
+                total_ok >= 800,
+                "the transport collapsed: {total_ok} AU CRCs ok (measured 1110)"
+            );
+            assert_eq!(
+                mismatches, 0,
+                "the transport must not declare a real DAB+ ensemble not-DAB+"
+            );
+        }
     }
 
     /// 48 kHz → 44.1 kHz keeps a 1 kHz tone's frequency and produces the

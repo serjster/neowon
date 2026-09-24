@@ -4,65 +4,16 @@
 //! Needs a window (briefly), so `#[ignore]` by default:
 //!   cargo test -p neowon-app --test control_socket -- --ignored
 
-use std::io::{BufRead, BufReader, Write};
-use std::net::TcpStream;
+mod common;
+use common::*;
+
 use std::time::{Duration, Instant};
-
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
-struct Conn {
-    out: TcpStream,
-    lines: std::io::Lines<BufReader<TcpStream>>,
-}
-
-impl Conn {
-    fn request(&mut self, line: &str) -> String {
-        writeln!(self.out, "{line}").unwrap();
-        self.lines.next().expect("connection closed").unwrap()
-    }
-}
 
 #[test]
 #[ignore = "opens a window"]
 fn socket_drives_and_queries_the_app() {
-    let port = free_port();
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_neowon-app"))
-        .arg("--sim")
-        .env("NEOWON_CONTROL", port.to_string())
-        .env_remove("NEOWON_SCRIPT")
-        .env("NEOWON_NO_STATE", "1")
-        .env("NEOWON_ORPHAN_EXIT", "15")
-        .spawn()
-        .expect("launch app");
-
-    // Connect (the app takes a moment to bind).
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let stream = loop {
-        match TcpStream::connect(("127.0.0.1", port)) {
-            Ok(s) => break s,
-            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(200)),
-            Err(e) => {
-                let _ = child.kill();
-                panic!("cannot connect: {e}");
-            }
-        }
-    };
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .unwrap();
-    let mut conn = Conn {
-        out: stream.try_clone().unwrap(),
-        lines: BufReader::new(stream).lines(),
-    };
-
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // Status query answers.
+    let (child, mut conn) = launch(&["--sim"], &[]);
+    with_app(child, || {
         let status = conn.request("get status");
         assert!(status.contains(r#""ok":true"#), "status: {status}");
         assert!(status.contains(r#""running""#), "status: {status}");
@@ -99,11 +50,88 @@ fn socket_drives_and_queries_the_app() {
         assert!(bad.contains(r#""ok":false"#), "bad: {bad}");
         let badq = conn.request("get nonsense");
         assert!(badq.contains(r#""ok":false"#), "badq: {badq}");
-    }));
+    });
+}
 
-    let _ = child.kill();
-    let _ = child.wait();
-    if let Err(e) = result {
-        std::panic::resume_unwind(e);
+/// The socket is on by default and any local process can reach it,
+/// so the verbs that leave the process are behind the token — on the wire,
+/// not only in the classification unit tests.
+#[test]
+#[ignore = "opens a window"]
+fn write_verbs_need_the_token_on_the_wire() {
+    let dir = scratch("gated");
+    let png = dir.join("gated.png");
+    // The verb that proves the *allowed* half. `shot` reads back the
+    // composited window, which macOS blanks while the screen is locked
+    // (harness.md), so it cannot decide anything here; `uitree <path>` is
+    // an equally gated write verb that only needs the UI tree.
+    let tree = dir.join("gated.json");
+    for p in [&png, &tree] {
+        let _ = std::fs::remove_file(p);
     }
+
+    let shot_line = format!("shot {}", png.display());
+    let tree_line = format!("uitree {}", tree.display());
+    let (child, authed) = launch(&["--sim"], &[]);
+    with_app(child, || {
+        let mut anon = authed.second();
+
+        // 1. Ungated: queries and instrument control still work with no
+        // handshake at all — the operator's `nc` loop is untouched.
+        assert!(anon.request("get status").contains(r#""ok":true"#));
+        anon.ok("vdiv 0 0.05");
+        anon.ok("run 1");
+
+        // 2. Gated: every write verb is refused, and the refusal says where
+        // the token lives without disclosing it.
+        let token = anon.token.clone();
+        for line in [
+            shot_line.as_str(),
+            tree_line.as_str(),
+            "shotplot /dev/null",
+            "sdr iqdump /dev/null 1",
+            "export csv /dev/null",
+            "sessionload /etc/passwd",
+            "quit",
+        ] {
+            let r = anon.refused(line);
+            assert!(r.contains(r#""auth":"token""#), "{line}: {r}");
+            assert!(!r.contains(&token), "{line} leaked the token: {r}");
+        }
+        // The refused verbs wrote nothing, and the app is still alive (the
+        // refused `quit` did not end it).
+        std::thread::sleep(Duration::from_millis(500));
+        for p in [&png, &tree] {
+            assert!(!p.exists(), "a refused verb still wrote {}", p.display());
+        }
+        assert!(anon.request("get status").contains(r#""ok":true"#));
+
+        // 3. A guessed token is refused, and the third guess closes the
+        // connection rather than allowing a fourth.
+        let mut guesser = authed.second();
+        for _ in 0..3 {
+            assert!(guesser.request("auth not-the-token").contains("bad token"));
+        }
+        assert!(
+            guesser
+                .next_line()
+                .is_none_or(|l| l.contains("too many auth failures")),
+            "the connection must be closed after three guesses"
+        );
+
+        // 4. The same verb runs once the connection is authenticated.
+        let mut good = authed.second();
+        let token = good.token.clone();
+        good.ok(&format!("auth {token}"));
+        good.ok(&tree_line);
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !tree.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "authenticated uitree never written"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let _ = std::fs::remove_file(&tree);
+    });
 }

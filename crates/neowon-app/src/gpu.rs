@@ -31,7 +31,6 @@ const MAX_SAMPLES: usize = 5000;
 /// Trace layers: CH1, CH2, math.
 pub const CHANNELS: usize = 3;
 
-/// Trace display style.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TraceMode {
     Vectors,
@@ -50,7 +49,6 @@ pub enum Palette {
     Green,
 }
 
-/// Phosphor persistence setting.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Persistence {
     Off,
@@ -466,7 +464,7 @@ pub(crate) fn dispatch(
             tracing::warn!("phosphor: pipelines still compiling");
             *logged.1 = true;
         }
-        return; // shaders still compiling
+        return;
     };
     if !*logged.2 {
         tracing::info!("phosphor: dispatching");

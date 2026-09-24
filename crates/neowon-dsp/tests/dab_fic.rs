@@ -1,4 +1,4 @@
-//! Tier-1 golden test for DAB (phase 10.15.1): modulate a chosen ensemble into
+//! Tier-1 golden test for DAB: modulate a chosen ensemble into
 //! Mode I IQ at 2.048 MS/s, push it through the receiver, and check that what
 //! comes out is what went in.
 //!
@@ -15,7 +15,9 @@ use rustfft::num_complex::Complex32;
 
 use neowon_dsp::dab::encoder::{EnsembleSpec, FicFrame, ServiceSpec};
 use neowon_dsp::dab::receiver::DabReceiver;
-use neowon_dsp::dab::{FRAME_SAMPLES, LOCK_WINDOW_FRAMES, SAMPLE_RATE, TABLE_EXPIRY_FRAMES};
+use neowon_dsp::dab::{
+    FRAME_SAMPLES, LOCK_WINDOW_FRAMES, PRS_METRIC_MIN, SAMPLE_RATE, T_NULL, TABLE_EXPIRY_FRAMES,
+};
 use neowon_sim::iq::IqScene;
 use neowon_sim::sdr::RfScene;
 
@@ -26,6 +28,10 @@ const SNR_DB: f32 = 15.0;
 const FIXTURE_FRAMES: usize = 200;
 /// Level the modulator scales frames to, matching a typical SDR capture.
 const FRAME_RMS: f32 = 0.2;
+/// Fixed cap on the table-expiry test's noise frames. Deliberately not a
+/// multiple of [`TABLE_EXPIRY_FRAMES`]: if a mutation raises that constant,
+/// this fails in seconds with a named message instead of looping for hours.
+const EXPIRY_ATTEMPT_CAP: usize = 512;
 
 fn spec<'a>() -> EnsembleSpec<'a> {
     EnsembleSpec {
@@ -157,7 +163,6 @@ fn ensemble_is_named_exactly_at_15_db() {
         assert_eq!(service.ascty, Some(63), "all three are DAB+ here");
         assert!(service.has_audio);
     }
-    // The sub-channel table comes with it, with exact bit rates.
     let sub = status.ensemble.sub_channels.get(&0).expect("sub-channel 0");
     assert!((sub.bitrate_kbps.unwrap() - 256.0).abs() < 1e-9);
 
@@ -198,7 +203,6 @@ fn frame_sync_recovers_after_a_gap() {
         receiver.push_iq(&interleaved)
     };
 
-    // Lock first.
     for _ in 0..10 {
         push(&mut receiver, &frame);
     }
@@ -228,7 +232,7 @@ fn frame_sync_recovers_after_a_gap() {
     );
 }
 
-/// D27's stale-table case, the receiver's own half: samples keep arriving but
+/// The stale-table case, the receiver's own half: samples keep arriving but
 /// no ensemble is decoded (`rf-noise` at the tuned centre). After
 /// [`TABLE_EXPIRY_FRAMES`] unaccepted attempts the *raw* table must be empty —
 /// not merely unpublished — and the same ensemble must rebuild it.
@@ -260,8 +264,9 @@ fn the_table_expires_after_a_run_of_unaccepted_frames() {
         receiver.push_iq(&samples);
         pushed += 1;
         assert!(
-            pushed < 4 * TABLE_EXPIRY_FRAMES as usize,
-            "the lock never expired after {pushed} noise frames"
+            pushed < EXPIRY_ATTEMPT_CAP,
+            "the lock never expired after {pushed} rejected frames \
+             (TABLE_EXPIRY_FRAMES = {TABLE_EXPIRY_FRAMES}, cap {EXPIRY_ATTEMPT_CAP})"
         );
     }
     assert!(
@@ -289,7 +294,7 @@ fn the_table_expires_after_a_run_of_unaccepted_frames() {
 
 /// The owner's no-input case: with no samples there are no attempts to count,
 /// so the caller says "the stream stopped" and the lock and the raw table go at
-/// once (D27). A splice is `discard_buffer`, tested above; this is not one.
+/// once. A splice is `discard_buffer`, tested above; this is not one.
 #[test]
 fn no_input_expires_the_table_at_once() {
     let frame = FicFrame::new(&spec()).iq_frame(FRAME_RMS);
@@ -340,24 +345,65 @@ fn no_false_lock_on_noise_or_a_tone() {
             status.ensemble.services.is_empty(),
             "{preset} must not invent services"
         );
+        // `prs_metric()` is the last *accepted* frame's score and stays 0.0
+        // on a stream that never accepts one, so asserting on it here cannot
+        // fail. The last *attempt*'s score can: it is assigned on every
+        // attempt, and a stream carrying real frames would clear the gate.
         assert!(
-            receiver.prs_metric() < neowon_dsp::dab::PRS_METRIC_MIN,
-            "{preset} PRS metric {}",
-            receiver.prs_metric()
+            receiver.last_attempt_metric() < neowon_dsp::dab::PRS_METRIC_MIN,
+            "{preset} last attempt PRS metric {}",
+            receiver.last_attempt_metric()
+        );
+        assert!(
+            receiver.frames_rejected > 0,
+            "{preset} attempted no frame to reject"
         );
     }
 }
 
 /// A tone of the sort a spectrum view shows is *not* enough to name anything —
 /// the reference scene is a carrier, and carrier = no FIC.
+///
+/// The feed length is the point of the test, not an implementation detail.
+/// `push_iq` attempts a frame only once it holds `FRAME_SAMPLES + T_NULL`
+/// samples (the null search looks past the frame's end), and then only if the
+/// null it picks leaves a whole frame behind it — the search ranges over the
+/// first `FRAME_SAMPLES`, so one attempt is guaranteed only at
+/// `2 · (FRAME_SAMPLES + T_NULL)`. Fed less, the receiver never tries, and
+/// every "it did not lock" below is equally true of a receiver handed nothing
+/// at all: the case would pass with the demodulator deleted. So feed enough
+/// for an attempt, prove the attempt happened, and assert what it did.
 #[test]
 fn the_reference_scene_is_a_tone_not_an_ensemble() {
+    let fed = 2 * (FRAME_SAMPLES + T_NULL);
     let scene = IqScene::reference();
-    let samples = scene.samples(7, 0, FRAME_SAMPLES);
+    let samples = scene.samples(7, 0, fed);
     let mut receiver = DabReceiver::new();
-    receiver.push_iq(&samples);
+    let decoded = receiver.push_iq(&samples);
+    println!(
+        r#"{{"row":"tone_is_not_an_ensemble","fed_samples":{fed},"decoded":{decoded},"rejected":{},"last_attempt_metric":{:.4},"gate":{PRS_METRIC_MIN}}}"#,
+        receiver.frames_rejected,
+        receiver.last_attempt_metric()
+    );
+
+    // It tried: one attempt, scored, and rejected on that score. The score is
+    // printed by the line above (measured: 0.0282 against the 0.35
+    // gate) — run
+    // `cargo test -p neowon-dsp --test dab_fic the_reference_scene -- --nocapture`.
+    assert_eq!(
+        receiver.frames_rejected, 1,
+        "the tone must be attempted once and rejected"
+    );
+    assert!(
+        receiver.last_attempt_metric() < PRS_METRIC_MIN,
+        "attempt PRS metric {} (gate {PRS_METRIC_MIN})",
+        receiver.last_attempt_metric()
+    );
+
+    assert_eq!(decoded, 0, "a carrier must decode no frame");
     let status = receiver.status();
     assert!(!status.locked);
+    assert_eq!(status.frames, 0);
     assert!(status.ensemble.services.is_empty());
 }
 

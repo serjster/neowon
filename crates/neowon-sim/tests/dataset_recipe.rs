@@ -1,4 +1,4 @@
-//! Phase 10.8: dataset recipes are reproducible, and their metadata is
+//! Dataset recipes are reproducible, and their metadata is
 //! the truth about the samples.
 //!
 //! - the same recipe builds bit-identical SigMF bytes; another seed does
@@ -8,8 +8,6 @@
 //!   the recorded transform recovers the clean example);
 //! - occupancy rectangles follow their definitions, and hold the signal's
 //!   energy (Carson's rule for FM holds ~98% by construction).
-//!
-//! `cargo test -p neowon-sim --test dataset_recipe`
 
 use neowon_dsp::Window;
 use neowon_dsp::iq::stft;
@@ -45,7 +43,7 @@ fn same_recipe_same_bytes() {
     assert_eq!(d1, d2);
     assert_eq!(m1, m2);
     assert_eq!(d1.len(), r.examples * r.samples * 8);
-    // Pinned like the D8 fixture: every platform builds these bytes, and
+    // Pinned like the IQ fixture: every platform builds these bytes, and
     // a change here is a change to every dataset already built.
     assert_eq!(fnv1a64(&d1), 0x4d97_5060_f969_0347, "dataset bytes moved");
 

@@ -1,8 +1,7 @@
-//! FMLIST importer (D17): **import only** — the operator exports the file
+//! FMLIST importer: **import only** — the operator exports the file
 //! with their own account. No column names are fixed: the header decides
 //! what each column means (unknown columns are ignored), and a row without
-//! a frequency is skipped and counted in the report. The exact export
-//! shape lands in the spec's Deviations once the operator supplies a file.
+//! a frequency is skipped and counted in the report.
 
 use super::csv;
 use super::{Report, fnv1a};

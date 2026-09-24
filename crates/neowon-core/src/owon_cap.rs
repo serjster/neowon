@@ -19,10 +19,11 @@ use std::io::{self, Read};
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::{AcqMode, CaptureFrame, ChannelCapture, IqCal, SampleLayout, SharedFrame};
+use crate::{AcqMode, Acquisition, CaptureFrame, ChannelCapture, IqCal, SampleLayout, SharedFrame};
 
-/// `[Voltbase]` table from the jar's `VDS1022ONE.txt`, volts per division.
-const VOLTBASE: [f64; 10] = [0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0];
+/// `[Voltbase]` table from the jar's `VDS1022ONE.txt`, volts per division
+/// — the same ladder the live instrument advertises.
+use crate::ladders::SCOPE_VOLTS_DIV as VOLTBASE;
 /// `[ProbeRate]` table.
 const PROBE: [f64; 7] = [1.0, 10.0, 20.0, 50.0, 100.0, 500.0, 1000.0];
 /// `[Timebase]` table, seconds per division (5 ns … 100 s).
@@ -175,14 +176,17 @@ pub fn read(path: &Path) -> io::Result<Vec<SharedFrame>> {
         // gap recorded (a crashed recording leaves it 0) the frames are laid
         // end to end, which is the honest best guess.
         let gap = (timegap_ms.max(0) as f64) / 1000.0;
-        frames.push(Arc::new(CaptureFrame {
-            seq: frames.len() as u64 + 1,
-            t_capture: Some(idx * (n as f64 / rate.max(1e-12) + gap)),
-            sample_rate: sample_rate(timebase_idx),
-            acq: if peak { AcqMode::Peak } else { AcqMode::Sample },
-            layout: SampleLayout::Real,
+        let frame = CaptureFrame::new(
+            frames.len() as u64 + 1,
+            Some(idx * (n as f64 / rate.max(1e-12) + gap)),
+            sample_rate(timebase_idx),
+            if peak { AcqMode::Peak } else { AcqMode::Sample },
+            Acquisition::Record { samples: n },
+            SampleLayout::Real,
             channels,
-        }));
+        )
+        .map_err(|e| bad(&e.to_string()))?;
+        frames.push(Arc::new(frame));
     }
     if frames.is_empty() {
         return Err(bad("no frames in file"));
@@ -255,8 +259,7 @@ mod tests {
     }
 
     fn parse(bytes: &[u8], name: &str) -> Vec<SharedFrame> {
-        let dir = std::env::temp_dir().join("neowon-cap-test");
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::test_scratch("cap");
         let path = dir.join(name);
         std::fs::write(&path, bytes).unwrap();
         read(&path).unwrap()
@@ -270,7 +273,7 @@ mod tests {
             let f = &frames[0];
             // 1 ms/div → 5000 / (20 × 1 ms) = 250 kS/s.
             assert_eq!(f.sample_rate, 250e3);
-            assert_eq!(f.acq, AcqMode::Sample);
+            assert_eq!(f.acq(), AcqMode::Sample);
             assert_eq!(f.channels.len(), 2);
             let c0 = &f.channels[0];
             assert_eq!(c0.ch, 0);
@@ -289,8 +292,7 @@ mod tests {
 
     #[test]
     fn rejects_non_cap() {
-        let dir = std::env::temp_dir().join("neowon-cap-test");
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::test_scratch("cap");
         let path = dir.join("bad.cap");
         std::fs::write(&path, b"RIFFxxxxWAVE").unwrap();
         assert!(read(&path).is_err());

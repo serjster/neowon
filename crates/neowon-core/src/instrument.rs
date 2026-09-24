@@ -1,4 +1,4 @@
-//! The instrument surface every backend describes itself with (D6): what it
+//! The instrument surface every backend describes itself with: what it
 //! can do (`Capabilities`) and the complete state the host wants it in
 //! (`InstrumentConfig`). An instrument is either a scope or an SDR; the two
 //! share delivery (`Acquisition`) and identity, and nothing else.
@@ -73,7 +73,6 @@ pub struct ScopeCaps {
     /// is not adjustable (a sound card has one full scale).
     pub volts_div: Vec<f64>,
     pub probes: Vec<f64>,
-    /// How samples arrive.
     pub acquisition: Acquisition,
     /// Does the instrument find trigger events itself? When false the host
     /// has to, or the display free-runs.
@@ -134,6 +133,21 @@ impl Capabilities {
         match self {
             Capabilities::Scope(c) => c.acquisition,
             Capabilities::Sdr(c) => c.acquisition,
+        }
+    }
+
+    /// The range this instrument's raw sample values are quantised to,
+    /// when its frames carry ADC counts: a scope's i8 wire encoding
+    /// (AGENTS.md — ±125 is full vertical range, ±128 the rail). `None`
+    /// when frames carry real-valued full-scale samples (a streaming SDR),
+    /// where rounding or clamping onto a count grid would corrupt them.
+    ///
+    /// Instrument-agnostic code that has to bound sample values asks here
+    /// rather than assuming the scope.
+    pub fn count_range(&self) -> Option<(f32, f32)> {
+        match self {
+            Capabilities::Scope(_) => Some((-128.0, 127.0)),
+            Capabilities::Sdr(_) => None,
         }
     }
 
@@ -319,6 +333,48 @@ impl From<SdrConfig> for InstrumentConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scope() -> Capabilities {
+        Capabilities::Scope(ScopeCaps {
+            name: "scope".into(),
+            serial: "s".into(),
+            channels: 2,
+            sample_rates: vec![1.0],
+            volts_div: vec![1.0],
+            probes: vec![1.0],
+            acquisition: Acquisition::Record { samples: 8 },
+            hardware_trigger: true,
+        })
+    }
+
+    fn sdr() -> Capabilities {
+        Capabilities::Sdr(SdrCaps {
+            name: "sdr".into(),
+            serial: "s".into(),
+            tuner: "none".into(),
+            freq_range_hz: (1.0, 2.0),
+            sample_rates: vec![1.0],
+            gains_db: vec![0.0],
+            acquisition: Acquisition::Stream { chunk: 8 },
+        })
+    }
+
+    /// The variant is the instrument: one `Capabilities` answers for
+    /// exactly one mode, so nothing downstream has to keep two `Option`s
+    /// mutually exclusive by hand.
+    #[test]
+    fn capabilities_answer_for_one_instrument() {
+        assert!(scope().scope().is_some() && scope().sdr().is_none());
+        assert!(sdr().sdr().is_some() && sdr().scope().is_none());
+    }
+
+    /// The sample grid comes from the instrument: a scope's frames are i8
+    /// counts, a streaming SDR's are real-valued full-scale samples.
+    #[test]
+    fn only_count_based_instruments_have_a_sample_grid() {
+        assert_eq!(scope().count_range(), Some((-128.0, 127.0)));
+        assert_eq!(sdr().count_range(), None);
+    }
 
     #[test]
     fn stream_chunks_are_time_sized_bounded_and_aligned() {

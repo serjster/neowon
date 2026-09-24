@@ -1,4 +1,4 @@
-//! RF reference data (Phase 10.14, D16–D20): band plans in the SDR++
+//! RF reference data: band plans in the SDR++
 //! schema, known stations imported from public databases, the operator's
 //! location, and the store the snapshots live in. Engine-free and
 //! read-mostly: it is reference material, never the operator's catalog —
@@ -21,7 +21,7 @@ pub use geo::{LatLon, Location, LocationSource};
 pub use index::{Index, Query, SortBy};
 pub use sources::Report;
 pub use station::{Modulation, Schedule, Service, Source, Station};
-pub use store::{Meta, Store};
+pub use store::{Loaded, Meta, Problem, Store};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -31,13 +31,12 @@ pub enum Error {
     Json(#[from] serde_json::Error),
     #[error("{0}")]
     Invalid(String),
-    /// A fetch failed, with the source named: "Wikidata fetch: …".
     #[error("{src} fetch: {what}")]
     Fetch {
         src: crate::station::Source,
         what: String,
     },
-    /// A source searches by radius and no location is set (D18).
+    /// A source searches by radius and no location is set.
     #[error("{0} needs a location — set one with `location <lat> <lon>`")]
     NeedsLocation(crate::station::Source),
     /// `locate_ip`'s HTTP transport, which belongs to no source.

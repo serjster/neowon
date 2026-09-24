@@ -126,7 +126,6 @@ mod tests {
         let d = digitize(&square(200, 20), 1e6, Threshold::default()).unwrap();
         let edges: Vec<_> = d.edges().collect();
         assert_eq!(edges.len(), 19, "one edge per half period after the first");
-        // Evenly spaced, 10 samples apart.
         for w in edges.windows(2) {
             assert_eq!(w[1].0 - w[0].0, 10);
         }
@@ -145,7 +144,6 @@ mod tests {
                 let high = phase >= period / 2;
                 let into = if high { phase - period / 2 } else { phase };
                 let base = if into < slew {
-                    // Ramp through the middle.
                     let f = into as f64 / slew as f64;
                     let (from, to) = if high {
                         (-100.0, 100.0)
@@ -172,7 +170,6 @@ mod tests {
             without.edges().count(),
             with.edges().count()
         );
-        // And hysteresis should land on roughly the real transition count.
         assert!(
             with.edges().count() <= 20,
             "hysteresis kept {} edges for 19 real transitions",

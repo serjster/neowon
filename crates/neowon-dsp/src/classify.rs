@@ -1,4 +1,4 @@
-//! The DSP classifier (Phase 10.5, C1/C3): what kind of signal an
+//! The DSP classifier: what kind of signal an
 //! isolated channel holds — noise, a CW carrier, AM, FM, or a linearly
 //! modulated digital signal and its constellation — with a confidence, the
 //! runner-up and margin, an explicit `unknown`, and a trust state.
@@ -9,13 +9,11 @@
 //! mark). Soft thresholds on them score the families; a digital score is
 //! weighted per constellation by the absolute fit of noise-corrected
 //! cumulants (C42, |C40|). A constant "none of these" score competes, so a
-//! signal no family fits is `unknown` rather than the least-bad guess (a
-//! real broadcast FM station, cut by a too-narrow channel, once read as
-//! 64QAM at 0.95 without it).
+//! signal no family fits is `unknown` rather than the least-bad guess.
 //!
 //! Trust is `Unproven` for every class: the classifier is tested on the
-//! simulator only, and D9 asks for an over-the-air, held-out-frequency and
-//! cross-day evaluation before anything is `Validated`.
+//! simulator only, and an over-the-air, held-out-frequency and cross-day
+//! evaluation is required before anything is `Validated`.
 
 use neowon_core::Modulation;
 
@@ -33,7 +31,7 @@ pub enum Class {
 }
 
 impl Class {
-    /// Preset labels (C7): the stable names results and scripts use.
+    /// Preset labels: the stable names results and scripts use.
     pub fn label(self) -> &'static str {
         match self {
             Class::Noise => "noise",
@@ -61,10 +59,9 @@ impl Class {
     ];
 }
 
-/// How far a result can be relied on (D9).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Trust {
-    /// Met the D9 floor on an over-the-air held-out evaluation.
+    /// Met the accuracy floor on an over-the-air held-out evaluation.
     Validated,
     /// Not yet evaluated that way.
     Unproven,

@@ -1,4 +1,4 @@
-//! Labelled IQ datasets (Phase 10.8): recipes, builders, receiver
+//! Labelled IQ datasets: recipes, builders, receiver
 //! impairments, wideband compositing, hierarchical metadata and SigMF
 //! export — every random choice drawn from the recipe's declared seed.
 //!
@@ -266,7 +266,6 @@ fn signal(
     (comp, meta)
 }
 
-/// Check a recipe before building from it.
 pub fn validate(r: &Recipe) -> Result<(), String> {
     if let Some(l) = r.classes.iter().find(|c| !LABELS.contains(&c.as_str())) {
         return Err(format!("unknown class {l:?}; use {LABELS:?}"));
@@ -283,7 +282,6 @@ pub fn validate(r: &Recipe) -> Result<(), String> {
     Ok(())
 }
 
-/// Build example `index` with the chosen `parts`.
 pub fn build(r: &Recipe, index: usize, parts: Parts) -> Example {
     let seed = splitmix64(r.seed, index as u64);
     let mut d = Draws { seed, k: 0 };

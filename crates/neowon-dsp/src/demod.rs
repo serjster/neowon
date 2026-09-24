@@ -1,4 +1,4 @@
-//! Streaming demodulators (Phase 10.10): channelise one tuned offset out of
+//! Streaming demodulators: channelise one tuned offset out of
 //! the IQ stream and recover audio. Engine-free and deterministic — the
 //! golden tests drive it from `neowon-sim`'s exact AM/FM generators, whose
 //! closed forms define the expectation.
@@ -21,7 +21,6 @@ pub enum DemodMode {
 impl DemodMode {
     pub const ALL: [DemodMode; 3] = [DemodMode::Am, DemodMode::Nfm, DemodMode::Wfm];
 
-    /// UI label.
     pub fn label(self) -> &'static str {
         match self {
             DemodMode::Am => "AM",
@@ -226,7 +225,6 @@ impl Receiver {
         if self.h.is_empty() || self.cfg.sample_rate <= 0.0 {
             return;
         }
-        // Mix to baseband and buffer.
         let phase_step = self.cfg.offset_hz / self.cfg.sample_rate;
         for p in iq.as_chunks::<2>().0 {
             let (s, c) = (TAU * self.nco).sin_cos();
@@ -420,7 +418,6 @@ impl Resampler {
 mod tests {
     use super::*;
 
-    /// RMS of a slice.
     fn rms(x: &[f32]) -> f64 {
         (x.iter().map(|v| (*v as f64) * (*v as f64)).sum::<f64>() / x.len() as f64).sqrt()
     }

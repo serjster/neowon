@@ -32,7 +32,6 @@ pub struct Tiles {
     pub max: Vec<f32>,
 }
 
-/// Summarize `data` into `tile`-sample buckets.
 pub fn summarize(data: &[f32], tile: usize) -> Tiles {
     let tile = tile.max(1);
     let n = data.len().div_ceil(tile);
@@ -44,14 +43,12 @@ pub fn summarize(data: &[f32], tile: usize) -> Tiles {
     Tiles { tile, min, max }
 }
 
-/// One acquired record placed on the session time axis.
 #[derive(Debug, Clone, Copy)]
 pub struct Segment<'a> {
     /// Time of `data[0]`, seconds on the session clock.
     pub t0: f64,
     pub sample_rate: f64,
     pub raw: &'a [f32],
-    /// Optional precomputed summary, used when a column spans many samples.
     pub tiles: Option<&'a Tiles>,
 }
 
@@ -61,7 +58,6 @@ impl Segment<'_> {
     }
 }
 
-/// The reduced trace for one channel over one window.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Reduced {
     pub columns: usize,
@@ -192,12 +188,10 @@ pub fn reduce(segments: &[Segment<'_>], window: (f64, f64), columns: usize) -> R
         if seg.raw.is_empty() || seg.t_end() <= w0 || seg.t0 >= w1 {
             continue;
         }
-        // Columns this segment can touch.
         let c0 = (((seg.t0 - w0) / col_dt).floor().max(0.0)) as usize;
         let c1 = (((seg.t_end() - w0) / col_dt).ceil()).clamp(0.0, columns as f64) as usize;
         for col in c0..c1 {
             let (t_lo, t_hi) = (w0 + col as f64 * col_dt, w0 + (col + 1) as f64 * col_dt);
-            // Sample range of this column inside the segment.
             let i0 = ((t_lo - seg.t0) * seg.sample_rate).floor();
             let i1 = ((t_hi - seg.t0) * seg.sample_rate).ceil();
             let i0 = i0.max(0.0) as usize;
@@ -350,7 +344,6 @@ mod tests {
     #[test]
     fn segments_outside_the_window_are_ignored_safely() {
         let raw = [1.0f32; 100];
-        // Entirely before, entirely after, and straddling each edge.
         let segs = [
             seg(-10.0, 100.0, &raw),
             seg(50.0, 100.0, &raw),

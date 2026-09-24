@@ -8,7 +8,7 @@
 //! connection for the test's lifetime, so the kill closes it — the watchdog
 //! then ends the process. The start clock covers the window before the
 //! first client ever connects, and a launch without the variable starts no
-//! watchdog and behaves exactly as before.
+//! watchdog.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};

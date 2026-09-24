@@ -29,7 +29,6 @@ use super::{AudioSpecificConfig, DecodedAudio, Error, observed_support};
 
 use fdk_aac::dec::{Decoder, Transport};
 
-/// [`crate::aac::AacDecoder::BACKEND`] value for this backend.
 pub(super) const BACKEND: &str = "fdk-aac";
 
 /// Output scratch for one AU. The largest DAB+ stereo frame is the

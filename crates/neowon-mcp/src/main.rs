@@ -31,7 +31,6 @@ mod ui_tools;
 /// (the app restarting, or a spawned sim dying, must not strand the
 /// long-lived MCP server).
 enum Target {
-    /// Attach to a running app's control socket.
     Addr(String),
     /// Own a `neowon-app --sim` child, respawned if it dies.
     SpawnSim,
@@ -42,7 +41,6 @@ struct Conn {
     lines: std::io::Lines<BufReader<TcpStream>>,
 }
 
-/// Line client for the app's control socket, with reconnect.
 struct ScopeClient {
     target: Target,
     conn: Option<Conn>,
@@ -60,10 +58,69 @@ fn connect(addr: &str, deadline: Duration) -> std::io::Result<Conn> {
         }
     };
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
-    Ok(Conn {
+    let mut conn = Conn {
         out: stream.try_clone()?,
         lines: BufReader::new(stream).lines(),
-    })
+    };
+    // Every connection starts untrusted, so this runs on a reconnect too.
+    authenticate(&mut conn);
+    Ok(conn)
+}
+
+/// Claim the app's control token so the file-writing tools (`screenshot`,
+/// `exec_script`'s `export`/`capsave`/… lines) work.
+///
+/// `NEOWON_CONTROL_TOKEN` wins when the operator set one for both
+/// processes. Otherwise the app is asked where its token file is and the
+/// file is read — which succeeds exactly when this server runs as the user
+/// who owns the app, since the file is mode 0600. A failure is not fatal:
+/// the read-only tools carry on working.
+fn authenticate(conn: &mut Conn) {
+    let token = match std::env::var("NEOWON_CONTROL_TOKEN") {
+        Ok(t) if !t.trim().is_empty() => t.trim().to_string(),
+        _ => {
+            let Some(challenge) = ask(conn, "auth") else {
+                return;
+            };
+            let Some(path) = json_string(&challenge, "token_file") else {
+                eprintln!("neowon-mcp: no token file offered: {challenge}");
+                return;
+            };
+            match std::fs::read_to_string(&path) {
+                Ok(t) => t.trim().to_string(),
+                Err(e) => {
+                    eprintln!("neowon-mcp: cannot read {path}: {e}");
+                    return;
+                }
+            }
+        }
+    };
+    match ask(conn, &format!("auth {token}")) {
+        Some(reply) if reply.contains(r#""ok":true"#) => {}
+        other => eprintln!("neowon-mcp: control token refused: {other:?}"),
+    }
+}
+
+/// One request/reply on a connection, or `None` if it broke.
+fn ask(conn: &mut Conn, line: &str) -> Option<String> {
+    writeln!(conn.out, "{line}").ok()?;
+    conn.lines.next()?.ok()
+}
+
+/// A flat JSON string field, with `\"` and `\\` unescaped (paths are all
+/// the app ever puts here).
+fn json_string(json: &str, key: &str) -> Option<String> {
+    let at = json.find(&format!("\"{key}\":\""))? + key.len() + 4;
+    let mut out = String::new();
+    let mut chars = json[at..].chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Some(out),
+            '\\' => out.push(chars.next()?),
+            c => out.push(c),
+        }
+    }
+    None
 }
 
 impl ScopeClient {
@@ -77,7 +134,6 @@ impl ScopeClient {
         Ok(client)
     }
 
-    /// Establish (or re-establish) the connection per the target.
     fn ensure(&mut self) -> std::io::Result<()> {
         if self.conn.is_some() {
             return Ok(());
@@ -113,12 +169,17 @@ impl ScopeClient {
                         // the window cannot outlive an MCP that was SIGKILLed.
                         .env("NEOWON_ORPHAN_EXIT", "30")
                         // An agent-driven sim must not overwrite the operator's
-                        // saved setup (D13).
+                        // saved setup.
                         .env("NEOWON_NO_STATE", "1")
                         .stdout(std::process::Stdio::null())
                         .stderr(std::process::Stdio::null())
                         .spawn()?,
                 );
+                // The pid on stderr lets whoever runs this server check that
+                // the app it spawned ends with it (mcp_e2e does).
+                if let Some(child) = &self.child {
+                    eprintln!("neowon-mcp: spawned neowon-app pid {}", child.id());
+                }
                 self.conn = Some(connect(&addr, Duration::from_secs(20))?);
             }
         }
@@ -147,6 +208,10 @@ impl ScopeClient {
     }
 }
 
+/// Whatever spawns the app ends it: the server exits when its client
+/// closes stdin (the MCP stdio shutdown), `main` returns, and this drop
+/// kills and reaps the spawned app. A server that is itself SIGKILLed
+/// cannot run it; the app's `NEOWON_ORPHAN_EXIT` watchdog covers that.
 impl Drop for ScopeClient {
     fn drop(&mut self) {
         if let Some(child) = &mut self.child {

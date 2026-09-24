@@ -46,3 +46,6 @@ jobs:
       # (ui_pixels/ui_layout) are #[ignore] and stay local, as do the
       # hardware suites — see CONTRIBUTING.md.
       - run: cargo test --workspace
+      # DAB+ playback fallback (D3, DAB-G2): default-off, so this is the only
+      # place it compiles; fdk-aac is the only backend that decodes real DAB+.
+      - run: cargo test -p neowon-codec --features fdk-aac

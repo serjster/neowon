@@ -4,8 +4,10 @@
 //! Needs a window (briefly), so `#[ignore]` by default:
 //!   cargo test -p neowon-app --test effects_pixels -- --ignored
 
+mod common;
+use common::{Sandbox, scratch};
+
 use std::path::PathBuf;
-use std::process::Command;
 
 fn load_ppm(path: &PathBuf) -> (usize, usize, Vec<[u8; 3]>) {
     let data = std::fs::read(path).unwrap();
@@ -25,8 +27,7 @@ fn load_ppm(path: &PathBuf) -> (usize, usize, Vec<[u8; 3]>) {
 #[test]
 #[ignore = "opens a window"]
 fn invert_effect_inverts_the_display() {
-    let dir = std::env::temp_dir().join("neowon-effects-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch("effects-test");
     let d = dir.display();
     let script = format!(
         "stimulus sine-1k\n\
@@ -45,7 +46,10 @@ fn invert_effect_inverts_the_display() {
     );
     let script_path = dir.join("script.txt");
     std::fs::write(&script_path, script).unwrap();
-    let status = Command::new(env!("CARGO_BIN_EXE_neowon-app"))
+    // A private home and none of the caller's NEOWON_* (common/sandbox.rs).
+    let sandbox = Sandbox::new("effects");
+    let status = sandbox
+        .command(env!("CARGO_BIN_EXE_neowon-app"))
         .arg("--sim")
         .env("NEOWON_SCRIPT", &script_path)
         // The shipped examples live in the repo's assets dir.
@@ -53,9 +57,6 @@ fn invert_effect_inverts_the_display() {
             "NEOWON_SHADER_DIR",
             concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/shaders/user"),
         )
-        .env_remove("NEOWON_SHOT")
-        // A killed harness must not leave the scripted app behind.
-        .env("NEOWON_ORPHAN_EXIT", "120")
         .status()
         .expect("launch app");
     assert!(status.success(), "app exited with {status}");

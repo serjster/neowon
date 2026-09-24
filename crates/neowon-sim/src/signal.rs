@@ -246,7 +246,6 @@ impl Component {
     }
 }
 
-/// A sum of components.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SignalSpec {
     pub components: Vec<Component>,

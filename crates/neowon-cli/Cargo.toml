@@ -13,6 +13,7 @@ neowon-core.workspace = true
 neowon-backend.workspace = true
 neowon-dsp.workspace = true
 neowon-sim.workspace = true
+neowon-sdr.workspace = true
 neowon-vds1022.workspace = true
 anyhow.workspace = true
 clap.workspace = true

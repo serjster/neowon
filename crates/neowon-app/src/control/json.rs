@@ -1,0 +1,310 @@
+use crate::Link;
+use crate::derived::{FftState, METRICS, MathState, MeasureState, PfState};
+use crate::gpu::{Palette, Persistence, Phosphor, TraceMode};
+use crate::record::{History, Recorder};
+use crate::viz::three_d::Viz3dState;
+use crate::viz::waterfall::WaterfallState;
+
+pub(crate) fn escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// A JSON number: finite floats as-is, everything else null.
+fn num(v: f64) -> String {
+    if v.is_finite() {
+        format!("{v}")
+    } else {
+        "null".into()
+    }
+}
+
+pub(super) fn status_json(link: &Link, rec: &Recorder, hist: &History) -> String {
+    let (name, serial) = link
+        .caps
+        .as_ref()
+        .map(|c| (c.name().to_string(), c.serial().to_string()))
+        .unwrap_or_default();
+    format!(
+        concat!(
+            r#"{{"ok":true,"running":{},"frames_seen":{},"backend":"{}","serial":"{}","#,
+            r#""status":"{}","stimulus":"{}","shot":{},"#,
+            r#""recorder":{{"on":{},"frames":{},"bytes":{},"budget":{},"seconds":{}}},"dropped":{},"#,
+            r#""history":{},"last_export":{}}}"#
+        ),
+        link.config.running,
+        link.frames_seen,
+        escape(&name),
+        escape(&serial),
+        escape(&link.status),
+        escape(&link.stimulus),
+        link.last_shot
+            .as_ref()
+            .map_or("null".to_string(), |p| format!("\"{}\"", escape(p))),
+        rec.on,
+        rec.frames.len(),
+        rec.bytes(),
+        rec.budget,
+        num(rec.span_seconds()),
+        link.sup.dropped.load(std::sync::atomic::Ordering::Relaxed),
+        hist.active.map_or("null".to_string(), |i| i.to_string()),
+        rec.last_export
+            .as_ref()
+            .map_or("null".to_string(), |p| format!("\"{}\"", escape(p))),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn config_json(
+    link: &Link,
+    phosphor: &Phosphor,
+    math: &MathState,
+    fft: &FftState,
+    pf: &PfState,
+    wf: &WaterfallState,
+    viz: &Viz3dState,
+    fx: &crate::effects::Effects,
+    ap: &crate::autopeak::AutoPeak,
+    deep: &crate::deep::DeepView,
+) -> String {
+    use neowon_core::{Coupling, Slope, TriggerKind};
+    let c = &link.config;
+    let mut channels = String::new();
+    for (i, ch) in c.channels.iter().enumerate().take(2) {
+        if i > 0 {
+            channels.push(',');
+        }
+        let coup = match ch.coupling {
+            Coupling::Dc => "dc",
+            Coupling::Ac => "ac",
+            Coupling::Gnd => "gnd",
+        };
+        channels.push_str(&format!(
+            r#"{{"enabled":{},"volts_div":{},"coupling":"{coup}","probe":{},"offset":{}}}"#,
+            ch.enabled,
+            num(ch.volts_div),
+            num(ch.probe),
+            num(ch.offset),
+        ));
+    }
+    let t = &c.trigger;
+    let sweep = match t.sweep {
+        neowon_core::Sweep::Auto => "auto",
+        neowon_core::Sweep::Normal => "normal",
+        neowon_core::Sweep::Single => "single",
+    };
+    let kind = match t.kind {
+        TriggerKind::Edge { slope } => format!(
+            r#""kind":"edge","slope":"{}""#,
+            match slope {
+                Slope::Rising => "rising",
+                Slope::Falling => "falling",
+            }
+        ),
+        TriggerKind::Pulse { condition, width } => {
+            let (pol, cmp) = crate::session::condition_words(condition);
+            format!(
+                r#""kind":"pulse","condition":"{pol} {cmp}","width":{}"#,
+                num(width)
+            )
+        }
+        TriggerKind::Slope {
+            condition,
+            width,
+            upper,
+            lower,
+        } => {
+            let (pol, cmp) = crate::session::condition_words(condition);
+            format!(
+                r#""kind":"slope","condition":"{pol} {cmp}","width":{},"upper":{},"lower":{}"#,
+                num(width),
+                num(upper),
+                num(lower)
+            )
+        }
+        TriggerKind::Video { sync, line } => {
+            let sync = match sync {
+                neowon_core::VideoSync::Line => "line",
+                neowon_core::VideoSync::Field => "field",
+                neowon_core::VideoSync::OddField => "odd",
+                neowon_core::VideoSync::EvenField => "even",
+                neowon_core::VideoSync::LineNumber => "linenum",
+            };
+            format!(r#""kind":"video","sync":"{sync}","line":{line}"#)
+        }
+    };
+    let acq = match c.acq {
+        neowon_core::AcqMode::Sample => "sample".to_string(),
+        neowon_core::AcqMode::Peak => "peak".to_string(),
+        neowon_core::AcqMode::Average(n) => format!("avg{n}"),
+    };
+    let mode = match phosphor.mode {
+        TraceMode::Vectors => "vectors",
+        TraceMode::Dots => "dots",
+        TraceMode::Xy => "xy",
+    };
+    let persist = match phosphor.persistence {
+        Persistence::Off => "\"off\"".to_string(),
+        Persistence::Infinite => "\"inf\"".to_string(),
+        Persistence::Seconds(s) => format!("{s}"),
+    };
+    let palette = match phosphor.palette {
+        Palette::Phosphor => "phosphor",
+        Palette::Thermal => "thermal",
+        Palette::Green => "green",
+    };
+    format!(
+        concat!(
+            r#"{{"ok":true,"sample_rate":{},"trigger_position":{},"acq":"{}","running":{},"#,
+            r#""channels":[{}],"#,
+            r#""trigger":{{"source":{},{},"level":{},"sweep":"{}","holdoff":{}}},"#,
+            r#""display":{{"mode":"{}","persist":{},"gain":{},"crt":{},"palette":"{}","hview":[{},{}]}},"#,
+            r#""math":{{"enabled":{}}},"fft":{{"enabled":{},"source":{}}},"#,
+            r#""pf":{{"enabled":{},"source":{},"pass":{},"fail":{}}},"#,
+            r#""viz":{{"waterfall":{},"mode":"{}","effect":{}}},"#,
+            r#""autopeak":{{"on":{},"engaged":{}}},"#,
+            r#""deep":{{"on":{},"span":{},"coverage":{},"gaps":{},"records":{},"anchored":{},"follow":"{}"}}}}"#
+        ),
+        num(c.sample_rate),
+        num(c.position),
+        acq,
+        c.running,
+        channels,
+        t.source,
+        kind,
+        num(t.level),
+        sweep,
+        num(t.holdoff),
+        mode,
+        persist,
+        num(phosphor.gain as f64),
+        phosphor.crt,
+        palette,
+        num(phosphor.hview.0),
+        num(phosphor.hview.1),
+        math.enabled,
+        fft.enabled,
+        fft.source,
+        pf.enabled,
+        pf.source_slot,
+        pf.pass,
+        pf.fail,
+        wf.on,
+        viz.mode.name(),
+        fx.active
+            .as_ref()
+            .map_or("null".to_string(), |n| format!("\"{}\"", escape(n))),
+        ap.on,
+        ap.engaged,
+        deep.on,
+        num(deep.span),
+        num(deep.coverage),
+        deep.gap_count,
+        deep.records,
+        deep.anchor.is_some(),
+        deep.follow.name(),
+    )
+}
+
+/// Decoder results: enough for a script or an LLM to read the bus without
+/// looking at the screen.
+pub(super) fn decode_json(st: &crate::decode::DecodeState) -> String {
+    use neowon_dsp::decode::EventKind;
+    let rate = st.sample_rate.max(1.0);
+    let mut events = String::new();
+    for (i, e) in st.events.iter().enumerate() {
+        if i > 0 {
+            events.push(',');
+        }
+        let (t0, t1) = e.seconds(rate);
+        let kind = match &e.kind {
+            EventKind::Word { value, bits } => {
+                format!(r#""kind":"word","value":{value},"bits":{bits}"#)
+            }
+            EventKind::Marker(m) => format!(r#""kind":"marker","name":"{}""#, escape(m)),
+            EventKind::Ack(ok) => format!(r#""kind":"ack","ok":{ok}"#),
+            EventKind::Error(e) => format!(r#""kind":"error","reason":"{}""#, escape(e)),
+        };
+        events.push_str(&format!(
+            r#"{{"t":{},"t_end":{},{kind}}}"#,
+            num(t0),
+            num(t1)
+        ));
+    }
+    format!(
+        r#"{{"ok":true,"protocol":"{}","errors":{},"error":{},"events":[{events}]}}"#,
+        st.protocol.name(),
+        st.error_count(),
+        st.error
+            .as_ref()
+            .map_or("null".to_string(), |e| format!("\"{}\"", escape(e))),
+    )
+}
+
+pub(super) fn measure_json(meas: &MeasureState) -> String {
+    let mut slots = String::new();
+    for slot in 0..crate::derived::SLOTS {
+        if slot > 0 {
+            slots.push(',');
+        }
+        let Some(m) = &meas.latest[slot] else {
+            slots.push_str("null");
+            continue;
+        };
+        let mut metrics = String::new();
+        for (i, (name, get, _)) in METRICS.iter().enumerate() {
+            if i > 0 {
+                metrics.push(',');
+            }
+            let value = get(m).map_or("null".to_string(), num);
+            let stats = meas
+                .stats
+                .get(slot)
+                .map(|s| &s[i])
+                .filter(|t| t.count > 0)
+                .map_or("null".to_string(), |t| {
+                    format!(
+                        r#"{{"mean":{},"min":{},"max":{},"std":{},"n":{}}}"#,
+                        num(t.mean),
+                        num(t.min),
+                        num(t.max),
+                        num(t.std_dev()),
+                        t.count
+                    )
+                });
+            metrics.push_str(&format!(
+                r#"{{"name":"{}","value":{value},"stats":{stats}}}"#,
+                escape(name)
+            ));
+        }
+        slots.push_str(&format!(r#"{{"metrics":[{metrics}]}}"#));
+    }
+    format!(
+        r#"{{"ok":true,"slots":[{slots}],"sample_rate":{}}}"#,
+        num(meas.sample_rate)
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{escape, num};
+
+    #[test]
+    fn json_escaping_and_numbers() {
+        assert_eq!(escape(r#"a"b\c"#), r#"a\"b\\c"#);
+        assert_eq!(escape("x\ny"), "x\\ny");
+        assert_eq!(num(0.2), "0.2");
+        assert_eq!(num(250e3), "250000");
+        assert_eq!(num(f64::NAN), "null");
+        assert_eq!(num(f64::INFINITY), "null");
+    }
+}

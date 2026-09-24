@@ -1,4 +1,4 @@
-//! Fetching reference data (10.14.3, D19): the only network code in the
+//! Fetching reference data: the only network code in the
 //! workspace. Blocking `ureq` 3 over rustls, 30 s, one retry; the app runs
 //! each fetch on its own worker thread. Every entry point takes its base
 //! URLs as a parameter, so tests point them at a local `TcpListener` stub
@@ -109,7 +109,7 @@ pub fn fetch(
     }
 }
 
-/// `location ip` (D18): **one** request, only ever from an explicit
+/// `location ip`: **one** request, only ever from an explicit
 /// operator action. `set_at` is left to the caller's clock, so parsing
 /// stays deterministic.
 pub fn locate_ip(base: &str) -> Result<Location, Error> {

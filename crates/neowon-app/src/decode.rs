@@ -96,7 +96,6 @@ impl DecodeState {
     }
 }
 
-/// Digitize one channel of the live record.
 fn line(link: &Link, ch: usize, hysteresis: f64) -> Option<Digital> {
     let frame = link.latest.as_ref()?;
     let cap = frame.channels.iter().find(|c| c.ch == ch)?;

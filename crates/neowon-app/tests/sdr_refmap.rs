@@ -1,4 +1,4 @@
-//! Phase 10.14 (band map) and the D12 workspace split, asserted from the
+//! The band map and the SDR workspace split, asserted from the
 //! UI element tree (`get uitree`) rather than pixels: the SDR workspace
 //! carries no scope chrome, the SCOPE | SDR switch is in the app bar, the
 //! band strip names the band in view, the RF map window opens, and the
@@ -121,7 +121,7 @@ fn stations_location_and_catalog_bridge() {
         assert!((km - 20.0).abs() <= 0.5, "km {km}: {s}");
         assert!(item.contains(r#""mod":"WFM""#), "{s}");
 
-        // Click-to-tune: station → tuned + the fitting demodulator (D21).
+        // Click-to-tune: station → tuned + the fitting demodulator.
         c.ok("stations tune wikidata:Q1001");
         c.wait("get sdr", 5, |r| field(r, "tuned_hz") == 100.3e6);
         c.wait("get audio", 5, |r| raw(r, "demod") == r#""wfm""#);
@@ -143,7 +143,7 @@ fn stations_location_and_catalog_bridge() {
             "refdb import wrote into the catalog"
         );
 
-        // Add to catalog (D20): a copy with refdb provenance.
+        // Add to catalog: a copy with refdb provenance.
         let refdb_after_import = listing(&dir);
         c.ok("stations catalog wikidata:Q1001");
         let ca = c.wait("get catalog", 5, |r| field(r, "entities") == 1.0);
@@ -206,7 +206,7 @@ fn band_map_and_sdr_workspace() {
             );
         }
         // Geometry, from the same tree: the strip and minimap live inside
-        // the canvas, and neither ever reaches the dock rail (10.14.4).
+        // the canvas, and neither ever reaches the dock rail.
         let canvas = rect_of(&t, "SDR canvas").expect("canvas rect");
         let dock = rect_of(&t, "SDR dock").expect("dock rect");
         for part in ["band strip", "RF minimap"] {

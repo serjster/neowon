@@ -34,7 +34,7 @@ fn collect(
             continue;
         };
         if let Event::Frame(f) = ev {
-            assert_eq!(f.layout, SampleLayout::Complex);
+            assert_eq!(f.layout(), SampleLayout::Complex);
             let t = f.t_capture.unwrap_or(f64::NAN);
             if let Some(n) = next_t
                 && (t - n).abs() > 1e-6

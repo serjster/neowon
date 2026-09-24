@@ -432,7 +432,6 @@ fn pad_extraction_reads_the_leading_data_stream_element() {
     assert_eq!(extract_pad(&short), None);
     // Truncated payload.
     assert_eq!(extract_pad(&[0x80, 0x06, 0x01, 0x02]), None);
-    // Empty AU.
     assert_eq!(extract_pad(&[]), None);
 }
 

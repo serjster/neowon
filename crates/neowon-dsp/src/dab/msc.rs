@@ -21,11 +21,11 @@
 //!    tail bits of clause 11.1.1, so the survivor is read from state 0 — the
 //!    same decoder the FIC uses.
 //! 6. **Payload check.** EN 300 401 defines no CRC at this layer; the DAB+
-//!    superframe CRC is tier 3. So the decoder verifies a trailing CRC-16
+//!    superframe CRC belongs to the audio transport. So the decoder verifies a trailing CRC-16
 //!    (annex E) only when the caller declares the payload carries one — the
 //!    sim's oracle transport in the tests. On air nothing is checked and
 //!    `crc_checks` stays 0, which is the honest "not checked" rather than a
-//!    guess (D27).
+//!    guess.
 //!
 //! [`MscDecoder`] is the demux: it watches the FIC's sub-channel table, keeps
 //! one handler per resolvable sub-channel, and queues the logical frames they
@@ -167,7 +167,6 @@ pub struct SubChannelStatus {
     pub crc_checks: u64,
     /// Payload CRCs that failed.
     pub crc_failures: u64,
-    /// Payload bytes emitted.
     pub bytes: u64,
 }
 
@@ -195,7 +194,7 @@ pub struct SubChannelDecoder {
 impl SubChannelDecoder {
     /// Build a decoder for a FIC sub-channel entry. Returns `None` when the
     /// protection is not one the standard defines for the signalled size —
-    /// refusing beats guessing (D27).
+    /// refusing beats guessing.
     pub fn new(sub: &SubChannel) -> Option<Self> {
         let size_cu = sub.size_cu?;
         let profile = match sub.protection {

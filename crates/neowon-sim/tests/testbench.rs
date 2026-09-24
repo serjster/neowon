@@ -2,8 +2,6 @@
 //! deterministic sim source through `neowon-dsp` and assert real-world
 //! correctness of every operation. These are the correctness backbone for the
 //! measurement, math, FFT, and trigger paths.
-//!
-//! Run with: `cargo test -p neowon-sim --test testbench`
 
 use std::time::Duration;
 
@@ -12,14 +10,12 @@ use neowon_core::{ChannelCapture, Slope, Sweep, TriggerKind};
 use neowon_dsp::{MathOp, Window, basic_stats, estimate_frequency, math_trace, measure, spectrum};
 use neowon_sim::{Component, SAMPLES, Scenario, SignalSpec, SimBackend, SimSource};
 
-/// Build a single-channel capture from a spec at `rate`, full-scale `range`.
 fn cap(spec: SignalSpec, rate: f64, range: f64) -> ChannelCapture {
     let mut src = SimSource::new(rate, Scenario::PerChannel([spec, SignalSpec::default()]));
     src.set_range(0, range);
     src.next_frame().channels.into_iter().next().unwrap()
 }
 
-/// Capture of a named preset's first channel.
 fn preset_cap(name: &str, rate: f64, range: f64) -> ChannelCapture {
     cap_from_scenario(Scenario::preset(name).unwrap(), rate, range)
 }
@@ -56,8 +52,6 @@ fn index_of_peak(amps: &[f64], skip_around: Option<(usize, usize)>) -> usize {
     }
     best
 }
-
-// --- Amplitudes ----------------------------------------------------------
 
 #[test]
 fn sine_amplitudes() {
@@ -106,8 +100,6 @@ fn square_vrms() {
     assert!((s.vrms - 1.0).abs() < 0.02, "vrms {}", s.vrms);
 }
 
-// --- Frequency accuracy across decades -----------------------------------
-
 #[test]
 fn frequency_accuracy_across_decades() {
     for (freq, rate) in [(50.0, 12.5e3), (1000.0, 250e3), (25e3, 2.5e6)] {
@@ -117,8 +109,6 @@ fn frequency_accuracy_across_decades() {
         assert!(err < 0.002, "{freq} Hz: measured {f} (err {err})");
     }
 }
-
-// --- Duty cycle ladder ---------------------------------------------------
 
 #[test]
 fn duty_cycle_ladder() {
@@ -138,8 +128,6 @@ fn duty_cycle_ladder() {
     }
 }
 
-// --- Trapezoid rise time ------------------------------------------------
-
 #[test]
 fn trapezoid_rise_time() {
     // 200 us linear edges; 10-90% of a linear edge is 0.8 * edge = 160 us.
@@ -148,8 +136,6 @@ fn trapezoid_rise_time() {
     let rise = m.rise.expect("rise");
     assert!((rise - 160e-6).abs() < 16e-6, "rise {rise}");
 }
-
-// --- FFT: two-tone -------------------------------------------------------
 
 #[test]
 fn fft_two_tone() {
@@ -174,8 +160,6 @@ fn fft_two_tone() {
     let expect = 20.0 * (1.0f64 / 0.4).log10();
     assert!((db - expect).abs() < 1.0, "ratio {db} dB expect {expect}");
 }
-
-// --- FFT: AM sidebands ---------------------------------------------------
 
 #[test]
 fn fft_am_sidebands() {
@@ -203,8 +187,6 @@ fn fft_am_sidebands() {
     }
 }
 
-// --- Math: derivative ----------------------------------------------------
-
 #[test]
 fn math_derivative_of_sine() {
     // d/dt of A sin(2*pi*f*t) has vpp = 2*A*2*pi*f. Rate ~30x the tone keeps
@@ -222,8 +204,6 @@ fn math_derivative_of_sine() {
         expect
     );
 }
-
-// --- Math: integral ------------------------------------------------------
 
 #[test]
 fn math_integral_of_square_is_triangle() {
@@ -250,8 +230,6 @@ fn math_integral_of_square_is_triangle() {
     );
 }
 
-// --- Chirp ---------------------------------------------------------------
-
 #[test]
 fn chirp_frequency_increases() {
     let c = preset_cap("chirp", 250e3, 2.5);
@@ -260,8 +238,6 @@ fn chirp_frequency_increases() {
     let f2 = estimate_frequency(&c.data[half..], 250e3).expect("second half");
     assert!(f2 > 2.0 * f1, "first {f1}, second {f2}");
 }
-
-// --- XY figures ----------------------------------------------------------
 
 #[test]
 fn lissajous_frequency_ratio() {
@@ -299,8 +275,6 @@ fn all_xy_presets_render_in_range() {
         }
     }
 }
-
-// --- Trigger alignment ---------------------------------------------------
 
 fn armed_backend(stim: &str, level: f64, sweep: Sweep) -> SimBackend {
     let mut b = SimBackend::new();
@@ -353,8 +327,6 @@ fn normal_sweep_starves_on_impossible_level() {
         assert!(b.poll_frame(Duration::from_millis(500)).unwrap().is_none());
     }
 }
-
-// --- Determinism ---------------------------------------------------------
 
 #[test]
 fn identical_sources_produce_identical_frames() {

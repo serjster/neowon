@@ -1,7 +1,6 @@
 //! Screenshot capture: the whole window (what the operator sees, egui
 //! included) through Bevy's `Screenshot`, and the raw plot-texture readback
-//! the pixel tests assert on. Split out of `mod.rs` (hard size budget) —
-//! capture, wait-for-callback and the retry guard are a job of their own.
+//! the pixel tests assert on.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -19,7 +18,6 @@ use crate::gpu::{PLOT_H, PLOT_W};
 /// capture, and decrements exactly once on its result (or on giving up).
 static PENDING_SHOTS: AtomicUsize = AtomicUsize::new(0);
 
-/// Outstanding shots, polled by `Action::Quit`.
 pub(crate) fn pending() -> usize {
     PENDING_SHOTS.load(Ordering::SeqCst)
 }
@@ -267,27 +265,29 @@ fn write_plot(rgba: &[u8], path: &str, roi: Option<(u32, u32, u32, u32)>) {
     }
 }
 
-/// PNG when the path ends `.png`, binary PPM otherwise.
 fn write_rgb(path: &str, w: u32, h: u32, rgb: &[u8]) -> std::io::Result<()> {
     if path.ends_with(".png") {
         write_png(path, w, h, rgb)
     } else {
         let mut ppm = format!("P6\n{w} {h}\n255\n").into_bytes();
         ppm.extend_from_slice(rgb);
-        std::fs::write(path, &ppm)
+        neowon_core::atomic_file::write(path, &ppm)
     }
 }
 
 fn write_png(path: &str, w: u32, h: u32, rgb: &[u8]) -> std::io::Result<()> {
-    let file = std::io::BufWriter::new(std::fs::File::create(path)?);
-    let mut enc = png::Encoder::new(file, w, h);
+    // Encoded in memory, then put in place whole: a test or script polling
+    // for the file never reads half a PNG.
+    let mut png_bytes = Vec::new();
+    let mut enc = png::Encoder::new(&mut png_bytes, w, h);
     enc.set_color(png::ColorType::Rgb);
     enc.set_depth(png::BitDepth::Eight);
     let mut writer = enc.write_header().map_err(std::io::Error::other)?;
     writer
         .write_image_data(rgb)
         .map_err(std::io::Error::other)?;
-    writer.finish().map_err(std::io::Error::other)
+    writer.finish().map_err(std::io::Error::other)?;
+    neowon_core::atomic_file::write(path, png_bytes)
 }
 
 #[cfg(test)]
@@ -316,7 +316,8 @@ mod tests {
             TextureFormat::Bgra8UnormSrgb,
             vec![30, 20, 10, 255, 60, 50, 40, 255],
         );
-        let dir = std::env::temp_dir().join("neowon-shot-unit-bgra.ppm");
+        let dir =
+            std::env::temp_dir().join(format!("neowon-shot-unit-bgra-{}.ppm", std::process::id()));
         let path = dir.display().to_string();
         assert_eq!(write_image(&img, &path, None).unwrap(), "2x1");
         let bytes = std::fs::read(&dir).unwrap();
@@ -331,7 +332,8 @@ mod tests {
             TextureFormat::Rgba8UnormSrgb,
             vec![1, 2, 3, 255, 4, 5, 6, 255],
         );
-        let dir = std::env::temp_dir().join("neowon-shot-unit-rgba.ppm");
+        let dir =
+            std::env::temp_dir().join(format!("neowon-shot-unit-rgba-{}.ppm", std::process::id()));
         let path = dir.display().to_string();
         assert_eq!(write_image(&img, &path, None).unwrap(), "2x1");
         let bytes = std::fs::read(&dir).unwrap();
@@ -346,7 +348,8 @@ mod tests {
             TextureFormat::Bgra8UnormSrgb,
             vec![30, 20, 10, 255, 60, 50, 40, 255],
         );
-        let dir = std::env::temp_dir().join("neowon-shot-unit-crop.ppm");
+        let dir =
+            std::env::temp_dir().join(format!("neowon-shot-unit-crop-{}.ppm", std::process::id()));
         let path = dir.display().to_string();
         assert_eq!(write_image(&img, &path, Some((1, 0, 1, 1))).unwrap(), "1x1");
         let bytes = std::fs::read(&dir).unwrap();
@@ -357,7 +360,8 @@ mod tests {
     #[test]
     fn unsupported_formats_are_refused_not_written() {
         let img = image(TextureFormat::R32Float, vec![0; 8]);
-        let dir = std::env::temp_dir().join("neowon-shot-unit-bad.ppm");
+        let dir =
+            std::env::temp_dir().join(format!("neowon-shot-unit-bad-{}.ppm", std::process::id()));
         let path = dir.display().to_string();
         assert!(write_image(&img, &path, None).is_err());
         assert!(!dir.exists());

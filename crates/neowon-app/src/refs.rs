@@ -8,7 +8,6 @@ use neowon_core::ChannelCapture;
 
 use crate::ui::layout::{Layout, Roi};
 
-/// Ghost hues: dimmed versions of the channel colors.
 const REF_COLORS: [egui::Color32; 2] = [
     egui::Color32::from_rgba_premultiplied(120, 104, 16, 160),
     egui::Color32::from_rgba_premultiplied(24, 90, 120, 160),
@@ -21,7 +20,6 @@ pub struct RefState {
 }
 
 impl RefState {
-    /// Freeze channel `ch` of the given frame as its reference.
     pub fn capture(&mut self, frame: &neowon_core::CaptureFrame, ch: usize) {
         if ch < 2
             && let Some(cap) = frame.channels.iter().find(|c| c.ch == ch)

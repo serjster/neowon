@@ -1,4 +1,4 @@
-//! HE-AAC v2 adapter for DAB+ — the codec DAB-G2 decided on.
+//! HE-AAC v2 adapter for DAB+.
 //!
 //! # What the adapter takes
 //!
@@ -8,7 +8,7 @@
 //! parameters and the receiver derives the config (TS 102 563 clause
 //! 7.2), so [`AudioSpecificConfig::for_dabplus`] is the bridge.
 //!
-//! # The two backends (DAB-G2, operator decision 2026-09-20)
+//! # The two backends
 //!
 //! The default build decodes with the pure-Rust MIT `oxideav-aac`
 //! 0.1.7. It cannot decode SBR on the 960-line transform that DAB+
@@ -152,7 +152,6 @@ impl AudioSpecificConfig {
         writer.finish()
     }
 
-    /// Core sample rate in Hz.
     #[must_use]
     pub fn core_sample_rate(&self) -> u32 {
         self.sample_rate
@@ -196,7 +195,6 @@ pub enum SbrSupport {
 pub struct DecodedAudio {
     /// Interleaved f32 PCM in `[-1, 1)`, `channels` samples per frame.
     pub pcm: Vec<f32>,
-    /// Output channel count.
     pub channels: usize,
     /// Output sample rate in Hz.
     pub sample_rate: u32,
@@ -223,8 +221,6 @@ impl AacDecoder {
     /// pure Rust) or `"fdk-aac"` (the `fdk-aac` feature, C libfdk-aac).
     pub const BACKEND: &'static str = backend::BACKEND;
 
-    /// Build a decoder for one stream configuration.
-    ///
     /// A configuration the backend cannot honour is a typed error:
     /// `oxideav-aac` rejects SBR on the 960-line family with
     /// [`Error::SbrUnsupportedFrameFamily`], libfdk-aac reports its own
@@ -237,7 +233,6 @@ impl AacDecoder {
         })
     }
 
-    /// The stream configuration.
     #[must_use]
     pub fn config(&self) -> &AudioSpecificConfig {
         &self.config

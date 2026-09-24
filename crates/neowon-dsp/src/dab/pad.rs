@@ -25,12 +25,11 @@
 //!
 //! The 2-byte F-PAD + X-PAD layout is the same for DAB's MPEG-1 Layer II audio
 //! (the PAD region at the end of each MPEG frame) and DAB+ (the in-band PAD at
-//! the start of each AAC access unit). Tier 2 does not own either transport —
-//! it takes the PAD region, transmission order and F-PAD last, via
-//! [`PadParser::push_pad_region`] — so the same parser serves both when tier 3
-//! wires them up.
+//! the start of each AAC access unit). The parser takes the PAD region in
+//! transmission order, F-PAD last, via [`PadParser::push_pad_region`], so the
+//! same parser serves both.
 //!
-//! **Honesty (D27).** Unknown applications are skipped by their declared length
+//! **Honesty.** Unknown applications are skipped by their declared length
 //! and never parsed; a DLS string is published only when every segment from the
 //! first to the last reassembled cleanly and each data group's CRC passed. A
 //! partial or corrupt label is never shown.
@@ -64,7 +63,6 @@ struct ContentsIndicator {
     len: usize,
 }
 
-/// One reassembled DLS segment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DlsSegment {
     toggle: bool,
@@ -84,7 +82,6 @@ impl DlsSegment {
     }
 }
 
-/// The PAD/DLS parser state.
 #[derive(Debug, Default)]
 pub struct PadParser {
     /// The DLS data group being accumulated (header + characters + CRC, at
@@ -97,7 +94,7 @@ pub struct PadParser {
     /// The last application type seen, for CI-less continuation sub-fields.
     last_app: Option<ContentsIndicator>,
     /// Counters for the honest failures: CRC-rejected groups and DLS commands
-    /// this tier does not interpret.
+    /// this parser does not interpret.
     pub groups_dropped: u64,
     pub commands_ignored: u64,
 }
@@ -194,7 +191,7 @@ impl PadParser {
                 }
                 // Application type 1 (data group length indicator for MOT),
                 // 4..=11 and 16..=30 (user-defined) and 12..=15 (MOT) are
-                // legal but not this tier's; skipped by length (D27).
+                // legal but not parsed here; skipped by length.
                 _ => {}
             }
         }
@@ -301,7 +298,7 @@ impl PadParser {
 
     /// Extract every complete DLS data group from the accumulator, newest
     /// first. A group with a bad CRC drops the accumulator and the partial
-    /// label (D27).
+    /// label.
     fn extract_groups(&mut self) -> Option<String> {
         loop {
             if !self.group_active || self.group.len() < 2 {

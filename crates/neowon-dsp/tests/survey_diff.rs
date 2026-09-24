@@ -1,4 +1,4 @@
-//! Phase 10.4: survey diff over the simulated SDR (fixed order).
+//! Survey diff over the simulated SDR (fixed order).
 //!
 //! Two surveys of 100.0–104.9 MHz in three 1.64 MHz steps. Between them:
 //! - step 1: a tone is removed (`gone`), one is raised 12 dB (`stronger`),
@@ -8,12 +8,12 @@
 //!   below the kept floor), not `gone`;
 //! - step 3: scanned before, skipped after: everything there is `unknown`.
 //!
-//! `cargo test -p neowon-sdr --test survey_diff -- --nocapture`
+//! `cargo test -p neowon-dsp --test survey_diff -- --nocapture`
 
 use std::time::Duration;
 
 use neowon_backend::{Backend, InstrumentConfig, SdrConfig};
-use neowon_sdr::survey::{Change, Survey, SurveyPlan, SurveyResult, diff};
+use neowon_dsp::survey::{Change, Survey, SurveyPlan, SurveyResult, diff};
 use neowon_sim::{RfScene, SimSdrBackend, em};
 
 fn run(backend: &mut SimSdrBackend, plan: SurveyPlan) -> SurveyResult {

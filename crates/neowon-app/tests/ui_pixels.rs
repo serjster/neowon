@@ -7,16 +7,16 @@
 //! The plot texture contains ONLY the waveform render (graticule and
 //! cursors are gizmo overlays), so the assertions see pure signal.
 
+mod common;
+use common::{Sandbox, scratch};
+
 use std::path::PathBuf;
-use std::process::Command;
 
 const PLOT_W: usize = 1000;
 const PLOT_H: usize = 500;
 
 fn run_script(name: &str, script: &str) -> Vec<PathBuf> {
-    let dir = std::env::temp_dir().join(format!("neowon-uitest-{name}"));
-    std::fs::create_dir_all(&dir).unwrap();
-    // Rewrite `shotplot NAME ...` to absolute paths, collect them.
+    let dir = scratch(&format!("uitest-{name}"));
     let mut shots = Vec::new();
     let script_text: String = script
         .lines()
@@ -36,13 +36,12 @@ fn run_script(name: &str, script: &str) -> Vec<PathBuf> {
     let script_path = dir.join("script.txt");
     std::fs::write(&script_path, script_text).unwrap();
 
-    let status = Command::new(env!("CARGO_BIN_EXE_neowon-app"))
+    // A private home and none of the caller's NEOWON_* (common/sandbox.rs).
+    let sandbox = Sandbox::new("ui-pixels");
+    let status = sandbox
+        .command(env!("CARGO_BIN_EXE_neowon-app"))
         .arg("--sim")
         .env("NEOWON_SCRIPT", &script_path)
-        .env_remove("NEOWON_SHOT")
-        // No control-socket client here: the guard exits a scripted app
-        // that a killed harness would otherwise leave on screen.
-        .env("NEOWON_ORPHAN_EXIT", "120")
         .status()
         .expect("launch app");
     assert!(status.success(), "app exited with {status}");
@@ -111,7 +110,6 @@ fn dc_level_renders_at_expected_row() {
         .map(|&(_, y)| (y as f64 - mean_row).abs())
         .fold(0.0f64, f64::max);
     assert!(spread < 8.0, "trace spread {spread}");
-    // ...and spans the full width.
     let cols: std::collections::HashSet<usize> = lit.iter().map(|&(x, _)| x).collect();
     assert!(cols.len() > 900, "only {} columns lit", cols.len());
 }

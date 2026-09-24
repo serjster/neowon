@@ -34,6 +34,11 @@ fn lab_identifies_and_measures_digital_signals() {
                     && raw_str(r, "modulation") == label
             });
             println!("{label}: {m}");
+            // The lab's numbers sit beside the signal they were measured
+            // on: the detection reported is the lab's track, at the tuned
+            // frequency.
+            assert_eq!(raw(&m, "id"), raw(&m, "track"), "{m}");
+            assert!((field(&m, "centre_hz") - centre).abs() < 5e3, "{m}");
             // One frame can be an honest `unknown` (low margin); the
             // verdict must settle to a confident one.
             let k = c.wait("get classify", 10, |r| {

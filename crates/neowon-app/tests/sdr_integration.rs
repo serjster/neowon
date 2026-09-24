@@ -1,10 +1,9 @@
-//! Phase 10.9: one scripted run through the whole SDR chain on the
+//! One scripted run through the whole SDR chain on the
 //! simulator, starting from the scope and switching instrument at run
 //! time: tune → detect → analyse → classify → catalog → export, then back
 //! to the scope and into the SDR again with its settings kept.
 //!
-//! Decode is not in the chain yet: it is 10.6, which waits on independent
-//! reference vectors (spec deviations).
+//! Decode is not in the chain: it waits on independent reference vectors.
 //!
 //! The action-level half of the parity rule (every UI control and catalog
 //! op prints as a script line that parses back to itself) is the
@@ -83,7 +82,7 @@ fn scope_to_sdr_chain_to_export_and_back() {
         assert_eq!(field(&r, "centre_hz"), 100e6, "{r}");
         assert_eq!(field(&r, "tuned_hz"), 100.3e6, "{r}");
 
-        // D10: the tuned cursor is independent of the hardware window.
+        // The tuned cursor is independent of the hardware window.
         // Follow pins the window to the tuned frequency; centre moves it
         // by itself; width is auto or manual.
         c.ok("sdr follow on");
@@ -124,6 +123,24 @@ fn scope_to_sdr_chain_to_export_and_back() {
         c.wait("get sdr", 5, |r| field(r, "list_px") == 300.0);
         c.ok("sdr list 5");
         c.wait("get status", 5, |r| r.contains("list height"));
+
+        // Continuity is reported, not assumed. The simulated SDR
+        // never loses a sample, so the honest live answer is "none" — but it
+        // has to be *said*, in `get sdr` and in the dock, or a real drop
+        // would be invisible. (That the count also splices the DAB receiver
+        // is the unit test `sdr::dab::tests::a_reported_drop`, which can
+        // inject a gap the simulator cannot.)
+        let r = c.wait("get sdr", 5, |r| field(r, "frames_seen") > 0.0);
+        assert_eq!(field(&r, "dropped_pairs"), 0.0, "{r}");
+        assert_eq!(field(&r, "drop_events"), 0.0, "{r}");
+        // The waterfall's row cadence (`protocol-rtlsdr.md`, ~15–20 rows/s)
+        // is reported as a number too.
+        assert!(field(&r, "wf_rows") > 0.0, "{r}");
+        let t = c.wait("get uitree", 10, |r| r.contains(r#""value":"Drops""#));
+        assert!(
+            t.contains("none in "),
+            "the dock must state the drop count, not leave it implied: {t}"
+        );
 
         // A refused instrument name reaches the status line, not a crash.
         let bad = c.request("instrument radar");

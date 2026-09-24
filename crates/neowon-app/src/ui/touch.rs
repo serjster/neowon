@@ -187,7 +187,6 @@ pub fn plot_pointer(
     if mouse.just_pressed(MouseButton::Left) && on_plot(&layout, world) {
         let now = time.elapsed_secs_f64();
         let drag = hit_drag(&layout, &link.config, world);
-        // Double-click on empty plot: reset the horizontal window.
         if drag == Drag::Waveform && now - touch.last_click < DOUBLE_CLICK_S {
             view::hview_home(&mut phosphor);
             touch.drag = None;

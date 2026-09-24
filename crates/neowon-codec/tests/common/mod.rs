@@ -8,7 +8,6 @@
 //! correlation and error is the honest form of the row 14/15 criterion.
 #![allow(dead_code)]
 
-/// Read one committed fixture.
 pub fn fixture(name: &str) -> Vec<u8> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
@@ -24,7 +23,6 @@ pub fn s16_to_f32(bytes: &[u8]) -> Vec<f32> {
         .collect()
 }
 
-/// Split interleaved samples into per-channel vectors.
 pub fn deinterleave(interleaved: &[f32], channels: usize) -> Vec<Vec<f32>> {
     (0..channels)
         .map(|channel| {
@@ -47,6 +45,17 @@ pub struct Agreement {
     pub correlation: f64,
     /// `‖ours[lag..] − reference‖ / ‖reference‖`.
     pub relative_rms_error: f64,
+}
+
+/// Print one measured agreement as a JSON line, so the correlation / lag /
+/// relative-RMS numbers in `docs/protocol-dab.md`'s acceptance table are
+/// regenerable from the command that measures them:
+/// `cargo test -p neowon-codec ... -- --nocapture`.
+pub fn report_agreement(fixture: &str, channel: usize, agreement: &Agreement) {
+    println!(
+        r#"{{"fixture":"{fixture}","channel":{channel},"lag":{},"correlation":{:.9},"relative_rms_error":{:.6}}}"#,
+        agreement.lag, agreement.correlation, agreement.relative_rms_error
+    );
 }
 
 /// Coarse lag step for [`align_and_compare`]. The fixture signals are

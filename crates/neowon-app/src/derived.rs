@@ -9,7 +9,6 @@ use neowon_dsp::{MathOp, Spectrum, StatTrack, Window, math_trace, measure, spect
 
 use crate::Link;
 
-/// Trace slots: CH1, CH2, math.
 pub const SLOTS: usize = 3;
 pub const SLOT_NAMES: [&str; SLOTS] = ["CH1", "CH2", "M"];
 
@@ -47,13 +46,11 @@ pub fn build_pf_mask(reference: &[f32], h_div: f64, v_div: f64) -> PfMask {
     PfMask { lo, hi }
 }
 
-/// True when every sample of `samples` stays within `[lo, hi]`.
 pub fn evaluate_pf(mask: &PfMask, samples: &[f32]) -> bool {
     let n = mask.lo.len().min(samples.len());
     (0..n).all(|i| samples[i] >= mask.lo[i] && samples[i] <= mask.hi[i])
 }
 
-/// Pass/fail rule engine state.
 #[derive(Resource)]
 pub struct PfState {
     pub enabled: bool,
@@ -138,7 +135,6 @@ pub struct MeasureState {
 pub const HISTORY_LEN: usize = 240;
 
 impl MeasureState {
-    /// Record this acquisition's values for the trend display.
     pub fn push_history(&mut self, slot: usize, m: &Measurements) {
         if self.history.len() != SLOTS {
             self.history = (0..SLOTS)
@@ -178,7 +174,6 @@ pub struct FftState {
     pub spectrum: Option<Spectrum>,
     /// Zoomed frequency view as fractions of Nyquist (0..1).
     pub view: (f64, f64),
-    /// dB axis range.
     pub db: (f32, f32),
     /// Sticky SI bands for the peak readout (amplitude, frequency).
     pub peak_bands: (Band, Band),
@@ -198,7 +193,6 @@ impl Default for FftState {
     }
 }
 
-/// Metric table: label, extractor, unit.
 #[derive(Clone, Copy)]
 pub enum Unit {
     Volt,
@@ -251,7 +245,6 @@ pub fn compute_derived(
         meas.bands = vec![[Band::default(); N_METRICS]; SLOTS];
     }
 
-    // Math trace.
     math.trace = None;
     if math.enabled {
         let a = frame.channels.iter().find(|c| c.ch == 0);
@@ -270,7 +263,6 @@ pub fn compute_derived(
         }
     }
 
-    // Measurements + stats per slot.
     let mut slot_caps: [Option<&ChannelCapture>; SLOTS] = [None; SLOTS];
     for cap in &frame.channels {
         if cap.ch < 2 {
@@ -282,7 +274,7 @@ pub fn compute_derived(
     // pairs, not successive samples: measuring them as a waveform yields
     // confident nonsense, so only what survives decimation is reported and
     // the rest shows as absent.
-    let envelope = frame.acq == neowon_core::AcqMode::Peak;
+    let envelope = frame.acq() == neowon_core::AcqMode::Peak;
     for (slot, cap) in slot_caps.iter().enumerate() {
         let m = cap.and_then(|c| {
             if envelope {
@@ -302,7 +294,6 @@ pub fn compute_derived(
         }
     }
 
-    // Spectrum.
     fft.spectrum = if fft.enabled {
         slot_caps[fft.source.min(SLOTS - 1)]
             .and_then(|c| spectrum(&c.data, c.cal.scale_i, frame.sample_rate, fft.window, 4096))
@@ -310,7 +301,6 @@ pub fn compute_derived(
         None
     };
 
-    // Pass/fail: compare the source slot's trace against the mask.
     let pf_result = if pf.enabled {
         slot_caps[pf.source_slot.min(SLOTS - 1)]
             .zip(pf.mask.as_ref())

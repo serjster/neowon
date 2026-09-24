@@ -1,5 +1,3 @@
-//! The crate's single error type.
-
 use std::fmt;
 
 /// Everything that can go wrong in `neowon-codec`.
@@ -9,7 +7,7 @@ use std::fmt;
 /// the 1024-line core frame only, while DAB+ mandates the 960-line
 /// transform (TS 102 563 clause 5.1). A DAB+ HE-AAC v2 access unit
 /// therefore surfaces here rather than being silently mis-decoded —
-/// the operator decision the adapter must make visible (DAB-G2). The
+/// the adapter must make this limitation visible. The
 /// `fdk-aac` feature replaces that backend with libfdk-aac, which does
 /// accept 960 + SBR and so never returns this variant.
 ///
@@ -38,9 +36,7 @@ pub enum Error {
     /// (`AacDecoder::BACKEND` names it; `reason` is the backend's own
     /// message, e.g. libfdk-aac's `AAC_DEC_UNSUPPORTED_AOT`).
     ConfigRejected {
-        /// The backend that refused the configuration.
         backend: &'static str,
-        /// The backend's own reason.
         reason: String,
     },
     /// The underlying codec rejected the bitstream (message only: the

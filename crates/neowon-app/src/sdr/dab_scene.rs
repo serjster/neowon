@@ -1,7 +1,6 @@
 //! The `rf-dab` sim scene: a real Mode I ensemble, composed in the app.
 //!
-//! The sim may not depend on `neowon-dsp` (tier-1 deviation 1 of
-//! `docs/tasks/phase10-dab-spec.md`), so this module builds the ensemble with
+//! The sim may not depend on `neowon-dsp`, so this module builds the ensemble with
 //! `neowon_dsp::dab::encoder`, modulates it into IQ, and installs it with
 //! [`neowon_sim::sdr::install_scene`] under the stable preset name `rf-dab`.
 //! The app calls [`install`] when the operator selects that scene; nothing
@@ -33,21 +32,31 @@
 //! state, every chosen stream's cycle must *divide* the buffer. Only then is
 //! re-playing the buffer a continuation of the transmitter's state rather
 //! than a cut across it. `chosen_channels` asserts that invariant.
+//!
+//! The pieces: the transmitter chain for a chosen byte source is
+//! `dab_scene/chain.rs`, the DLS PAD programme `dab_scene/dls.rs`; this file
+//! holds the ensemble layout, the buffer composition and its loop-seam rule.
 
 use std::sync::OnceLock;
 
 use neowon_dsp::dab::encoder::{
     EnsembleSpec, FicFrame, MscEncoder, MscSubChannelSpec, ServiceSpec, SubChannelSpec,
 };
-use neowon_dsp::dab::fec::{
-    EepProfile, UEP_PROFILES, UepProfile, conv_encode, crc16, energy_dispersal, puncture_regions,
-};
-use neowon_dsp::dab::msc::{DEINTERLEAVE_DEPTH, DEINTERLEAVE_MAP, Profile};
-use neowon_dsp::dab::{CIFS_PER_FRAME, CU_BITS, Protection, SAMPLE_RATE};
+use neowon_dsp::dab::msc::DEINTERLEAVE_DEPTH;
+use neowon_dsp::dab::{CIFS_PER_FRAME, Protection, SAMPLE_RATE};
 use neowon_sim::sdr::install_scene;
 use neowon_sim::{IqBuffer, RfScene};
 
-/// Ensemble identity the scene carries.
+mod chain;
+mod dls;
+#[cfg(test)]
+mod loop_tests;
+#[cfg(test)]
+mod tests;
+
+use chain::{ChosenChannel, profile_of};
+use dls::dls_payloads;
+
 pub const EID: u16 = 0x1046;
 pub const ENSEMBLE_LABEL: &str = "NEOWON SIM";
 /// `(SId, label, SubChId, ASCTy)`: the DLS carrier and two real audio
@@ -132,8 +141,7 @@ const TRANSMISSION_FRAMES: usize = 15;
 /// after the clause-12 interleaver's zero-history transient. Replaying the
 /// buffer is only a valid continuation of the transmitter's state when its
 /// first frame already has 16 logical frames of history behind it —
-/// otherwise every loop seam corrupts the first super frames after it
-/// (found by an AU-CRC failure once per loop in `sdr_dab_audio`).
+/// otherwise every loop seam corrupts the first super frames after it.
 const WARMUP_FRAMES: usize = DEINTERLEAVE_DEPTH / CIFS_PER_FRAME;
 /// Frame RMS, a typical SDR capture level.
 const FRAME_RMS: f32 = 0.2;
@@ -261,8 +269,7 @@ fn chosen_channels() -> Vec<ChosenChannel> {
     // Re-playing the buffer is a valid continuation of the transmitter only
     // when each stream's cycle divides it: otherwise the receiver's
     // de-interleaver mixes two payload phases across the wrap and the frames
-    // after the seam decode as garbage. This assertion is the check that the
-    // invariant holds for every source the scene carries.
+    // after the seam decode as garbage.
     let buffer_frames = CIFS_PER_FRAME * TRANSMISSION_FRAMES;
     for channel in &chosen {
         assert!(
@@ -283,404 +290,4 @@ fn sub(id: u8) -> SubChannelSpec {
         .iter()
         .find(|s| s.id == id)
         .expect("the chosen channel is in the layout")
-}
-
-/// The coding profile a FIC protection entry resolves to — the same
-/// resolution `MscEncoder` performs, refusing a plan the standard does not
-/// define rather than guessing.
-fn profile_of(protection: Protection, size_cu: u16) -> Profile {
-    match protection {
-        Protection::Eep { option, level } => {
-            Profile::Eep(EepProfile::for_size(size_cu, level, option).expect("EEP plan resolves"))
-        }
-        Protection::Uep { table_index } => {
-            let profile: UepProfile = UEP_PROFILES[table_index as usize];
-            assert_eq!(profile.size_cu, size_cu, "UEP size must be table 8's");
-            Profile::Uep(profile)
-        }
-    }
-}
-
-/// One sub-channel's transmitter chain for a chosen byte source: energy
-/// dispersal, the mother code, puncturing, zero padding, and the clause-12
-/// time interleaver (table 21).
-///
-/// This mirrors `neowon_dsp::dab::msc::TimeInterleaver` — which is
-/// `pub(crate)` and generates its payloads rather than accepting them — using
-/// the public clause-12 map. It exists because the DLS carrier and the two
-/// audio programmes must carry *chosen* bytes through the same FEC the
-/// receiver undoes. If the encoder ever gains a payload-injection API, this
-/// should call it instead.
-struct ChosenChannel {
-    /// Where the sub-channel sits in the CIF, in bits.
-    start_bit: usize,
-    profile: Profile,
-    cu_bits: usize,
-    /// Bytes one logical frame carries, from the profile.
-    chunk: usize,
-    /// The source cycles on whole logical frames, so the scene loop seam is
-    /// a stream boundary too.
-    source: Vec<u8>,
-    cursor: usize,
-    ring: Vec<u8>,
-    frame: u64,
-}
-
-impl ChosenChannel {
-    fn new(sub: &SubChannelSpec, source: Vec<u8>) -> Self {
-        let profile = profile_of(sub.protection, sub.size_cu);
-        let cu_bits = sub.size_cu as usize * CU_BITS;
-        assert!(
-            profile.punctured_bits() <= cu_bits,
-            "the punctured codeword must fit its allocation"
-        );
-        // UEP has padding up to the CU boundary (table 15); EEP fills it
-        // exactly. The ring write below zero-fills the padding, which is
-        // what the encoder mirror transmits and the receiver depunctures.
-        let chunk = profile.info_bits() / 8;
-        assert!(
-            !source.is_empty() && source.len().is_multiple_of(chunk),
-            "the source must cycle on a whole logical frame"
-        );
-        Self {
-            start_bit: sub.start_cu as usize * CU_BITS,
-            profile,
-            cu_bits,
-            chunk,
-            source,
-            cursor: 0,
-            ring: vec![0u8; cu_bits * DEINTERLEAVE_DEPTH],
-            frame: 0,
-        }
-    }
-
-    /// Logical frames one full cycle of the source spans.
-    fn period_frames(&self) -> usize {
-        self.source.len() / self.chunk
-    }
-
-    /// Encode the next logical frame's payload into the sub-channel's CU
-    /// field, in transmission order.
-    fn advance(&mut self) -> Vec<u8> {
-        let mut payload = Vec::with_capacity(self.chunk);
-        for _ in 0..self.chunk {
-            payload.push(self.source[self.cursor]);
-            self.cursor = (self.cursor + 1) % self.source.len();
-        }
-        let mut info: Vec<u8> = payload
-            .iter()
-            .flat_map(|byte| (0..8).rev().map(move |bit| (byte >> bit) & 1))
-            .collect();
-        energy_dispersal(&mut info);
-        let mother = conv_encode(&info);
-        let punctured = puncture_regions(&mother, &self.profile.regions());
-        assert!(punctured.len() <= self.cu_bits);
-        let r = self.frame;
-        let slot = (r as usize) % DEINTERLEAVE_DEPTH;
-        for i in 0..self.cu_bits {
-            self.ring[slot * self.cu_bits + i] = punctured.get(i).copied().unwrap_or(0);
-        }
-        let mut out = vec![0u8; self.cu_bits];
-        for i in 0..self.cu_bits {
-            let delay = DEINTERLEAVE_MAP[i % DEINTERLEAVE_DEPTH];
-            if r >= delay as u64 {
-                let source = ((r - delay as u64) as usize) % DEINTERLEAVE_DEPTH;
-                out[i] = self.ring[source * self.cu_bits + i];
-            }
-        }
-        self.frame += 1;
-        out
-    }
-}
-
-/// A logical frame's payload: the PAD region sits at the **end**, the way
-/// DAB MPEG-1 Layer II carries ancillary data (clause 7.4.0); the zero fill
-/// before it is never reached by the parser.
-fn frame_payload(region: &[u8], size: usize) -> Vec<u8> {
-    assert!(
-        region.len() <= size,
-        "the PAD region must fit a logical frame"
-    );
-    let mut payload = vec![0u8; size - region.len()];
-    payload.extend_from_slice(region);
-    payload
-}
-
-/// The DLS frame program: one PAD region per logical frame. The toggle
-/// alternates per message, as clause 7.4.5.2 defines (a change of message
-/// inverts it), so the parser can tell messages apart.
-fn dls_payloads(count: usize, size: usize) -> Vec<Vec<u8>> {
-    let mut payloads = Vec::with_capacity(count);
-    let mut toggle = false;
-    let mut text = 0usize;
-    while payloads.len() < count {
-        for region in message_frames(DLS_TEXTS[text], toggle) {
-            payloads.push(frame_payload(&region, size));
-        }
-        toggle = !toggle;
-        text = (text + 1) % DLS_TEXTS.len();
-    }
-    payloads.truncate(count);
-    payloads
-}
-
-/// One DLS message as a run of frames. Data groups are at most 16 characters
-/// (8 segments per label); the first group is split across two frames so a
-/// data group genuinely spans audio frames.
-fn message_frames(text: &str, toggle: bool) -> Vec<Vec<u8>> {
-    let segments = dls_segments(text);
-    let groups: Vec<Vec<u8>> = segments
-        .iter()
-        .enumerate()
-        .map(|(i, segment)| dls_group(toggle, i == 0, i == segments.len() - 1, i as u8, segment))
-        .collect();
-    let first = &groups[0];
-    let split = 12.min(first.len());
-    let mut regions = vec![region(&[(APP_DLS_START, &first[..split])])];
-    let rest = &first[split..];
-    if !rest.is_empty() {
-        let mut subfields = vec![(APP_DLS_CONT, rest)];
-        if let Some(second) = groups.get(1) {
-            subfields.push((APP_DLS_START, second));
-        }
-        regions.push(region(&subfields));
-    } else if let Some(second) = groups.get(1) {
-        regions.push(region(&[(APP_DLS_START, second)]));
-    }
-    for group in groups.iter().skip(2) {
-        regions.push(region(&[(APP_DLS_START, group)]));
-    }
-    regions
-}
-
-/// Split a message into at most 16-byte segments. The é is EBU Latin 0x82
-/// (charset 0, table 47); the parser's charset decoder returns it as UTF-8.
-fn dls_segments(text: &str) -> Vec<Vec<u8>> {
-    let bytes: Vec<u8> = text
-        .chars()
-        .map(|c| if c == 'é' { 0x82 } else { c as u8 })
-        .collect();
-    bytes.chunks(16).map(<[u8]>::to_vec).collect()
-}
-
-/// One DLS data group: the segment header, characters and annex-E CRC.
-fn dls_group(toggle: bool, first: bool, last: bool, number: u8, text: &[u8]) -> Vec<u8> {
-    assert!(!text.is_empty() && text.len() <= 16);
-    let mut group = vec![
-        (toggle as u8) << 7 | (first as u8) << 6 | (last as u8) << 5 | (text.len() as u8 - 1),
-        if first { 0x00 } else { (number & 0x07) << 4 },
-    ];
-    group.extend_from_slice(text);
-    let crc = crc16(&group);
-    group.push((crc >> 8) as u8);
-    group.push(crc as u8);
-    group
-}
-
-/// DLS application type 2: start of a data group (clause 7.4.3).
-const APP_DLS_START: u8 = 2;
-/// DLS application type 3: continuation of a data group.
-const APP_DLS_CONT: u8 = 3;
-/// X-PAD sub-field lengths by CI length code (clause 7.4.4.2).
-const XPAD_LENGTHS: [usize; 8] = [4, 6, 8, 12, 16, 24, 32, 48];
-
-/// One transmission-order PAD region: the X-PAD bytes reversed (clause
-/// 7.4.2), then the two F-PAD bytes — type 0, variable-size indicator, CI
-/// flag set.
-fn region(subfields: &[(u8, &[u8])]) -> Vec<u8> {
-    let mut xpad = Vec::new();
-    let mut fields = Vec::new();
-    for (app, data) in subfields {
-        let len = *XPAD_LENGTHS
-            .iter()
-            .find(|len| **len >= data.len())
-            .expect("sub-field fits a length code");
-        let code = XPAD_LENGTHS.iter().position(|l| *l == len).unwrap() as u8;
-        xpad.push((code << 5) | app);
-        fields.push((len, data.to_vec()));
-    }
-    xpad.push(0x00); // end marker (clause 7.4.4.2)
-    for (len, data) in fields {
-        xpad.extend_from_slice(&data);
-        xpad.resize(xpad.len() + (len - data.len()), 0x00);
-    }
-    let mut region: Vec<u8> = xpad.iter().rev().copied().collect();
-    region.push(0x20);
-    region.push(0x02);
-    region
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use neowon_codec::dabplus::{SuperframeDecoder, SuperframeHeader};
-    use neowon_codec::mp2::Mp2Decoder;
-    use neowon_dsp::dab::pad::PadParser;
-    use neowon_dsp::dab::receiver::DabReceiver;
-    use std::collections::BTreeMap;
-
-    /// The oracle claim, end to end: the composed IQ locks the receiver,
-    /// the table names the five services with both protections, the DLS
-    /// carrier's labels — the multi-frame one included — come back exactly
-    /// as composed, and the two audio programmes' streams reach the tier-3
-    /// transports as the committed fixtures (cyclically: the scene loops).
-    #[test]
-    fn the_ensemble_locks_and_its_programmes_round_trip() {
-        let samples = iq_samples();
-        let mut rx = DabReceiver::new();
-        for chunk in samples.chunks(4096) {
-            rx.push_iq(chunk);
-        }
-        let status = rx.status();
-        assert!(status.locked, "the FIC should lock: {status:?}");
-        assert_eq!(status.ensemble.eid, Some(EID));
-        assert_eq!(status.ensemble.label.as_deref(), Some(ENSEMBLE_LABEL));
-        assert_eq!(status.ensemble.services.len(), 5);
-        assert!(
-            status
-                .ensemble
-                .sub_channels
-                .values()
-                .any(|s| matches!(s.protection, Protection::Eep { .. }))
-        );
-        assert!(
-            status
-                .ensemble
-                .sub_channels
-                .values()
-                .any(|s| matches!(s.protection, Protection::Uep { .. }))
-        );
-
-        let mut parsers: BTreeMap<u8, PadParser> = BTreeMap::new();
-        let mut streams: BTreeMap<u8, Vec<u8>> = BTreeMap::new();
-        let mut seen: Vec<String> = Vec::new();
-        for frame in rx.take_msc_frames() {
-            streams
-                .entry(frame.sub_channel)
-                .or_default()
-                .extend_from_slice(&frame.bytes);
-            let parser = parsers.entry(frame.sub_channel).or_default();
-            if let Some(dls) = parser.push_pad_region(&frame.bytes) {
-                seen.push(dls);
-            }
-        }
-        for text in DLS_TEXTS {
-            assert!(
-                seen.iter().any(|s| s == text),
-                "{text:?} never decoded: {seen:?}"
-            );
-        }
-
-        // DAB+ (sub-channel 3): the app's own trial-sync finds the
-        // super-frame phase, and the AUs are the fixture's, cyclically.
-        let dabplus = streams
-            .get(&DABPLUS_SUB_CHANNEL)
-            .expect("the DAB+ stream was emitted");
-        let mut sync = crate::sdr::dab_audio::DabPlusSync::new(10).expect("index 10");
-        let header = SuperframeHeader {
-            rfa: false,
-            dac_rate: true,
-            sbr_flag: true,
-            aac_channel_mode: false,
-            ps_flag: true,
-            mpeg_surround_config: 0,
-        };
-        let mut recovered: Vec<Vec<u8>> = Vec::new();
-        for superframe in sync.push(dabplus) {
-            assert!(superframe.firecode_ok);
-            assert_eq!(superframe.rs_uncorrectable, 0);
-            assert_eq!(superframe.header, Some(header));
-            for au in &superframe.aus {
-                assert!(au.crc_ok, "AU CRC");
-                recovered.push(au.data.clone());
-            }
-        }
-        assert!(
-            recovered.len() >= 6,
-            "only {} AUs recovered",
-            recovered.len()
-        );
-        let fixture = fixture_access_units();
-        let start = fixture
-            .iter()
-            .position(|au| *au == recovered[0])
-            .expect("the first recovered AU is a fixture AU");
-        for (i, au) in recovered.iter().enumerate() {
-            assert_eq!(*au, fixture[(start + i) % fixture.len()], "AU {i}");
-        }
-
-        // MP2 (sub-channel 4): one 384-byte frame per logical frame, so the
-        // emitted stream decodes frame by frame with no resync.
-        let mp2 = streams
-            .get(&MP2_SUB_CHANNEL)
-            .expect("the MP2 stream was emitted");
-        let mut decoder = Mp2Decoder::new();
-        let frames = decoder.decode_all(mp2).expect("MP2 decodes");
-        assert!(frames.len() >= 24, "only {} MP2 frames", frames.len());
-        assert_eq!(decoder.skipped_frames(), 0, "MP2 needed no resync");
-        assert!(
-            frames
-                .iter()
-                .all(|f| f.channels == 2 && f.sample_rate == 48_000)
-        );
-    }
-
-    /// The fixture's AUs as the transport frames them, for the cyclic match.
-    fn fixture_access_units() -> Vec<Vec<u8>> {
-        let mut decoder = SuperframeDecoder::new(10).expect("index 10");
-        decoder
-            .push(DABPLUS_SF)
-            .into_iter()
-            .flat_map(|sf| sf.aus.into_iter().map(|au| au.data))
-            .collect()
-    }
-}
-
-#[cfg(test)]
-mod loop_tests {
-    use super::*;
-    use neowon_codec::mp2::Mp2Decoder;
-    use neowon_dsp::dab::receiver::DabReceiver;
-    use std::collections::BTreeMap;
-
-    /// The scene loops, so the chosen streams are replayed by the receiver:
-    /// every recovered DAB+ AU must be CRC-clean and every MP2 frame must
-    /// decode, across several loops. This is the regression for the clause-12
-    /// warm-up transient (`WARMUP_FRAMES`) — replaying the zero-history
-    /// frames corrupted one super frame per loop, which showed up as an
-    /// AU-CRC failure every 1.44 s in playback.
-    #[test]
-    fn the_looped_scene_recovers_only_clean_aus() {
-        let samples = iq_samples();
-        let mut rx = DabReceiver::new();
-        for _ in 0..3 {
-            for chunk in samples.chunks(4096) {
-                rx.push_iq(chunk);
-            }
-        }
-        let mut streams: BTreeMap<u8, Vec<u8>> = BTreeMap::new();
-        for frame in rx.take_msc_frames() {
-            streams
-                .entry(frame.sub_channel)
-                .or_default()
-                .extend_from_slice(&frame.bytes);
-        }
-        let mut sync = crate::sdr::dab_audio::DabPlusSync::new(10).expect("index 10");
-        let mut aus = 0usize;
-        for superframe in sync.push(streams.get(&DABPLUS_SUB_CHANNEL).expect("sub-channel 3")) {
-            assert!(superframe.firecode_ok);
-            for au in &superframe.aus {
-                aus += 1;
-                assert!(au.crc_ok, "AU {aus} of the looped stream failed its CRC");
-            }
-        }
-        assert!(aus >= 60, "only {aus} AUs over three loops");
-
-        let mut decoder = Mp2Decoder::new();
-        let frames = decoder
-            .decode_all(streams.get(&MP2_SUB_CHANNEL).expect("sub-channel 4"))
-            .expect("MP2 decodes");
-        assert_eq!(decoder.skipped_frames(), 0, "the looped MP2 needed resync");
-        assert!(frames.len() >= 100, "only {} MP2 frames", frames.len());
-    }
 }

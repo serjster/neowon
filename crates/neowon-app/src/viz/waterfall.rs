@@ -16,7 +16,6 @@ pub const WF_H: usize = 512;
 pub struct WaterfallState {
     pub on: bool,
     pub image: Handle<Image>,
-    /// Sequence number of the last spectrum folded in.
     last_seq: u64,
     /// Rows drawn so far (rendering scrolls only once the ring is full).
     pub rows: usize,
@@ -57,7 +56,6 @@ pub fn build_row(s: &Spectrum, db_lo: f32, db_hi: f32) -> Vec<u8> {
     row
 }
 
-/// Create the (initially black) waterfall texture.
 pub fn setup(mut wf: ResMut<WaterfallState>, mut images: ResMut<Assets<Image>>) {
     use bevy::asset::RenderAssetUsages;
     use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};

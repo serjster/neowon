@@ -5,35 +5,13 @@
 //! Opens a window, so `#[ignore]` by default:
 //!   cargo test -p neowon-app --test deep_view -- --ignored
 
-use std::io::{BufRead, BufReader, Write};
-use std::net::TcpStream;
+mod common;
+use common::*;
+
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
-struct Conn {
-    out: TcpStream,
-    lines: std::io::Lines<BufReader<TcpStream>>,
-}
-
 impl Conn {
-    fn request(&mut self, line: &str) -> String {
-        writeln!(self.out, "{line}").unwrap();
-        self.lines.next().expect("connection closed").unwrap()
-    }
-
-    fn ok(&mut self, line: &str) {
-        let r = self.request(line);
-        assert!(r.contains(r#""ok":true"#), "{line} -> {r}");
-    }
-
     /// Poll `get config` until `needle` appears.
     fn wait_config(&mut self, needle: &str) -> String {
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -77,38 +55,12 @@ fn load_ppm(path: &Path) -> (usize, usize, Vec<[u8; 3]>) {
 #[test]
 #[ignore = "opens a window"]
 fn timeline_spans_history_without_losing_sample_rate() {
-    let port = free_port();
-    let dir = std::env::temp_dir().join("neowon-deep");
-    std::fs::create_dir_all(&dir).unwrap();
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_neowon-app"))
-        .arg("--sim")
-        .env("NEOWON_CONTROL", port.to_string())
-        .env("NEOWON_WINDOW", "1520x820")
-        .env("NEOWON_UI_SCALE", "1.0")
-        .env_remove("NEOWON_SCRIPT")
-        .env("NEOWON_NO_STATE", "1")
-        .env("NEOWON_ORPHAN_EXIT", "15")
-        .spawn()
-        .expect("launch app");
-
-    let deadline = Instant::now() + Duration::from_secs(25);
-    let stream = loop {
-        match TcpStream::connect(("127.0.0.1", port)) {
-            Ok(s) => break s,
-            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(200)),
-            Err(e) => {
-                let _ = child.kill();
-                panic!("cannot connect: {e}");
-            }
-        }
-    };
-    stream
-        .set_read_timeout(Some(Duration::from_secs(15)))
-        .unwrap();
-    let mut conn = Conn {
-        out: stream.try_clone().unwrap(),
-        lines: BufReader::new(stream).lines(),
-    };
+    let dir = scratch("deep");
+    let (mut child, mut conn) = launch(
+        &["--sim"],
+        &[("NEOWON_WINDOW", "1520x820"), ("NEOWON_UI_SCALE", "1.0")],
+    );
+    conn.set_timeout(15);
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         for cmd in [
@@ -117,10 +69,10 @@ fn timeline_spans_history_without_losing_sample_rate() {
             "vdiv 0 0.5",
             "timebase 0.002",
             "persist off",
-            // Page follow (the default since this test was written) starts
-            // an empty page at each quantised boundary, so a window read
-            // just after `deep on` may hold one record; this test is
-            // about stitching, so it follows the newest record instead.
+            // Page follow starts an empty page at each quantised boundary,
+            // so a window read just after `deep on` may hold one record;
+            // this test is about stitching, so it follows the newest record
+            // instead.
             "deepfollow slide",
         ] {
             conn.ok(cmd);
@@ -175,7 +127,7 @@ fn timeline_spans_history_without_losing_sample_rate() {
             assert!(Instant::now() < deadline, "shot never written");
             std::thread::sleep(Duration::from_millis(100));
         }
-        std::thread::sleep(Duration::from_millis(100));
+        // Written atomically (`neowon_core::atomic_file`): present is whole.
         let (w, h, px) = load_ppm(&shot);
         let red_cols = (0..w)
             .filter(|&x| {

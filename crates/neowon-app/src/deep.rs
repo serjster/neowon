@@ -31,12 +31,10 @@ use crate::record::Recorder;
 /// gap mask fits with room to spare.
 pub const COLUMNS: usize = 1000;
 
-/// Window durations the zoom steps through, seconds — a 1-2-5 ladder, the
-/// same progression a time base uses.
-/// Window durations the zoom steps through, seconds. It reaches down into
-/// microseconds so that engaging the timeline at a fast time base does not
-/// jump straight to a window thousands of times longer than the record,
-/// which is what made the display almost entirely gap.
+/// Window durations the zoom steps through, seconds — a 1-2-5 ladder. It
+/// reaches down into microseconds so that engaging the timeline at a fast
+/// time base does not jump straight to a window thousands of times longer
+/// than the record, which would leave the display almost entirely gap.
 pub const SPAN_LADDER: [f64; 25] = [
     1e-5, 2e-5, 5e-5, 1e-4, 2e-4, 5e-4, 1e-3, 2e-3, 5e-3, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0,
     2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0,
@@ -75,7 +73,6 @@ pub struct DeepView {
     pub anchor: Option<f64>,
     /// Fraction of the last built window that was actually acquired.
     pub coverage: f64,
-    /// Discontinuities in the last built window.
     /// Discontinuities in the window — breaks in the signal, not blank
     /// columns. Widening the window shows more dead time but gives each
     /// interval fewer columns, so a column count moves the wrong way.
@@ -86,7 +83,6 @@ pub struct DeepView {
     /// instead of giving dead time the screen width its duration deserves.
     /// The x axis is then not time, so time readouts are suppressed.
     pub collapse: bool,
-    /// How the window tracks live acquisition.
     pub follow: Follow,
     rev: u64,
 }
@@ -214,9 +210,6 @@ pub fn build(
     let live = newest.min(window.1);
     let live_col = (((live - window.0) / col_dt).ceil().max(0.0) as usize).min(COLUMNS);
 
-    // Only the records overlapping the window; the ring is time-ordered, so
-    // this could binary-search, but a linear scan over a few thousand Arc
-    // headers is not what costs here.
     let mut used = 0usize;
     let mut pairs: [Vec<f32>; CHANNELS] = Default::default();
     let mut enabled = [false; CHANNELS];

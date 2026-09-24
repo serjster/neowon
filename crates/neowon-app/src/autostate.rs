@@ -1,4 +1,4 @@
-//! Automatic state persistence (Phase 10.12, D13): the app saves itself to
+//! Automatic state persistence: the app saves itself to
 //! `~/.neowon/state.nws` and comes back the way it was left.
 //!
 //! The file is an ordinary session script — the scope session (`session`)
@@ -17,8 +17,7 @@
 //! instrument switch resets them), and run/stop (an instrument that comes
 //! up stopped looks broken). The workspace mode (SCOPE | SDR) **is** saved:
 //! the launch flags still pick the family (simulators vs hardware), and the
-//! saved mode picks which of the family's two instruments comes up
-//! (operator, 2026-09-19).
+//! saved mode picks which of the family's two instruments comes up.
 
 use std::path::{Path, PathBuf};
 
@@ -144,7 +143,6 @@ type UiParts<'w> = (
     Res<'w, crate::refmap::RefMap>,
 );
 
-/// Everything the state file records.
 #[derive(SystemParam)]
 pub struct Snapshot<'w, 's> {
     link: ResMut<'w, Link>,
@@ -273,9 +271,10 @@ pub fn sdr_actions(sdr: &SdrState) -> Vec<SdrAction> {
         SdrAction::Demod(sdr.demod),
         // Saved only when it is on: a restored session should not start
         // decoding an ensemble nobody asked for.
-        SdrAction::Dab(match sdr.dab {
-            Some(_) => DabVerb::On,
-            None => DabVerb::Off,
+        SdrAction::Dab(if sdr.dab.on() {
+            DabVerb::On
+        } else {
+            DabVerb::Off
         }),
         SdrAction::Volume(sdr.volume),
         SdrAction::Mute(sdr.mute),
@@ -301,11 +300,8 @@ pub fn tick(
         st.geometry = Some(g);
     }
     if !st.restored {
-        let connected = if snap.sdr.active {
-            snap.sdr.caps.is_some()
-        } else {
-            snap.link.caps.is_some()
-        };
+        // One `Option<Capabilities>` answers for either instrument.
+        let connected = snap.link.caps.is_some();
         if connected || now > RESTORE_TIMEOUT {
             restore(&mut st, &mut script, &mut snap);
         }
@@ -366,13 +362,13 @@ fn restore(st: &mut AutoState, script: &mut Script, snap: &mut Snapshot) {
     }
 }
 
-/// Saved values the attached instrument cannot take (D13). The SDR's own
+/// Saved values the attached instrument cannot take. The SDR's own
 /// actions refuse out-of-range frequencies with a status line already;
 /// the scope's time base ladder is checked here.
 fn invalid(a: &Action, snap: &Snapshot) -> Option<String> {
     match a {
         Action::Rate(r) => {
-            let caps = snap.link.caps.as_ref()?;
+            let caps = snap.link.scope_caps()?;
             (!caps.sample_rates.iter().any(|x| (x - r).abs() <= r * 1e-9))
                 .then(|| format!("sample rate {r} S/s (not offered by {})", caps.name))
         }
@@ -393,9 +389,7 @@ fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let tmp = path.with_extension("nws.tmp");
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, path)
+    neowon_core::atomic_file::write(path, text)
 }
 
 #[cfg(test)]

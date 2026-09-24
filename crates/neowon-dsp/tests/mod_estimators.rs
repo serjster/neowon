@@ -1,9 +1,13 @@
-//! Phase 10.3 golden rows for the modulation lab. Signals are RRC-shaped
+//! Golden rows for the modulation lab. Signals are RRC-shaped
 //! (roll-off 0.35) at 1 MS/s, 100 ksym/s (10 samples per symbol), from the
-//! D8 generator; SNR is symbol Es/N0 at the matched-filter output. Each
-//! row prints a JSON readout.
+//! sim IQ generator; SNR is symbol Es/N0 at the matched-filter output. Each
+//! row files a JSON readout at
+//! `target/tmp/readouts/modest-<row>.json` (the path is printed
+//! as `readout: …`) as well as printing it; see `tests/common/mod.rs`.
 //!
 //! `cargo test -p neowon-dsp --test mod_estimators -- --nocapture`
+
+mod common;
 
 use neowon_core::Modulation;
 use neowon_dsp::modlab::{cumulants, recover, symbol_rate};
@@ -66,15 +70,19 @@ fn qam16_evm_at_30db_is_the_closed_form() {
     let r = recover(&s.samples(seed, 0, n), RATE, RS, Modulation::Qam16, BETA).unwrap();
     let closed = 100.0 * 10f64.powf(-30.0 / 20.0);
     let bits = bit_match(Modulation::Qam16, &r.labels, seed);
-    println!(
+    let document = format!(
         r#"{{"row":"16qam_evm","evm_pct":{:.3},"closed_form_pct":{closed:.3},"mer_db":{:.2},"carrier_offset_hz":{:.1},"symbols":{},"label_match":{bits:.5}}}"#,
         r.evm_rms_pct,
         r.mer_db,
         r.carrier_offset_hz,
         r.symbols.len()
     );
+    println!("{document}");
+    common::file_readout("modest-16qam-evm", &document);
+    // The measured agreement is 0.006 pp (3.156 vs 3.162); the bound is
+    // tight enough to catch an estimator regression, not a sim change.
     assert!(
-        (r.evm_rms_pct - closed).abs() <= 0.5,
+        (r.evm_rms_pct - closed).abs() <= 0.05,
         "EVM {} vs {closed}",
         r.evm_rms_pct
     );
@@ -87,11 +95,15 @@ fn qam16_evm_at_30db_is_the_closed_form() {
 }
 
 #[test]
-fn qpsk_symbol_rate_within_one_percent() {
+fn qpsk_symbol_rate_within_a_hundredth_percent() {
     let s = scene(Modulation::Qpsk, Some(20.0), 0.0);
     let est = symbol_rate(&s.samples(7, 0, 65536), RATE, 10e3, 450e3).unwrap();
-    println!(r#"{{"row":"qpsk_symbol_rate","estimate_hz":{est:.1},"true_hz":{RS}}}"#);
-    assert!((est / RS - 1.0).abs() < 0.01, "{est}");
+    let document = format!(r#"{{"row":"qpsk_symbol_rate","estimate_hz":{est:.1},"true_hz":{RS}}}"#);
+    println!("{document}");
+    common::file_readout("modest-qpsk-symbol-rate", &document);
+    // Measured +0.0019% (100 001.9 Hz); 0.01% still leaves the estimate room
+    // for its line-fit grid.
+    assert!((est / RS - 1.0).abs() < 0.0001, "{est}");
 }
 
 #[test]
@@ -106,7 +118,7 @@ fn bpsk_qpsk_c42_match_the_published_values() {
             .flat_map(|z| [z.re as f32, z.im as f32])
             .collect();
         let c = cumulants(&syms).unwrap();
-        println!(
+        let document = format!(
             r#"{{"row":"c42","modulation":"{}","c42":{:.4},"published":{published},"c40_abs":{:.4},"c63":{:.3},"n":{}}}"#,
             m.label(),
             c.c42,
@@ -114,6 +126,8 @@ fn bpsk_qpsk_c42_match_the_published_values() {
             c.c63,
             syms.len() / 2
         );
+        println!("{document}");
+        common::file_readout(&format!("modest-c42-{}", m.label()), &document);
         assert!((c.c42 - published).abs() <= 0.02, "{m:?}: C42 {}", c.c42);
     }
 }

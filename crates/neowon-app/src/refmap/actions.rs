@@ -18,8 +18,8 @@
 //! stations onair <on|off>           # only scheduled stations on air now
 //! stations scope <view|near|all>    # the window's range filter
 //! stations sort <freq|distance>
-//! stations tune <source:id>         # tune + the fitting demodulator (D21)
-//! stations catalog <source:id>      # copy one row into the catalog (D20)
+//! stations tune <source:id>         # tune + the fitting demodulator
+//! stations catalog <source:id>      # copy one row into the catalog
 //! ```
 
 use bevy::log::error;
@@ -126,8 +126,6 @@ impl std::fmt::Display for RefMapAction {
     }
 }
 
-/// Parse after the verb (`bandplan`, `bandmap`, `location`, `refdb`,
-/// `stations`).
 pub fn parse<'a>(
     verb: &str,
     next: &mut dyn FnMut() -> Result<&'a str, String>,
@@ -235,7 +233,6 @@ pub fn parse<'a>(
     }
 }
 
-/// Run a verb; a refusal reaches the status line.
 pub fn run(
     a: RefMapAction,
     rm: &mut RefMap,
@@ -284,7 +281,7 @@ fn apply(
                     d(a).total_cmp(&d(b))
                 })
                 .ok_or_else(|| format!("no band {name:?} in {}", rm.stem()))?;
-            goto(sdr, band.lo_hz, band.hi_hz)?;
+            goto(sdr, link.sdr_caps(), band.lo_hz, band.hi_hz)?;
         }
         RefMapAction::Location(set) => match set {
             LocationSet::Coords(lat, lon) => {
@@ -375,7 +372,7 @@ fn apply(
     Ok(())
 }
 
-/// D20: a copy, not a link. `ProvKind::Db` is the catalog's "came from a
+/// A copy, not a link. `ProvKind::Db` is the catalog's "came from a
 /// database" provenance; `input_ref` names the refdb row.
 fn catalog(
     rm: &mut RefMap,
@@ -426,9 +423,14 @@ fn catalog(
 
 /// Tune to the middle of `lo..hi` and fit the span to it when it fits the
 /// IQ band (a wider band shows the full span around its centre).
-pub fn goto(sdr: &mut SdrState, lo: f64, hi: f64) -> Result<(), String> {
+pub fn goto(
+    sdr: &mut SdrState,
+    caps: Option<&neowon_backend::SdrCaps>,
+    lo: f64,
+    hi: f64,
+) -> Result<(), String> {
     let centre = ((lo + hi) / 2.0 / 1e3).round() * 1e3;
-    if let Some(c) = &sdr.caps
+    if let Some(c) = caps
         && !(c.freq_range_hz.0..=c.freq_range_hz.1).contains(&centre)
     {
         return Err(format!(
@@ -463,8 +465,38 @@ mod tests {
         parse(verb, &mut || w.next().ok_or_else(|| "eol".to_string()))
     }
 
+    /// One number per variant. An exhaustive match, so a new variant does
+    /// not compile until it is placed here, and the count below then fails
+    /// until it has a round-trip sample.
+    fn variant(a: &RefMapAction) -> usize {
+        match a {
+            RefMapAction::Plan(_) => 0,
+            RefMapAction::Strip(_) => 1,
+            RefMapAction::Mini(_) => 2,
+            RefMapAction::Window(_) => 3,
+            RefMapAction::Goto(_) => 4,
+            RefMapAction::Location(_) => 5,
+            RefMapAction::Fetch(..) => 6,
+            RefMapAction::Import(..) => 7,
+            RefMapAction::Clear(_) => 8,
+            RefMapAction::StationsWindow(_) => 9,
+            RefMapAction::Overlay(_) => 10,
+            RefMapAction::Radius(_) => 11,
+            RefMapAction::Find(_) => 12,
+            RefMapAction::FilterSource(_) => 13,
+            RefMapAction::FilterService(_) => 14,
+            RefMapAction::FilterModulation(_) => 15,
+            RefMapAction::OnAir(_) => 16,
+            RefMapAction::Scope(_) => 17,
+            RefMapAction::Sort(_) => 18,
+            RefMapAction::TuneStation(_) => 19,
+            RefMapAction::CatalogStation(_) => 20,
+        }
+    }
+
     #[test]
     fn every_action_round_trips() {
+        let mut seen = std::collections::BTreeSet::new();
         for a in [
             RefMapAction::Plan("usa".into()),
             RefMapAction::Strip(false),
@@ -497,8 +529,10 @@ mod tests {
             RefMapAction::TuneStation("wikidata:Q1".into()),
             RefMapAction::CatalogStation("eibi:abc".into()),
         ] {
+            seen.insert(variant(&a));
             assert_eq!(p(&a.to_string()).unwrap(), a, "{a}");
         }
+        assert_eq!(seen.len(), 21, "a variant has no round-trip sample");
         assert!(p("bandmap sideways on").is_err());
         assert!(p("refdb fetch nosuch").is_err());
         assert!(p("stations filter colour red").is_err());
@@ -510,11 +544,11 @@ mod tests {
         let mut sdr = SdrState::default();
         sdr.config.centre_hz = 100e6;
         sdr.config.sample_rate = 2.048e6;
-        goto(&mut sdr, 144e6, 146e6).unwrap();
+        goto(&mut sdr, None, 144e6, 146e6).unwrap();
         assert_eq!(sdr.tuned_hz, 145e6);
         assert_eq!(sdr.config.centre_hz, 145e6);
         assert_eq!(sdr.span_hz, 0.0); // 2.2 MHz does not fit 2.048 MS/s
-        goto(&mut sdr, 144.8e6, 145.2e6).unwrap();
+        goto(&mut sdr, None, 144.8e6, 145.2e6).unwrap();
         assert!((sdr.span_hz - 440e3).abs() < 1e-6);
         assert_eq!(sdr.view_centre(), 145e6);
     }

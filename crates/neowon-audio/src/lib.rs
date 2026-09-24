@@ -45,13 +45,39 @@ struct Shared {
     /// Interleaved by channel: `[ch0, ch1, ch0, ch1, ...]`.
     samples: Vec<f32>,
     channels: usize,
-    /// Frames dropped because the consumer fell behind.
+    /// Callback events in which the consumer was found to be behind.
     overruns: u64,
+    /// Sample frames (one per channel) thrown away by those overruns, not
+    /// yet accounted for by [`AudioBackend::drain`]. Counting the *events*
+    /// is not enough: the capture clock and the frames it stamps have to
+    /// move over the hole, or a streaming source that claims to know
+    /// exactly when each sample was taken quietly stops knowing.
+    dropped_frames: u64,
 }
 
 /// How much audio to keep buffered before the consumer is declared behind:
 /// a couple of seconds is plenty and bounds memory.
 const MAX_BUFFERED: usize = 48_000 * 2 * 2;
+
+impl Shared {
+    /// Take one callback's worth of interleaved samples, dropping the oldest
+    /// if the consumer is too far behind. Never blocks the audio thread —
+    /// the same bargain the USB path makes — and what it throws away is
+    /// counted in whole sample frames, so `drain` can move the capture clock
+    /// over the hole and the next `CaptureFrame` can report it.
+    fn push(&mut self, data: &[f32]) {
+        if self.samples.len() > MAX_BUFFERED {
+            let stride = self.channels.max(1);
+            let want = self.samples.len() - MAX_BUFFERED / 2;
+            // Whole sample frames only, so the channels stay in step.
+            let drop = want - want % stride;
+            self.samples.drain(..drop);
+            self.overruns += 1;
+            self.dropped_frames += (drop / stride) as u64;
+        }
+        self.samples.extend_from_slice(data);
+    }
+}
 
 pub struct AudioBackend {
     caps: Capabilities,
@@ -68,6 +94,8 @@ pub struct AudioBackend {
     seq: u64,
     /// Samples not yet emitted, de-interleaved per channel.
     pending: Vec<Vec<f32>>,
+    /// Sample frames lost and not yet reported on a delivered frame.
+    dropped_pending: u64,
 }
 
 // cpal's Stream is not Send on some hosts; the backend is owned by the
@@ -76,7 +104,6 @@ pub struct AudioBackend {
 unsafe impl Send for AudioBackend {}
 
 impl AudioBackend {
-    /// Open the default input device.
     pub fn open() -> Result<Self, String> {
         let host = cpal::default_host();
         let device = host
@@ -104,14 +131,7 @@ impl AudioBackend {
                 &config,
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
                     let Ok(mut s) = sink.lock() else { return };
-                    if s.samples.len() > MAX_BUFFERED {
-                        // Never block the audio thread: drop the oldest and
-                        // count it, the same bargain the USB path makes.
-                        let drop = s.samples.len() - MAX_BUFFERED / 2;
-                        s.samples.drain(..drop);
-                        s.overruns += 1;
-                    }
-                    s.samples.extend_from_slice(data);
+                    s.push(data);
                 },
                 |e| tracing::warn!("audio input error: {e}"),
                 None,
@@ -143,11 +163,12 @@ impl AudioBackend {
             consumed: 0,
             seq: 0,
             pending: vec![Vec::new(); 2],
+            dropped_pending: 0,
         })
     }
 
     /// Move everything the callback has collected into the per-channel
-    /// pending buffers.
+    /// pending buffers, accounting for whatever it had to throw away.
     fn drain(&mut self) {
         let Ok(mut s) = self.shared.lock() else {
             return;
@@ -159,6 +180,17 @@ impl AudioBackend {
             }
         }
         s.samples.clear();
+        let lost = std::mem::take(&mut s.dropped_frames);
+        drop(s);
+        // Samples the callback threw away are time that passed: the clock
+        // moves over them and the next frame reports the hole.
+        self.lose(lost);
+    }
+
+    /// Account for `n` sample frames that will never be delivered.
+    fn lose(&mut self, n: u64) {
+        self.consumed += n;
+        self.dropped_pending += n;
     }
 
     /// Volts represented by one ADC count, for the configured vertical
@@ -223,17 +255,20 @@ impl AudioBackend {
             }
         }
         self.consumed += drop_to as u64;
-        CaptureFrame {
-            seq: self.seq,
-            t_capture: Some(t_capture),
-            sample_rate: self.rate,
-            acq: AcqMode::Sample,
-            layout: SampleLayout::Real,
+        CaptureFrame::new(
+            self.seq,
+            Some(t_capture),
+            self.rate,
+            AcqMode::Sample,
+            Acquisition::Stream { chunk: CHUNK },
+            SampleLayout::Real,
             channels,
-        }
+        )
+        .expect("a real stream chunk is a valid frame")
+        .with_dropped_before(std::mem::take(&mut self.dropped_pending))
     }
 
-    /// Frames dropped because the host could not keep up.
+    /// Callback events in which the host could not keep up.
     pub fn overruns(&self) -> u64 {
         self.shared.lock().map(|s| s.overruns).unwrap_or(0)
     }
@@ -284,7 +319,10 @@ impl Backend for AudioBackend {
                                 let d = buf.len() - CHUNK * 2;
                                 buf.drain(..d);
                             }
-                            self.consumed += (available - CHUNK * 2) as u64;
+                            // Never triggered and the buffer had to be cut
+                            // back: those samples are lost, not dead time,
+                            // so they are reported like any other hole.
+                            self.lose((available - CHUNK * 2) as u64);
                         }
                         return Ok(None);
                     }
@@ -313,5 +351,29 @@ mod tests {
         let r = Acquisition::Record { samples: 5000 };
         assert!(!r.is_stream());
         assert_eq!(r.frame_len(), 5000);
+    }
+
+    #[test]
+    fn an_overrun_counts_the_sample_frames_it_threw_away() {
+        // The device is not needed: the drop policy is `Shared::push`.
+        let mut s = Shared {
+            channels: 2,
+            ..Default::default()
+        };
+        // Fill past the ceiling in one go, then push again to trip it.
+        s.push(&vec![0.0; MAX_BUFFERED + 4]);
+        assert_eq!((s.overruns, s.dropped_frames), (0, 0), "not yet over");
+        s.push(&[1.0, 2.0]);
+        assert_eq!(s.overruns, 1);
+        // Whole sample frames only, and the count is frames, not scalars.
+        let dropped_scalars = (MAX_BUFFERED + 4) - MAX_BUFFERED / 2;
+        assert_eq!(s.dropped_frames, (dropped_scalars / 2) as u64);
+        assert_eq!(s.samples.len() % 2, 0, "channels stay in step");
+        // The next overrun adds to the count rather than replacing it.
+        let before = s.dropped_frames;
+        s.push(&vec![0.0; MAX_BUFFERED]);
+        s.push(&[3.0, 4.0]);
+        assert_eq!(s.overruns, 2);
+        assert!(s.dropped_frames > before);
     }
 }

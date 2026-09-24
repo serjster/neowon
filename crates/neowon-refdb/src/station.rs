@@ -1,11 +1,11 @@
-//! A known station as the reference sources describe it (D17): one row per
+//! A known station as the reference sources describe it: one row per
 //! frequency, with the provenance that lets the UI say where it came from.
-//! Nothing here knows about the operator's catalog (D20).
+//! Nothing here knows about the operator's catalog.
 
 use serde::{Deserialize, Serialize};
 
 /// The modulation a station transmits, in the vocabulary the SDR's
-/// demodulator understands (D21). Unknown is honest: most sources do not
+/// demodulator understands. Unknown is honest: most sources do not
 /// say, and guessing would tune the radio wrongly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -25,7 +25,6 @@ pub enum Modulation {
 }
 
 impl Modulation {
-    /// The short label the station rows and overlays carry.
     pub fn label(self) -> &'static str {
         match self {
             Modulation::Am => "AM",
@@ -43,7 +42,7 @@ impl Modulation {
         }
     }
 
-    /// The SDR demodulator that fits, as the script verb spells it (D21);
+    /// The SDR demodulator that fits, as the script verb spells it;
     /// `None` leaves the demod unchanged.
     pub fn demod(self) -> Option<&'static str> {
         match self {
@@ -267,7 +266,6 @@ pub struct Station {
 }
 
 impl Station {
-    /// A row with only the mandatory fields; the importers fill the rest.
     pub fn new(source: Source, id: String, name: String, freq_hz: f64) -> Self {
         Self {
             source,

@@ -1,7 +1,7 @@
-//! MCP tools for the RF reference (10.14.7): known stations from the
+//! MCP tools for the RF reference: known stations from the
 //! reference store, their sources, and the operator's location. `location
 //! ip` is deliberately **not** exposed: the consent belongs to the
-//! operator at the screen (D18). Every call goes through the script
+//! operator at the screen. Every call goes through the script
 //! grammar, so the MCP surface mirrors the verbs exactly.
 
 use rmcp::{ErrorData, handler::server::wrapper::Parameters, tool, tool_router};

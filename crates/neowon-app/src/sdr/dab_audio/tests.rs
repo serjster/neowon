@@ -1,13 +1,12 @@
 //! Worker-level tests for the playback stream: what reaches `error`, and
-//! what must not. Split from `mod.rs` with the file-budget seam; they drive
-//! the real worker thread, so they see the transport's own gate decisions.
+//! what must not. They drive the real worker thread, so they see the
+//! transport's own gate decisions.
 
 use super::*;
 
 /// A ragged start — several super frames of junk before the stream proper —
-/// is not a verdict on the stream. On air the search's own windows were
-/// counted as failures, so a receiver still acquiring tripped the gate at
-/// 12 windows and playback never recovered (the reported failure).
+/// is not a verdict on the stream: a receiver still acquiring must not trip
+/// the gate and leave playback unable to recover.
 #[test]
 fn worker_survives_a_ragged_start() {
     let fixture: &[u8] = include_bytes!("../../../tests/fixtures/dabplus_heaacv2.sf");
@@ -28,7 +27,12 @@ fn worker_survives_a_ragged_start() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         let status = audio.status();
-        if status.state != AudioState::Starting {
+        // `decoded` is the verdict here, not `state`: the fixture is three
+        // super frames, less than the start-up cushion the feed holds back
+        // (`decode::PRIME_SECONDS`), so a stream this short decodes without
+        // ever reaching `playing`. What must not happen is the ragged start
+        // being read as "not DAB+".
+        if status.decoded > 0 || status.state == AudioState::Error {
             assert!(
                 !status.reason.contains("no valid DAB+ super frame"),
                 "a ragged start was read as not DAB+: {:?}",
@@ -38,7 +42,7 @@ fn worker_survives_a_ragged_start() {
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "worker never left `starting`: {status:?}"
+            "worker decoded nothing from a ragged start: {status:?}"
         );
         std::thread::sleep(std::time::Duration::from_millis(5));
     }

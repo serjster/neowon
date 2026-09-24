@@ -2,7 +2,7 @@
 //! a file, and the one-shot IP lookup. One job at a time; each runs on its
 //! own thread and reports back through a channel the `tick` system drains.
 //! Network only ever happens here, and only after an explicit operator
-//! action (D18/D19) — never at startup, never in tests.
+//! action — never at startup, never in tests.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -12,7 +12,6 @@ use neowon_refdb::{Error, Location, Meta, Report, Source, Station, Store};
 
 use super::RefMap;
 
-/// A running background job: what it is, and its one-shot result.
 pub struct Job {
     pub what: String,
     pub rx: crossbeam_channel::Receiver<Result<JobDone, Error>>,
@@ -53,7 +52,7 @@ pub fn start_fetch(rm: &mut RefMap, src: Source, radius: Option<f64>) -> Result<
     let (tx, rx) = crossbeam_channel::bounded(1);
     std::thread::spawn(move || {
         let result = fetch(src, &target, &base).and_then(|(stations, report)| {
-            save(&store, src, &stations, &origin)?;
+            save(&store, src, &stations, &report, &origin)?;
             Ok(JobDone::Fetched(src, report))
         });
         let _ = tx.send(result);
@@ -81,10 +80,7 @@ pub fn start_import(rm: &mut RefMap, src: Source, path: &str) -> Result<(), Stri
     let label = path.clone();
     let (tx, rx) = crossbeam_channel::bounded(1);
     std::thread::spawn(move || {
-        let result = import_file(src, &path).and_then(|(stations, report)| {
-            save(&store, src, &stations, &path)?;
-            Ok(JobDone::Imported(src, report))
-        });
+        let result = import_into(&store, src, &path).map(|report| JobDone::Imported(src, report));
         let _ = tx.send(result);
     });
     rm.status = format!("importing {} from {label}…", src.label());
@@ -95,8 +91,8 @@ pub fn start_import(rm: &mut RefMap, src: Source, path: &str) -> Result<(), Stri
     Ok(())
 }
 
-/// `location ip` — the operator's explicit consent is the call itself
-/// (D18); the UI shows a dialog first, the script line *is* the consent.
+/// `location ip` — the operator's explicit consent is the call itself: the
+/// UI shows a dialog first, the script line *is* the consent.
 pub fn start_locate(rm: &mut RefMap) -> Result<(), String> {
     if rm.job.is_some() {
         return Err("a reference job is already running".into());
@@ -136,7 +132,27 @@ fn import_file(src: Source, path: &str) -> Result<(Vec<Station>, Report), Error>
     }
 }
 
-fn save(store: &Store, src: Source, stations: &[Station], origin: &str) -> Result<(), Error> {
+fn import_into(store: &Store, src: Source, path: &str) -> Result<Report, Error> {
+    let (stations, report) = import_file(src, path)?;
+    save(store, src, &stations, &report, path)?;
+    Ok(report)
+}
+
+fn save(
+    store: &Store,
+    src: Source,
+    stations: &[Station],
+    report: &Report,
+    origin: &str,
+) -> Result<(), Error> {
+    if report.unusable() {
+        return Err(Error::Invalid(format!(
+            "{} refused, snapshot kept: {origin} is not a {} document ({})",
+            src.label(),
+            src.label(),
+            report.summary()
+        )));
+    }
     let meta = Meta::new(
         src,
         stations.len(),
@@ -167,7 +183,6 @@ fn store_hint() -> String {
     }
 }
 
-/// Today in UTC, for the EiBi season file.
 pub fn today_utc() -> (i32, u8, u8) {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -198,6 +213,103 @@ mod tests {
         assert_eq!(civil_from_days(0), (1970, 1, 1));
         assert_eq!(civil_from_days(19_782), (2024, 2, 29)); // leap day
         assert_eq!(civil_from_days(20_000), (2024, 10, 4));
+    }
+
+    /// A document that is not the source's format must not replace the
+    /// snapshot it was meant to update (the refdb side of the import
+    /// invariant): every row rejected and none kept is a refusal, not an
+    /// empty source.
+    #[test]
+    fn a_document_of_the_wrong_kind_is_refused_and_the_snapshot_kept() {
+        let dir =
+            std::env::temp_dir().join(format!("neowon-app-refdb-kind-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::open(&dir).unwrap();
+        let fixtures =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../neowon-refdb/tests/fixtures");
+        let good = fixtures.join("wikidata.json");
+        let report = import_into(&store, Source::Wikidata, good.to_str().unwrap()).unwrap();
+        assert!(report.kept > 0);
+        let before = store.load_all().unwrap().0.len();
+        let mut failures = Vec::new();
+        // An EiBi CSV and an FCC listing offered as Wikidata; an FCC
+        // listing offered as EiBi (whose snapshot is empty: nothing to lose,
+        // but the metadata must not claim a fetch that produced nothing).
+        for (src, file) in [
+            (Source::Wikidata, "eibi.csv"),
+            (Source::Wikidata, "fcc.txt"),
+            (Source::Eibi, "wikidata.json"),
+        ] {
+            let path = fixtures.join(file);
+            match import_into(&store, src, path.to_str().unwrap()) {
+                Ok(r) => failures.push(format!(
+                    "{file} as {}: accepted ({}), store now {} stations",
+                    src.label(),
+                    r.summary(),
+                    store.load().index.len()
+                )),
+                Err(e) if !e.to_string().contains(src.label()) => failures.push(format!(
+                    "{file} as {}: refused, source not named: {e}",
+                    src.label()
+                )),
+                Err(_) => {}
+            }
+        }
+        let (index, metas) = store.load_all().unwrap();
+        if index.len() != before {
+            failures.push(format!(
+                "the Wikidata snapshot went from {before} to {} stations",
+                index.len()
+            ));
+        }
+        if metas.iter().any(|m| m.source == Source::Eibi) {
+            failures.push("EiBi metadata claims a fetch that produced nothing".into());
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    // The app's view of a damaged reference store: one bad source is
+    // reported by name and cannot take the others down with it.
+
+    fn store_scratch(name: &str) -> std::path::PathBuf {
+        let d =
+            std::env::temp_dir().join(format!("neowon-app-refdb-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        d
+    }
+
+    fn stations(src: Source, n: usize) -> Vec<Station> {
+        (0..n)
+            .map(|i| Station::new(src, format!("s{i}"), format!("S{i}"), 90e6 + i as f64 * 1e5))
+            .collect()
+    }
+
+    #[test]
+    fn a_corrupt_source_is_named_and_the_others_still_load() {
+        let dir = store_scratch("isolate");
+        let store = Store::open(&dir).unwrap();
+        for (src, n) in [(Source::Wikidata, 3), (Source::Eibi, 2)] {
+            let meta = Meta::new(src, n, "2026-09-23T00:00:00Z".into(), "fixture".into());
+            store.replace(src, &stations(src, n), &meta).unwrap();
+        }
+        std::fs::write(dir.join("fcc.json"), b"[{\"source\":\"fcc\"").unwrap();
+
+        let rm = RefMap::load_from(std::path::Path::new(""), Some(dir.clone()), None);
+        let loaded: Vec<Source> = rm.metas.iter().map(|m| m.source).collect();
+        assert_eq!(
+            rm.index.len(),
+            5,
+            "the good sources did not load (status {:?})",
+            rm.status
+        );
+        assert_eq!(loaded, [Source::Wikidata, Source::Eibi]);
+        assert!(
+            rm.status.contains("FCC"),
+            "the bad source is not named: {:?}",
+            rm.status
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

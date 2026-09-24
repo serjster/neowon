@@ -9,18 +9,15 @@ pub const USB_PID: u16 = 0x1234;
 pub const FRAME_SIZE: usize = 5211;
 /// ADC payload per frame: 50 pre + 5000 usable + 50 post samples.
 pub const ADC_SIZE: usize = 5100;
-/// Usable samples per frame.
 pub const SAMPLES: usize = 5000;
-/// Offset of the 100-byte trigger buffer within a frame.
+/// The trigger buffer is 100 bytes.
 pub const TRIGGER_BUF_OFFSET: usize = 11;
-/// Offset of the ADC samples within a frame.
 pub const ADC_OFFSET: usize = 111;
 /// ADC full-scale span in counts across 10 vertical divisions.
 pub const ADC_RANGE: f64 = 250.0;
 /// Samples at or beyond ±125 are clipped.
 pub const ADC_CLIP: i8 = 125;
 
-/// Calibration flash blob size.
 pub const FLASH_SIZE: usize = 2002;
 
 /// The frequency-meter and prescaler reference clock.
@@ -134,11 +131,11 @@ pub fn coupling_code(c: neowon_core::Coupling) -> u8 {
     }
 }
 
-/// The distinct sample rates the prescaler ladder produces, S/s.
-pub const SAMPLE_RATES: [f64; 24] = [
-    2.5, 5.0, 12.5, 25.0, 50.0, 125.0, 250.0, 500.0, 1.25e3, 2.5e3, 5e3, 12.5e3, 25e3, 50e3, 125e3,
-    250e3, 500e3, 1.25e6, 2.5e6, 5e6, 12.5e6, 25e6, 50e6, 100e6,
-];
+/// The distinct sample rates the prescaler ladder produces, S/s. The
+/// ladder has one home in core, so the sim and the UI fallback advertise
+/// exactly what this device does; the prescaler map below is this
+/// driver's own.
+pub use neowon_core::ladders::SCOPE_SAMPLE_RATES as SAMPLE_RATES;
 
 /// Prescaler for a requested rate, snapped to the nearest rate the hardware
 /// ladder supports; actual rate is `CLOCK_HZ / prescaler`.
@@ -184,5 +181,25 @@ mod tests {
         assert_eq!(full_scale_volts(0), 0.05);
         assert_eq!(full_scale_volts(7), 10.0);
         assert_eq!(full_scale_volts(9), 50.0);
+    }
+
+    /// The advertised volts/div ladder has one home in core; this
+    /// device's register table is what it must describe. If someone edits
+    /// `VOLTBASE_MV` without the ladder, the sim and the UI fallback would
+    /// silently offer settings this device cannot make.
+    #[test]
+    fn voltbase_registers_match_the_shared_ladder() {
+        let from_registers: Vec<f64> = VOLTBASE_MV.iter().map(|&mv| mv as f64 / 1000.0).collect();
+        assert_eq!(from_registers, neowon_core::ladders::SCOPE_VOLTS_DIV);
+    }
+
+    /// Likewise the prescaler ladder: every shared rate must be one this
+    /// device's prescaler actually produces.
+    #[test]
+    fn every_shared_rate_has_a_prescaler() {
+        for &r in SAMPLE_RATES.iter() {
+            let p = prescaler_for_rate(r);
+            assert!((CLOCK_HZ / p as f64 - r).abs() <= r * 1e-9, "{r}");
+        }
     }
 }

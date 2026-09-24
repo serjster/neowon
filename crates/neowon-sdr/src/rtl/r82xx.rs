@@ -1,7 +1,7 @@
 //! Rafael Micro R820T / R828D tuner, ported from librtlsdr's
 //! `tuner_r82xx.c` via `librtlsdr-rs` (`tuner/r82xx`). Register writes go
 //! through a shadow copy so unchanged registers are not re-sent, exactly as
-//! upstream. The Blog V4 upconverter paths are not ported (spec D2).
+//! upstream. The Blog V4 upconverter paths are not ported.
 //!
 //! Every call expects the demodulator's I2C repeater to be on; the device
 //! layer brackets tuner calls with it.

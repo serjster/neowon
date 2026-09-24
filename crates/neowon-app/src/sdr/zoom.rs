@@ -4,6 +4,8 @@
 //! handler injects — the egui pointer/scroll path cannot be event-injected
 //! by the current windowed rig.
 
+use neowon_backend::SdrCaps;
+
 use super::{SdrAction, SdrState};
 
 /// An egui mouse-wheel line (one notch), in points: the native default of
@@ -15,8 +17,8 @@ pub const PAN_FRACTION: f64 = 0.1;
 /// The captured band covers at least this many visible spans: the zoom
 /// margin, `rate >= RATE_MARGIN * span`.
 pub const RATE_MARGIN: f64 = 2.0;
-/// Zoom-in floor as a fraction of the current rate (the display's old
-/// clamp; the ladder keeps it reachable at every rung).
+/// Zoom-in floor as a fraction of the current rate; the ladder keeps it
+/// reachable at every rung.
 pub const MIN_SPAN_FRACTION: f64 = 1.0 / 256.0;
 
 /// The rung of `rates` (ascending) that carries a visible `span_hz`: the
@@ -49,16 +51,12 @@ pub fn rate_for_span(rates: &[f64], span_hz: f64) -> Option<f64> {
 /// The rung follows the zoom; DAB pins the rate at 2.048 MS/s (the wheel
 /// then zooms the display span only, and the DAB dock says so). When the
 /// shrunken band can no longer hold the tuned frequency, the hardware
-/// recentres on it (D10), so the channel the operator monitors survives
+/// recentres on it, so the channel the operator monitors survives
 /// the step.
-pub fn zoom_actions(sdr: &SdrState, t: f64, zf: f64) -> Vec<SdrAction> {
+pub fn zoom_actions(sdr: &SdrState, caps: Option<&SdrCaps>, t: f64, zf: f64) -> Vec<SdrAction> {
     let rate = sdr.config.sample_rate;
-    let rates = sdr
-        .caps
-        .as_ref()
-        .map(|c| c.sample_rates.as_slice())
-        .unwrap_or_default();
-    let pinned = sdr.dab.is_some();
+    let rates = caps.map(|c| c.sample_rates.as_slice()).unwrap_or_default();
+    let pinned = sdr.dab.on();
     // DAB's ensemble is defined at exactly 2.048 MS/s: the display cannot
     // zoom past that band while the receiver is on.
     let max_span = if pinned {
@@ -89,7 +87,7 @@ pub fn zoom_actions(sdr: &SdrState, t: f64, zf: f64) -> Vec<SdrAction> {
     }
     out.push(SdrAction::Span(if span >= new_rate { 0.0 } else { span }));
     out.push(SdrAction::Pan(centre - sdr.config.centre_hz));
-    // D10: the rate step must not drop the channel the operator monitors.
+    // The rate step must not drop the channel the operator monitors.
     // Only a window that held it before the step is recentred on it — a
     // tuned frequency an explicit `sdr centre` already left outside the
     // band is the operator's own move, not the zoom's to undo.
@@ -127,10 +125,9 @@ mod tests {
     use super::*;
     use neowon_backend::{Acquisition, SdrCaps};
 
-    /// The sim's and the RTL-SDR's ladder (neowon-sdr::backend).
-    const LADDER: [f64; 11] = [
-        250e3, 1.024e6, 1.536e6, 1.792e6, 1.92e6, 2.048e6, 2.16e6, 2.4e6, 2.56e6, 2.88e6, 3.2e6,
-    ];
+    /// The dongle's ladder, from its one home — the same list the
+    /// sim and the driver advertise.
+    use neowon_core::ladders::RTL_SAMPLE_RATES as LADDER;
     const CENTRE: f64 = 100e6;
 
     fn caps(rates: Vec<f64>) -> SdrCaps {
@@ -146,10 +143,7 @@ mod tests {
     }
 
     fn state(rate: f64, span_hz: f64) -> SdrState {
-        let mut s = SdrState {
-            caps: Some(caps(LADDER.to_vec())),
-            ..Default::default()
-        };
+        let mut s = SdrState::default();
         s.config.centre_hz = CENTRE;
         s.config.sample_rate = rate;
         s.tuned_hz = CENTRE;
@@ -179,11 +173,11 @@ mod tests {
         // Half the span: 1.024 MS/s still covers it at the 2x margin, so
         // the rate holds at the next step (512 kHz -> 1.024 MS/s).
         assert_eq!(
-            zoom_actions(&s, 0.0, -1.0),
+            zoom_actions(&s, Some(&caps(LADDER.to_vec())), 0.0, -1.0),
             vec![SdrAction::Span(1.024e6), SdrAction::Pan(0.0)]
         );
         assert_eq!(
-            zoom_actions(&s, 0.0, -2.0),
+            zoom_actions(&s, Some(&caps(LADDER.to_vec())), 0.0, -2.0),
             vec![
                 SdrAction::Rate(1.024e6),
                 SdrAction::Span(512e3),
@@ -193,7 +187,7 @@ mod tests {
         // A rate that does not change is not injected.
         let s = state(1.024e6, 512e3);
         assert_eq!(
-            zoom_actions(&s, 0.0, -0.5),
+            zoom_actions(&s, Some(&caps(LADDER.to_vec())), 0.0, -0.5),
             vec![
                 SdrAction::Span(512e3 * 2f64.powf(-0.5)),
                 SdrAction::Pan(0.0)
@@ -202,7 +196,7 @@ mod tests {
         // The floor holds when the rung is the smallest.
         let s = state(250e3, 1000.0);
         assert_eq!(
-            zoom_actions(&s, 0.0, -1.0),
+            zoom_actions(&s, Some(&caps(LADDER.to_vec())), 0.0, -1.0),
             vec![SdrAction::Span(250e3 / 256.0), SdrAction::Pan(0.0)]
         );
     }
@@ -213,7 +207,7 @@ mod tests {
         // would jump to 3.2 MS/s the moment the operator zoomed in,
         // capturing *more* band than before.
         let s = state(2.048e6, 0.0);
-        let a = zoom_actions(&s, 0.0, -1.0);
+        let a = zoom_actions(&s, Some(&caps(LADDER.to_vec())), 0.0, -1.0);
         assert!(!a.iter().any(|x| matches!(x, SdrAction::Rate(_))), "{a:?}");
     }
 
@@ -222,7 +216,7 @@ mod tests {
         // 3.2 MS/s is wider than a 1.2 MHz span needs, but zooming out
         // (1.2 -> 1.43 MHz) must not shrink the captured band.
         let s = state(3.2e6, 1.2e6);
-        let a = zoom_actions(&s, 0.0, 0.25);
+        let a = zoom_actions(&s, Some(&caps(LADDER.to_vec())), 0.0, 0.25);
         assert!(!a.iter().any(|x| matches!(x, SdrAction::Rate(_))), "{a:?}");
     }
 
@@ -230,7 +224,7 @@ mod tests {
     fn zooming_out_steps_the_rate_up() {
         let s = state(250e3, 200e3);
         assert_eq!(
-            zoom_actions(&s, 0.0, 2.0),
+            zoom_actions(&s, Some(&caps(LADDER.to_vec())), 0.0, 2.0),
             vec![
                 SdrAction::Rate(1.792e6),
                 SdrAction::Span(800e3),
@@ -240,7 +234,7 @@ mod tests {
         // At the widest rung the full-span encoding takes over.
         let s = state(2.88e6, 1.6e6);
         assert_eq!(
-            zoom_actions(&s, 0.0, 1.0),
+            zoom_actions(&s, Some(&caps(LADDER.to_vec())), 0.0, 1.0),
             vec![
                 SdrAction::Rate(3.2e6),
                 SdrAction::Span(0.0),
@@ -253,7 +247,7 @@ mod tests {
     fn a_zoom_keeps_the_frequency_under_the_pointer() {
         let s = state(2.048e6, 0.0);
         // Pointer a quarter to the right of centre: 100.512 MHz.
-        let a = zoom_actions(&s, 0.25, -2.0);
+        let a = zoom_actions(&s, Some(&caps(LADDER.to_vec())), 0.25, -2.0);
         assert_eq!(a[0], SdrAction::Rate(1.024e6));
         assert_eq!(a[1], SdrAction::Span(512e3));
         // The view centre moves so 100.512 MHz stays under the pointer:
@@ -264,15 +258,15 @@ mod tests {
     #[test]
     fn dab_pins_the_rate_and_the_span_still_zooms() {
         let mut s = state(2.048e6, 500e3);
-        s.dab = Some(neowon_dsp::dab::DabReceiver::new());
-        let a = zoom_actions(&s, 0.0, -2.0);
+        s.dab.rx = Some(neowon_dsp::dab::DabReceiver::new());
+        let a = zoom_actions(&s, Some(&caps(LADDER.to_vec())), 0.0, -2.0);
         assert!(
             !a.iter().any(|x| matches!(x, SdrAction::Rate(_))),
             "DAB pins the rate: {a:?}"
         );
         assert_eq!(a[0], SdrAction::Span(125e3));
         // Zooming out cannot leave the ensemble band either.
-        let a = zoom_actions(&s, 0.0, 4.0);
+        let a = zoom_actions(&s, Some(&caps(LADDER.to_vec())), 0.0, 4.0);
         assert_eq!(a[0], SdrAction::Span(0.0));
     }
 
@@ -282,18 +276,18 @@ mod tests {
         // (921.6 kHz), outside the 1.024 MS/s reach (460.8 kHz).
         let mut s = state(2.048e6, 0.0);
         s.tuned_hz = CENTRE + 900e3;
-        let a = zoom_actions(&s, 0.0, -2.0);
+        let a = zoom_actions(&s, Some(&caps(LADDER.to_vec())), 0.0, -2.0);
         assert_eq!(a.last(), Some(&SdrAction::Centre(CENTRE + 900e3)));
         // A channel the new band still holds stays where it is.
         let mut s = state(2.048e6, 0.0);
         s.tuned_hz = CENTRE + 400e3;
-        let a = zoom_actions(&s, 0.0, -2.0);
+        let a = zoom_actions(&s, Some(&caps(LADDER.to_vec())), 0.0, -2.0);
         assert!(!a.iter().any(|x| matches!(x, SdrAction::Centre(_))));
         // One an explicit window move already left outside is not yanked
         // back by a zoom.
         let mut s = state(2.048e6, 0.0);
         s.tuned_hz = CENTRE + 1.2e6;
-        let a = zoom_actions(&s, 0.0, -2.0);
+        let a = zoom_actions(&s, Some(&caps(LADDER.to_vec())), 0.0, -2.0);
         assert!(!a.iter().any(|x| matches!(x, SdrAction::Centre(_))));
     }
 

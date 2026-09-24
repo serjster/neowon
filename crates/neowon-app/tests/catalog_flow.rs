@@ -21,7 +21,7 @@ fn catalog_files_manages_and_persists() {
     with_app(child, || {
         c.ok("stimulus rf-fm-band");
         // The window sees 98.3 and 99.4; the tuned cursor sits on the FM
-        // station. Tuning alone will not move the window (D10).
+        // station. Tuning alone will not move the window.
         c.ok("sdr centre 99M");
         c.ok("sdr tune 99.4M");
         c.wait("get detections", 10, |r| items(r, "id").len() == 2);

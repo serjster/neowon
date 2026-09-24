@@ -41,12 +41,10 @@ use crate::gpu::{PLOT_H, PLOT_W, Phosphor};
 pub struct Effects {
     /// Active effect name (a file stem from the shader dir).
     pub active: Option<String>,
-    /// Shader asset for the active effect.
     pub shader: Option<Handle<Shader>>,
     /// The effect writes here; the plot sprite (and `shot`) show it while
     /// an effect is active.
     pub output: Handle<Image>,
-    /// Discovered effect names.
     pub available: Vec<String>,
     /// Seconds since startup (uniform for animated effects).
     pub time: f32,
@@ -81,7 +79,6 @@ pub fn shader_dir() -> std::path::PathBuf {
     relative
 }
 
-/// Scan the shader dir for `*.wgsl` files.
 pub fn scan(fx: &mut Effects) {
     fx.available.clear();
     let dir = shader_dir();
@@ -177,7 +174,7 @@ fn tick(
     time: Res<Time>,
     mut fx: ResMut<Effects>,
     phosphor: Res<Phosphor>,
-    mut sprites: Query<&mut Sprite, With<crate::PlotSprite>>,
+    mut sprites: Query<&mut Sprite, With<crate::plot::PlotSprite>>,
 ) {
     fx.time = time.elapsed_secs();
     for mut sprite in &mut sprites {
@@ -244,7 +241,6 @@ fn prepare(
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
 ) {
-    // (Re)queue the compute pipeline when the shader changed.
     if fx.epoch != pipe.epoch {
         pipe.epoch = fx.epoch;
         pipe.pipeline = fx.shader.clone().map(|shader| {

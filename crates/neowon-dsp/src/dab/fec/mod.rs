@@ -99,7 +99,7 @@ pub fn energy_dispersal(bits: &mut [u8]) {
 ///
 /// This is the same check the FIB carries (clause 5.2.1), and the same one the
 /// DLS data group carries (clause 7.4.5.0). It is *not* an on-air MSC CRC —
-/// EN 300 401 defines none at this layer (DAB+ has its own, TS 102 563, tier 3)
+/// EN 300 401 defines none at this layer (DAB+ has its own, TS 102 563)
 /// — so the MSC decoder applies it only when the sim's oracle transport says
 /// the payload carries one.
 pub fn crc16(data: &[u8]) -> u16 {
@@ -143,7 +143,7 @@ pub(crate) fn mother_outputs(bit: u8, history: [u8; 6]) -> [u8; 4] {
 /// Encode `info` with the mother code, appending the six zero tail bits
 /// (clause 11.1.1: the codeword runs to `i = I + 5`).
 ///
-/// Used by the golden-test encoder and by later tiers; the decoder shares
+/// Used by the golden-test encoder; the decoder shares
 /// [`mother_outputs`] with it, so the two cannot disagree about the code.
 pub fn conv_encode(info: &[u8]) -> Vec<u8> {
     let mut history = [0u8; 6];

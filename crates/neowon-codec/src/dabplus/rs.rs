@@ -60,7 +60,6 @@ impl Default for Rs120_110 {
 }
 
 impl Rs120_110 {
-    /// Build the field tables and generator polynomial.
     #[must_use]
     pub fn new() -> Self {
         let mut exp = [0u8; 256];
@@ -100,7 +99,6 @@ impl Rs120_110 {
         codec
     }
 
-    /// GF(2^8) multiply.
     fn mul(&self, a: u8, b: u8) -> u8 {
         if a == 0 || b == 0 {
             0
@@ -285,7 +283,6 @@ impl Rs120_110 {
         c
     }
 
-    /// Polynomial product over GF(2^8).
     fn multiply(&self, a: &[u8], b: &[u8]) -> Vec<u8> {
         let mut out = vec![0u8; a.len() + b.len() - 1];
         for (i, &ai) in a.iter().enumerate() {

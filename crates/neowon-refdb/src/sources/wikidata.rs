@@ -1,4 +1,4 @@
-//! Wikidata importer (D17): SPARQL JSON around a location. Wikidata is
+//! Wikidata importer: SPARQL JSON around a location. Wikidata is
 //! CC0; broadcast FM/AM/TV stations with a frequency (P2144) and
 //! coordinates (P625) become stations. Labels come from the query's label
 //! service (operator language, then English).
@@ -13,11 +13,11 @@ use crate::station::{Modulation, Service, Source, Station};
 
 pub const ENDPOINT: &str = "https://query.wikidata.org/sparql";
 
-/// Checked against Wikidata on 2026-09-19.
+/// Wikidata's "radio station" class.
 const RADIO_STATION: &str = "Q14350";
 const TV_STATION: &str = "Q1616075";
 
-/// Frequency unit entities → multiplier to Hz. Checked 2026-09-19.
+/// Frequency unit entities → multiplier to Hz.
 fn unit_scale(qid: &str) -> Option<f64> {
     Some(match qid {
         "Q39369" => 1.0,   // hertz
@@ -104,7 +104,7 @@ fn infer_modulation(hz: f64) -> Modulation {
 }
 
 /// One station per (item, frequency); an item with several frequencies is
-/// numbered `Q…#1`, `#2`, in frequency order (D17 risk note).
+/// numbered `Q…#1`, `#2`, in frequency order.
 pub fn parse(bytes: &[u8]) -> (Vec<Station>, Report) {
     let doc: Sparql = match serde_json::from_slice(bytes) {
         Ok(doc) => doc,

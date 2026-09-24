@@ -1,4 +1,4 @@
-//! Tier-2 golden tests for DAB MSC (phase 10.15.2): modulate a chosen ensemble
+//! Tier-2 golden tests for DAB MSC: modulate a chosen ensemble
 //! — FIC plus real sub-channel content — into Mode I IQ at 2.048 MS/s, push it
 //! through the receiver, and check that the sub-channel bytes that come out are
 //! the bytes the encoder was told to send.
@@ -326,7 +326,7 @@ fn fixture_arithmetic_is_consistent() {
     assert_eq!(SAMPLE_RATE, 2_048_000.0);
 }
 
-/// Regression for the on-air defect of 2026-09-21: **a time-varying echo that
+/// Regression for an on-air defect: **a time-varying echo that
 /// moves the null symbol's power dip starved the clause-12 delay line.**
 ///
 /// A DAB transmitter's guard interval (EN 300 401 table 22: `Delta = 504`

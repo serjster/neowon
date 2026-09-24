@@ -1,4 +1,4 @@
-//! Higher-order cumulants of complex samples (M3). `C_pq` has `p` factors
+//! Higher-order cumulants of complex samples. `C_pq` has `p` factors
 //! of which `q` are conjugated; each is the joint cumulant, the sum over
 //! set partitions of the factors of (−1)^(k−1)(k−1)! times the product of
 //! the blocks' moments, normalised by C21^(p/2). Singleton blocks vanish

@@ -1,5 +1,3 @@
-//! Decode dialog — pick a protocol, assign lines, read the result.
-
 use bevy_egui::egui;
 
 use crate::decode::{DecodeState, Protocol};
@@ -139,7 +137,6 @@ pub fn show(ui: &mut egui::Ui, st: &mut DecodeState) {
     });
 }
 
-/// ASCII rendering of a byte, for the common case of decoding text.
 fn printable(v: u64) -> String {
     let c = v as u8;
     if c.is_ascii_graphic() || c == b' ' {

@@ -1,6 +1,6 @@
 //! SDR mode's screen: spectrum over waterfall where the scope grid sits,
 //! controls and an IQ constellation over the dock rail (`sdr_dock`). Drawn only while
-//! an SDR is connected; mode-aware chrome (front panel, menus) is 10.9.
+//! an SDR is connected.
 //!
 //! Every control injects a script action instead of mutating state, so a
 //! script can reach everything the UI can (script-parity rule).
@@ -42,6 +42,7 @@ pub fn show(
     mut tex: Local<Option<egui::TextureHandle>>,
     mut uploaded: Local<u64>,
     mut width_drag: Local<bool>,
+    time: Res<Time>,
 ) {
     if !sdr.active {
         return;
@@ -129,6 +130,8 @@ pub fn show(
                 wf,
             );
             draw_channel(ui.painter(), rect, wf, &sdr);
+            super::sdr_marks::dc_notch(ui, spec, &sdr);
+            super::sdr_marks::hint(ui, wf);
             let stations = super::station_overlay::draw(ui.painter(), spec, &refmap, &sdr);
             pointer(
                 ui,
@@ -136,6 +139,7 @@ pub fn show(
                 rect,
                 spec,
                 &sdr,
+                link.sdr_caps(),
                 &stations,
                 &mut width_drag,
                 &mut script,
@@ -144,7 +148,7 @@ pub fn show(
                 sdr_bands::strip(ui, r, &refmap, &sdr, &mut script);
             }
             if let Some(r) = mini {
-                sdr_bands::minimap(ui, r, &refmap, &sdr, &mut script);
+                sdr_bands::minimap(ui, r, &refmap, &sdr, link.sdr_caps(), &mut script);
             }
         });
 
@@ -164,19 +168,18 @@ pub fn show(
             inner.set_clip_rect(rect);
             uitree::name(&inner, "SDR dock");
             egui::ScrollArea::vertical().show(&mut inner, |ui| {
-                super::sdr_dock::show(ui, &sdr, &link, &refmap, &mut script);
+                let now = time.elapsed_secs_f64();
+                super::sdr_dock::show(ui, &sdr, &link, &refmap, &mut script, now);
             });
         });
-    super::bandmap_window::show(&ctx, &refmap, &sdr, &mut script);
+    super::bandmap_window::show(&ctx, &refmap, &sdr, link.sdr_caps(), &mut script);
 }
 
-/// Frequency at x, Hz.
 fn freq_at(sdr: &SdrState, r: egui::Rect, x: f32) -> f64 {
     let t = ((x - r.min.x) / r.width()) as f64;
     sdr.view_centre() + (t - 0.5) * sdr.span()
 }
 
-/// x of frequency `hz`.
 pub(super) fn x_at(sdr: &SdrState, r: egui::Rect, hz: f64) -> f32 {
     r.min.x + ((hz - sdr.view_centre()) / sdr.span() + 0.5) as f32 * r.width()
 }
@@ -192,7 +195,6 @@ fn draw_spectrum(p: &egui::Painter, r: egui::Rect, sdr: &SdrState) {
             [egui::pos2(r.min.x, y), egui::pos2(r.max.x, y)],
             (1.0, GRID),
         );
-        // The top line carries the unit instead of a bare number.
         let text = if i == 0 {
             format!("{db:.0} dBFS")
         } else {
@@ -353,7 +355,6 @@ fn draw_channel(p: &egui::Painter, rect: egui::Rect, wf: egui::Rect, sdr: &SdrSt
     let width = sdr.channel_width();
     let x = x_at(sdr, rect, tuned);
     if x < rect.min.x || x > rect.max.x {
-        // Off screen: an edge arrow with the frequency.
         let right = tuned > sdr.view_centre();
         let (ax, tri) = if right {
             (rect.max.x - 4.0, -1.0)
@@ -432,13 +433,13 @@ fn pointer(
     rect: egui::Rect,
     spec: egui::Rect,
     sdr: &SdrState,
+    caps: Option<&neowon_backend::SdrCaps>,
     stations: &[(egui::Rect, String)],
     width_drag: &mut bool,
     script: &mut Script,
 ) {
     let rate = sdr.config.sample_rate;
     let half_w = sdr.channel_width() / 2.0;
-    // The two filter edges are grabbable handles.
     let edge_hit = |x: f32| -> bool {
         let (e0, e1) = (
             x_at(sdr, rect, sdr.tuned_hz - half_w),
@@ -461,7 +462,7 @@ fn pointer(
         && let Some(pos) = resp.interact_pointer_pos()
     {
         // A station under the pointer wins: tune to it and pick its
-        // demodulator (D21), rather than the bare frequency.
+        // demodulator, rather than the bare frequency.
         if let Some((_, key)) = stations.iter().find(|(r, _)| r.contains(pos)) {
             script.inject(Action::RefMap(crate::refmap::RefMapAction::TuneStation(
                 key.clone(),
@@ -557,7 +558,6 @@ fn pointer(
     } else if ctrl {
         let zdb = -scroll.y / 240.0;
         if zdb.abs() > 1e-3 && spec.contains(pos) {
-            // Zoom the dB range around the level under the pointer.
             let at =
                 sdr.ref_db - (1.0 - ((spec.max.y - pos.y) / spec.height()) as f64) * sdr.range_db;
             let range = (sdr.range_db * 2f64.powf(zdb as f64)).clamp(10.0, 200.0);
@@ -574,7 +574,7 @@ fn pointer(
         let zf = -scroll.y / 240.0;
         if zf.abs() > 1e-3 {
             let t = ((pos.x - rect.min.x) / rect.width()) as f64 - 0.5;
-            for a in zoom::zoom_actions(sdr, t, zf as f64) {
+            for a in zoom::zoom_actions(sdr, caps, t, zf as f64) {
                 inject(script, a);
             }
         }

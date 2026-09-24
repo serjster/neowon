@@ -19,7 +19,6 @@ fn opt(v: Option<f64>) -> String {
     v.map_or("null".into(), num)
 }
 
-/// `get location`: the fix, the locator, and where it came from.
 pub fn location_json(rm: &RefMap) -> String {
     let Some(l) = &rm.location else {
         return r#"{"ok":true,"set":false}"#.into();
@@ -129,6 +128,17 @@ pub fn refdb_json(rm: &RefMap) -> String {
             )
         })
         .collect();
+    let problems: Vec<String> = rm
+        .problems
+        .iter()
+        .map(|p| {
+            format!(
+                r#"{{"source":"{}","what":"{}"}}"#,
+                p.source.map_or("meta", |s| s.stem()),
+                escape(&p.what)
+            )
+        })
+        .collect();
     let job = rm
         .job
         .as_ref()
@@ -139,12 +149,13 @@ pub fn refdb_json(rm: &RefMap) -> String {
         .map_or(String::new(), |s| s.dir().display().to_string());
     format!(
         concat!(
-            r#"{{"ok":true,"dir":"{}","sources":[{}],"stations":{},"job":{},"#,
+            r#"{{"ok":true,"dir":"{}","sources":[{}],"problems":[{}],"stations":{},"job":{},"#,
             r#""filters":{{"find":"{}","source":"{}","service":"{}","mod":"{}","on_air":{},"scope":"{}"}},"#,
             r#""status":"{}"}}"#
         ),
         escape(&dir),
         metas.join(","),
+        problems.join(","),
         rm.index.len(),
         job,
         escape(&rm.find),

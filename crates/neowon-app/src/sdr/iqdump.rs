@@ -7,16 +7,21 @@
 //! The dump taps the same frames `sdr::dab::feed` sees (every frame that
 //! arrives, not the latest-wins display path), so a capture is exactly what
 //! the decoder was fed.
+//!
+//! The stream goes to a temp beside `path` and is renamed into place when
+//! the dump completes or is stopped (`neowon_core::atomic_file`), so the
+//! file appears whole; a dump that fails part-way, or is still running
+//! when the app exits, leaves no file.
 
-use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::Write;
 
 use neowon_core::CaptureFrame;
+use neowon_core::atomic_file::AtomicFile;
 
 use super::SdrState;
 
 pub struct IqDump {
-    file: BufWriter<File>,
+    file: AtomicFile,
     pub path: String,
     pub sample_rate: f64,
     pub remaining_pairs: u64,
@@ -28,9 +33,10 @@ impl IqDump {
         if !(0.1..=600.0).contains(&seconds) {
             return Err(format!("iqdump: {seconds} s outside 0.1..=600"));
         }
-        let file = File::create(path).map_err(|e| format!("iqdump: cannot write {path}: {e}"))?;
+        let file =
+            AtomicFile::create(path).map_err(|e| format!("iqdump: cannot write {path}: {e}"))?;
         Ok(Self {
-            file: BufWriter::new(file),
+            file,
             path: path.to_string(),
             sample_rate,
             remaining_pairs: (seconds * sample_rate).round() as u64,
@@ -54,6 +60,14 @@ impl IqDump {
         self.remaining_pairs = self.remaining_pairs.saturating_sub(take as u64);
         Ok(self.remaining_pairs == 0)
     }
+
+    /// Put what was written in place at `path`, whole.
+    fn finish(self) -> Result<String, String> {
+        self.file
+            .commit()
+            .map_err(|e| format!("iqdump: finish {}: {e}", self.path))?;
+        Ok(self.path)
+    }
 }
 
 /// Feed one arriving complex frame to the active dump, if any. Finishing or
@@ -65,28 +79,27 @@ pub fn write(sdr: &mut SdrState, frame: &CaptureFrame) {
     };
     match dump.write(&frame.channels[0].data) {
         Ok(true) => {
-            if let Err(e) = dump.file.flush() {
-                tracing::error!("iqdump: flush {}: {e}", dump.path);
+            let (pairs, rate) = (dump.written_pairs, dump.sample_rate);
+            match dump.finish() {
+                Ok(path) => {
+                    tracing::info!("iqdump: {path} complete, {pairs} pairs at {rate:.0} Hz")
+                }
+                Err(e) => tracing::error!("{e}"),
             }
-            tracing::info!(
-                "iqdump: {} complete, {} pairs at {:.0} Hz",
-                dump.path,
-                dump.written_pairs,
-                dump.sample_rate
-            );
         }
         Ok(false) => sdr.iq_dump = Some(dump),
         Err(e) => tracing::error!("{e}"),
     }
 }
 
-/// Stop an active dump, flushing what was written.
+/// Stop an active dump, putting what was written in place.
 pub fn stop(sdr: &mut SdrState) -> Option<String> {
     let dump = sdr.iq_dump.take()?;
-    if let Err(e) = dump.file.into_inner() {
-        tracing::error!("iqdump: flush {}: {e}", dump.path);
+    let path = dump.path.clone();
+    if let Err(e) = dump.finish() {
+        tracing::error!("{e}");
     }
-    Some(dump.path)
+    Some(path)
 }
 
 #[cfg(test)]
@@ -97,11 +110,16 @@ mod tests {
     fn a_dump_writes_exactly_the_requested_pairs() {
         let path = std::env::temp_dir().join(format!("neowon-iqdump-{}.f32", std::process::id()));
         let path = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
         let mut dump = IqDump::start(&path, 0.5, 8.0).expect("start");
         assert!(!dump.write(&[1.0, 2.0, 3.0, 4.0]).expect("write"));
         assert!(dump.write(&[5.0, 6.0, 7.0, 8.0]).expect("write"));
         assert_eq!(dump.written_pairs, 4);
-        dump.file.flush().expect("flush");
+        assert!(
+            !std::path::Path::new(&path).exists(),
+            "the dump appeared before it was whole"
+        );
+        dump.finish().expect("finish");
         let bytes = std::fs::read(&path).expect("read back");
         assert_eq!(bytes.len(), 4 * 8);
         assert_eq!(f32::from_le_bytes(bytes[0..4].try_into().unwrap()), 1.0);

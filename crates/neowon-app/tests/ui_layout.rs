@@ -1,4 +1,4 @@
-//! UI-level layout verification (Phase 6.5 pillar 3): drive the real app with
+//! UI-level layout verification: drive the real app with
 //! a `NEOWON_SCRIPT`, open every dialog, dump the named-ROI map via
 //! `layout`, and assert the published geometry.
 //!
@@ -12,8 +12,10 @@
 //! For manual full-window visual checks you can additionally grab the
 //! window with `screencapture -R x,y,w,h` (macOS) — not asserted here.
 
+mod common;
+use common::{Sandbox, scratch};
+
 use std::path::PathBuf;
-use std::process::Command;
 
 // Fixed chrome sizes — must match src/ui/layout.rs; everything else is
 // asserted relationally against the dumped window size.
@@ -39,8 +41,7 @@ const MENUS: [&str; 9] = [
 ];
 
 fn run_layout_script(name: &str, script: &str) -> Vec<PathBuf> {
-    let dir = std::env::temp_dir().join(format!("neowon-uilayout-{name}"));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch(&format!("uilayout-{name}"));
     let mut outs = Vec::new();
     let script_text: String = script
         .lines()
@@ -59,7 +60,10 @@ fn run_layout_script(name: &str, script: &str) -> Vec<PathBuf> {
     let script_path = dir.join("script.txt");
     std::fs::write(&script_path, script_text).unwrap();
 
-    let status = Command::new(env!("CARGO_BIN_EXE_neowon-app"))
+    // A private home and none of the caller's NEOWON_* (common/sandbox.rs).
+    let sandbox = Sandbox::new("ui-layout");
+    let status = sandbox
+        .command(env!("CARGO_BIN_EXE_neowon-app"))
         .arg("--sim")
         .env("NEOWON_SCRIPT", &script_path)
         // Geometry here is asserted in unscaled pixels; pin the UI scale so
@@ -67,9 +71,6 @@ fn run_layout_script(name: &str, script: &str) -> Vec<PathBuf> {
         // (ui_geometry.rs is the suite that sweeps scales).
         .env("NEOWON_UI_SCALE", "1.0")
         .env("NEOWON_WINDOW", "1520x820")
-        .env_remove("NEOWON_SHOT")
-        // A killed harness must not leave the scripted app behind.
-        .env("NEOWON_ORPHAN_EXIT", "120")
         .status()
         .expect("launch app");
     assert!(status.success(), "app exited with {status}");
@@ -79,7 +80,6 @@ fn run_layout_script(name: &str, script: &str) -> Vec<PathBuf> {
     outs
 }
 
-/// Extract `"name": [x, y, w, h]` from the dump.
 fn roi(json: &str, name: &str) -> [f64; 4] {
     let key = format!("\"{name}\": [");
     let start = json
@@ -118,7 +118,6 @@ fn every_dialog_opens_and_geometry_holds() {
     let outs = run_layout_script("all-menus", &script);
     assert_eq!(outs.len(), MENUS.len() + 1);
 
-    // Each step records the dialog we asked for.
     let expected = [
         "horizontal",
         "trigger",
@@ -138,7 +137,6 @@ fn every_dialog_opens_and_geometry_holds() {
             "step {i} menu mismatch"
         );
     }
-    // After `menu none` the dialog is collapsed.
     let final_json = std::fs::read_to_string(&outs[MENUS.len()]).unwrap();
     assert_eq!(open_menu(&final_json), None);
 
@@ -163,13 +161,11 @@ fn every_dialog_opens_and_geometry_holds() {
     assert!((dialog[2] - DIALOG_W).abs() < 0.5);
     assert!((dialog[0] - (WINDOW_W - DIALOG_W)).abs() < 0.5);
 
-    // Descriptors hug the plot bottom.
     let desc = roi(&final_json, "descriptors");
     assert!((desc[3] - DESC_H).abs() < 0.5);
     assert!((desc[1] - (plot[1] + plot[3] + DESC_GAP)).abs() < 0.5);
     assert!((desc[0] - plot[0]).abs() < 0.5);
 
-    // Window sanity.
     let win = roi(&final_json, "menu_bar");
     assert!(win[0] >= 0.0 && win[1] >= 0.0);
 }
@@ -184,7 +180,6 @@ fn plot_center_in_window() {
     let cy = plot[1] + plot[3] / 2.0;
     assert!(cx > 0.0 && cx < WINDOW_W);
     assert!(cy > 0.0 && cy < WINDOW_H);
-    // The plot must not overlap the front panel or menu bar.
     assert!(plot[1] >= MENU_H);
     assert!(plot[1] + plot[3] <= WINDOW_H - FRONT_PANEL_H);
 }

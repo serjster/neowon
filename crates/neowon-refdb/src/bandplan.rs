@@ -1,4 +1,4 @@
-//! Band plans in the SDR++ JSON schema (D16): `{name, country_name,
+//! Band plans in the SDR++ JSON schema: `{name, country_name,
 //! country_code, author_name, author_url, bands:[{name, type, start, end}]}`,
 //! frequencies in Hz. `type` is free text — SDR++'s own plans use some thirty
 //! values — so it is kept as a string and the display decides its colour.

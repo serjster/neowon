@@ -4,7 +4,10 @@
 //! exercises one point; without the variable every point runs in turn.
 //! Points: `wal-append` (dies half-way through a frame: a torn tail),
 //! `before-rename` and `after-rename-before-fsync` (die mid-checkpoint,
-//! around the manifest swap).
+//! around the manifest swap), and `segment-create` (dies half-way through
+//! a new segment's header — once in a checkpoint, where the torn segment
+//! is not the manifest's, and once while a fresh catalog creates its
+//! first, where it is).
 //!
 //! The crash happens in a child process (this test binary re-run with
 //! `NEOWON_CATALOG_CRASH_DIR` set). It prints `ACK <id>` after each
@@ -19,9 +22,17 @@ use std::io::Write;
 use common::*;
 use neowon_catalog::*;
 
-const POINTS: [&str; 3] = ["wal-append", "before-rename", "after-rename-before-fsync"];
-/// Commits before the failpoint is armed; checkpoints every 3 commits, so
-/// the rename points fire at commit 9.
+/// `(point, commits before it is armed)`. Checkpoints run every 3 commits,
+/// so the rename and segment points fire at commit 9; armed at 0, the
+/// point is live before `open`, which on a fresh directory creates the
+/// first segment.
+const CASES: [(&str, usize); 5] = [
+    ("wal-append", ARM_AFTER),
+    ("before-rename", ARM_AFTER),
+    ("after-rename-before-fsync", ARM_AFTER),
+    ("segment-create", ARM_AFTER),
+    ("segment-create", 0),
+];
 const ARM_AFTER: usize = 7;
 
 #[test]
@@ -32,15 +43,23 @@ fn child() {
     match std::env::var("NEOWON_CATALOG_CRASH_MODE").as_deref() {
         Ok("crash") => {
             let point = std::env::var("NEOWON_CATALOG_CRASH_POINT").unwrap();
+            let arm: usize = std::env::var("NEOWON_CATALOG_CRASH_ARM")
+                .unwrap()
+                .parse()
+                .unwrap();
+            // SAFETY: this child is single-threaded (run with
+            // --test-threads 1) and nothing else reads the environment
+            // concurrently.
+            let arm_now = || unsafe { std::env::set_var("NEOWON_CATALOG_KILL", &point) };
+            if arm == 0 {
+                arm_now();
+            }
             let mut cat = Catalog::open(&dir).unwrap();
             cat.checkpoint_every = 3;
             let mut out = std::io::stdout().lock();
             for i in 0..20 {
-                if i == ARM_AFTER {
-                    // SAFETY: this child is single-threaded (run with
-                    // --test-threads 1) and nothing else reads the
-                    // environment concurrently.
-                    unsafe { std::env::set_var("NEOWON_CATALOG_KILL", &point) };
+                if i == arm && arm > 0 {
+                    arm_now();
                 }
                 let id = add(&mut cat, |id| {
                     signal(id, &format!("S{i}"), 100e6 + i as f64, None)
@@ -90,16 +109,21 @@ fn acknowledged_writes_survive_a_crash_at_each_point() {
     if std::env::var("NEOWON_CATALOG_CRASH_DIR").is_ok() {
         return; // we are a child
     }
-    let points: Vec<String> = match std::env::var("NEOWON_CATALOG_KILL") {
-        Ok(p) => vec![p],
-        Err(_) => POINTS.iter().map(|s| s.to_string()).collect(),
-    };
-    for point in points {
-        let dir = scratch(&format!("crash-{point}"));
+    let only = std::env::var("NEOWON_CATALOG_KILL").ok();
+    let cases = CASES
+        .iter()
+        .filter(|(p, _)| only.as_deref().is_none_or(|o| o == *p));
+    // Every case runs, and every unrecovered one is reported.
+    let mut failed = Vec::new();
+    for &(point, arm) in cases {
+        let dir = scratch(&format!("crash-{point}-{arm}"));
         let out = run_child(
             &dir,
             "crash",
-            &[("NEOWON_CATALOG_CRASH_POINT", point.clone())],
+            &[
+                ("NEOWON_CATALOG_CRASH_POINT", point.to_string()),
+                ("NEOWON_CATALOG_CRASH_ARM", arm.to_string()),
+            ],
         );
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(
@@ -117,22 +141,22 @@ fn acknowledged_writes_survive_a_crash_at_each_point() {
             .filter_map(|l| l.split("ACK ").nth(1))
             .map(|s| s.trim().to_string())
             .collect();
-        assert!(
-            acked.len() >= ARM_AFTER,
-            "{point}: only {} acks",
-            acked.len()
-        );
+        assert!(acked.len() >= arm, "{point}: only {} acks", acked.len());
         let v = run_child(&dir, "verify", &[("NEOWON_CATALOG_ACKED", acked.join(","))]);
         let vout = String::from_utf8_lossy(&v.stdout);
-        assert!(
-            v.status.success() && vout.contains("VERIFIED"),
-            "{point}: recovery failed\n{vout}\n{}",
-            String::from_utf8_lossy(&v.stderr)
-        );
+        let recovered = v.status.success() && vout.contains("VERIFIED");
         println!(
-            r#"{{"point":"{point}","acked":{},"recovered":true}}"#,
+            r#"{{"point":"{point}","armed_after":{arm},"acked":{},"recovered":{recovered}}}"#,
             acked.len()
         );
-        std::fs::remove_dir_all(&dir).unwrap();
+        if recovered {
+            std::fs::remove_dir_all(&dir).unwrap();
+        } else {
+            failed.push(format!(
+                "{point} (armed after {arm}): recovery failed\n{vout}\n{}",
+                String::from_utf8_lossy(&v.stderr)
+            ));
+        }
     }
+    assert!(failed.is_empty(), "{}", failed.join("\n---\n"));
 }

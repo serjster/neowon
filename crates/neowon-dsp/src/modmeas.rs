@@ -1,5 +1,5 @@
-//! Signal measurements over a band of a spectrum, or over IQ samples
-//! (Phase 10.1 subset): occupied bandwidth, channel power, SNR, spectral
+//! Signal measurements over a band of a spectrum, or over IQ samples:
+//! occupied bandwidth, channel power, SNR, spectral
 //! flatness, and instantaneous amplitude / phase / frequency.
 
 use crate::fft::Window;

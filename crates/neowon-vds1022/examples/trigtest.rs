@@ -1,4 +1,4 @@
-//! Hardware verification for Phase 6 triggers. Requires the scope with the
+//! Hardware verification of the trigger modes. Requires the scope with the
 //! 1 kHz probe-comp signal on CH1 (x10 probe -> 0..0.5 V at the BNC,
 //! 500 us high / 500 us low).
 //!

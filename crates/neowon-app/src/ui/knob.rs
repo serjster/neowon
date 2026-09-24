@@ -11,10 +11,8 @@ use bevy_egui::egui::{self, Color32, Sense, Stroke, Vec2};
 
 const SIZE: f32 = 40.0;
 /// Total widget width — a knob is a fixed-size cell so a row of them can
-/// never outgrow the dock (the labels used to claim the parent's remaining
-/// width and push the panel over the plot).
+/// never outgrow the dock.
 pub const KNOB_W: f32 = 74.0;
-/// Two label lines under the dial.
 const LABEL_H: f32 = 24.0;
 /// Vertical drag pixels for a full min->max sweep.
 const DRAG_PIXELS: f32 = 160.0;
@@ -34,7 +32,6 @@ pub fn knob(
 ) -> bool {
     let (lo, hi) = range;
     let before = *value;
-    // One fixed cell: dial on top, two centred label lines under it.
     let (cell, _) = ui.allocate_exact_size(egui::vec2(KNOB_W, SIZE + LABEL_H), Sense::hover());
     let dial = egui::Rect::from_center_size(
         egui::pos2(cell.center().x, cell.top() + SIZE / 2.0),
@@ -62,7 +59,6 @@ pub fn knob(
     }
     let changed = (*value - before).abs() > 1e-12;
 
-    // Draw: ring, detent ticks, pointer.
     let painter = ui.painter();
     let c = rect.center();
     let r = SIZE * 0.42;

@@ -10,7 +10,6 @@ use crate::script::{Action, Script};
 use crate::ui::UiScale;
 use crate::ui::layout::UI_SCALE_RANGE;
 
-/// Is the settings window open?
 #[derive(bevy::prelude::Resource, Default)]
 pub struct Settings {
     pub open: bool,

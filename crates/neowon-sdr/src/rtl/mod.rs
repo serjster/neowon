@@ -1,5 +1,5 @@
 //! In-tree RTL-SDR driver: RTL2832U demodulator + R820T/R828D tuner over
-//! `nusb` (Phase 10 D2). Ported from `librtlsdr-rs`
+//! `nusb`. Ported from `librtlsdr-rs`
 //! (`tmp-inspiration/librtlsdr-rs`), itself a faithful port of librtlsdr;
 //! register facts verified on hardware live in `docs/protocol-rtlsdr.md`.
 
@@ -18,11 +18,10 @@ pub const RTL_XTAL_HZ: u32 = 28_800_000;
 /// sampling); above it the VCO runs out.
 pub const TUNER_MIN_HZ: u32 = 24_000_000;
 pub const TUNER_MAX_HZ: u32 = 1_766_000_000;
-/// Discrete R82xx gains, tenths of a dB.
-pub const R82XX_GAINS: [i32; 29] = [
-    0, 9, 14, 27, 37, 77, 87, 125, 144, 157, 166, 197, 207, 229, 254, 280, 297, 328, 338, 364, 372,
-    386, 402, 421, 434, 439, 445, 480, 496,
-];
+/// Discrete R82xx gains, tenths of a dB. The ladder itself has one home
+/// in core (the sim advertises the same one without depending on this
+/// crate); the register tables below are this driver's own.
+pub use neowon_core::ladders::R82XX_GAINS_TDB as R82XX_GAINS;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

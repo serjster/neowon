@@ -29,7 +29,7 @@ pub fn fib_crc_received(fib: &[u8; FIB_BYTES]) -> u16 {
 }
 
 /// Does this FIB carry a valid CRC? The receiver trusts nothing it has not
-/// checked (D27).
+/// checked.
 pub fn fib_crc_ok(fib: &[u8; FIB_BYTES]) -> bool {
     fib_crc(fib) == fib_crc_received(fib)
 }

@@ -27,20 +27,15 @@ pub type FrameTiles = Vec<neowon_dsp::timeline::Tiles>;
 
 #[derive(Resource)]
 pub struct Recorder {
-    /// Capturing into the scrollback ring (on by default; the Pause
-    /// button and the `record` script action toggle it).
     pub on: bool,
     pub frames: Vec<SharedFrame>,
     /// `tiles[i]` summarizes `frames[i]`, same order and length.
     pub tiles: Vec<FrameTiles>,
     /// Memory budget in bytes; the oldest frames are dropped to stay under.
     pub budget: usize,
-    /// Approximate bytes held by `frames`.
     bytes: usize,
     last_seq: u64,
-    /// Last export destination, for the UI.
     pub last_export: Option<String>,
-    /// Path box contents for the Load button.
     pub load_path: String,
 }
 
@@ -84,7 +79,6 @@ impl History {
         }
     }
 
-    /// Back to live acquisition.
     pub fn live(&mut self, link: &mut Link) {
         self.active = None;
         if !link.config.running {
@@ -118,7 +112,6 @@ impl Recorder {
         }
     }
 
-    /// Store a frame, summarize it, and evict the oldest while over budget.
     pub fn push(&mut self, frame: SharedFrame) {
         let bytes = frame_bytes(&frame);
         self.tiles.push(
@@ -151,7 +144,6 @@ impl Recorder {
             .partition_point(|f| f.t_start() + f.duration() <= t)
     }
 
-    /// Save the ring as an `.nwc` capture file.
     pub fn save_nwc(&self, path: &std::path::Path) -> std::io::Result<()> {
         neowon_core::nwc::write(path, &self.frames)
     }
@@ -243,7 +235,7 @@ impl Recorder {
                 base.file_stem().unwrap_or_default().to_string_lossy(),
                 ch + 1
             ));
-            std::fs::write(&path, &data)?;
+            neowon_core::atomic_file::write(&path, &data)?;
             written.push(path.display().to_string());
         }
         Ok(written)
@@ -252,7 +244,7 @@ impl Recorder {
     /// Export CSV: time plus one volts column per recorded channel.
     pub fn export_csv(&self, path: &std::path::Path) -> std::io::Result<()> {
         use std::io::Write;
-        let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
+        let mut f = neowon_core::atomic_file::AtomicFile::create(path)?;
         let rate = self.rate() as f64;
         writeln!(f, "t,ch1_v,ch2_v")?;
         let mut i = 0usize;
@@ -269,11 +261,10 @@ impl Recorder {
                 i += 1;
             }
         }
-        Ok(())
+        f.commit()
     }
 }
 
-/// Sample bytes a frame holds.
 fn frame_bytes(f: &SharedFrame) -> usize {
     f.channels.iter().map(|c| c.data.len()).sum()
 }
@@ -286,7 +277,6 @@ pub fn export_dir() -> std::path::PathBuf {
     dir
 }
 
-/// Timestamped default file stem.
 pub fn default_stem() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -302,9 +292,7 @@ pub fn record_frames(link: Res<Link>, mut rec: ResMut<Recorder>, hist: Res<Histo
         return;
     }
     // Every frame that arrived this update, not just the newest one: the
-    // instrument captures faster than the display refreshes, so taking one
-    // per rendered frame silently dropped the rest and capped the scrollback
-    // at the render rate.
+    // instrument captures faster than the display refreshes.
     for frame in &link.arrived {
         if frame.seq == rec.last_seq {
             continue;
@@ -321,20 +309,26 @@ mod tests {
     use std::sync::Arc;
 
     fn frame(seq: u64, vals: &[i8]) -> SharedFrame {
-        Arc::new(CaptureFrame {
-            t_capture: None,
-            seq,
-            sample_rate: 1000.0,
-            acq: AcqMode::Sample,
-            layout: neowon_core::SampleLayout::Real,
-            channels: vec![ChannelCapture {
-                ch: 0,
-                data: vals.iter().map(|&v| v as f32).collect(),
-                cal: neowon_core::IqCal::real(0.01, 0.0),
-                clipped: false,
-                freq_meter: None,
-            }],
-        })
+        Arc::new(
+            CaptureFrame::new(
+                seq,
+                None,
+                1000.0,
+                AcqMode::Sample,
+                neowon_core::Acquisition::Record {
+                    samples: vals.len(),
+                },
+                neowon_core::SampleLayout::Real,
+                vec![ChannelCapture {
+                    ch: 0,
+                    data: vals.iter().map(|&v| v as f32).collect(),
+                    cal: neowon_core::IqCal::real(0.01, 0.0),
+                    clipped: false,
+                    freq_meter: None,
+                }],
+            )
+            .expect("a real record is a valid frame"),
+        )
     }
 
     #[test]
@@ -343,7 +337,8 @@ mod tests {
         rec.frames.push(frame(1, &[0, 50, -50, 100]));
         rec.frames.push(frame(2, &[-100, 25, 0, 0]));
         assert_eq!(rec.samples_per_channel(), 8);
-        let dir = std::env::temp_dir().join("neowon-rec-test");
+        // Namespaced by process: a fixed name is shared by concurrent runs.
+        let dir = std::env::temp_dir().join(format!("neowon-rec-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("rt.wav");
         rec.export_wav(&path).unwrap();
@@ -352,6 +347,7 @@ mod tests {
         assert_eq!(frames.len(), 8);
         // i8 50 << 8 = 12800 -> 12800/32768
         assert!((frames[1].0 - 12800.0 / 32768.0).abs() < 1e-4);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

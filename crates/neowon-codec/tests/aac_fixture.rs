@@ -9,8 +9,9 @@
 //! differ in the SBR/PS synthesis. So the test aligns first (normalised
 //! cross-correlation, positive lag sweep to 8192 samples), then asserts:
 //!
-//! * peak normalised correlation ≥ 0.98 (measured 1.0000),
-//! * relative RMS error at that lag ≤ 0.05 (measured ≤ 0.0006),
+//! * peak normalised correlation ≥ 0.98 (measured 0.99999988 L / 0.99999985 R
+//!   with `oxideav-aac`, 0.99999996 both with `fdk-aac`),
+//! * relative RMS error at that lag ≤ 0.05 (measured ≤ 5.6e-4),
 //! * the expected tone dominates its channel by ≥ 8×, and the tone
 //!   amplitude is within 0.5–2× of the ffmpeg reference.
 //!
@@ -21,7 +22,6 @@
 //! **960**-line transform (TS 102 563 clause 5.1), and the pinned
 //! `oxideav-aac` 0.1.7 rejects SBR on non-1024 families — the last test
 //! here reproduces that error on a real SBR-bearing AU and records it.
-//! The operator owns the fallback decision (DAB-G2).
 
 mod common;
 
@@ -85,6 +85,7 @@ fn he_aac_v2_fixture_decodes_within_the_stated_metric() {
         let other = if index == 0 { 880.0 } else { 440.0 };
 
         let agreement = common::align_and_compare(ours, reference, 8192);
+        common::report_agreement("he_aac_v2.latm", index, &agreement);
         assert!(
             agreement.correlation >= 0.98,
             "channel {index}: correlation {:.4} (lag {})",
@@ -153,7 +154,6 @@ fn fixture_aus_survive_a_dabplus_superframe_round_trip() {
         assert!(recovered.starts_with(original), "AU bytes diverge");
     }
 
-    // Direct decode and superframe-routed decode must agree exactly.
     let pcm_direct = decode_all(&stream.config, &stream.access_units);
     let pcm_routed = decode_all(&stream.config, &unpacked);
     assert_eq!(pcm_direct, pcm_routed);
@@ -175,7 +175,7 @@ fn decode_all(config: &AudioSpecificConfig, aus: &[Vec<u8>]) -> Vec<f32> {
 /// 5.1 mandates the 960 transform, HE-AAC v2 means SBR, and
 /// `oxideav-aac` 0.1.7 cannot do SBR on 960. A real DAB+ AU therefore
 /// surfaces [`Error::SbrUnsupportedFrameFamily`] — the typed boundary
-/// that made libfdk-aac the `fdk-aac` feature (DAB-G2).
+/// that made libfdk-aac the `fdk-aac` feature.
 #[cfg(not(feature = "fdk-aac"))]
 #[test]
 fn dabplus_960_sbr_is_surfaced_not_silently_misdecoded() {

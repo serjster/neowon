@@ -1,5 +1,3 @@
-//! Display dialog — persistence, trace mode, intensity, XY, stimulus (sim).
-
 use bevy_egui::egui;
 use neowon_backend::Command;
 
@@ -142,7 +140,7 @@ pub fn show(
     let is_sim = link
         .caps
         .as_ref()
-        .is_some_and(|c| c.serial.starts_with("sim"));
+        .is_some_and(|c| c.serial().starts_with("sim"));
     if is_sim {
         ui.group(|ui| {
             ui.strong("Stimulus");

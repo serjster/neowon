@@ -1,5 +1,5 @@
 //! The front panel in the SDR workspace: the radio's keys where the scope's
-//! sit (D12). Tune steps and Follow, span presets, the demodulator, run,
+//! sit. Tune steps and Follow, span presets, the demodulator, run,
 //! and the views. Every key injects the script action a script would use.
 
 use bevy_egui::egui;

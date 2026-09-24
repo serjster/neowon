@@ -1,4 +1,4 @@
-//! UI geometry verification (Phase 7.8): the app dumps the rects it
+//! UI geometry verification: the app dumps the rects it
 //! actually painted, and this asserts the invariant that made the bug
 //! visible — **no chrome may overlap the waveform grid**, whatever is
 //! expanded, at any window size or UI scale.
@@ -11,35 +11,11 @@
 //! Opens a window, so `#[ignore]` by default:
 //!   cargo test -p neowon-app --test ui_geometry -- --ignored
 
-use std::io::{BufRead, BufReader, Write};
-use std::net::TcpStream;
+mod common;
+use common::*;
+
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
-struct Conn {
-    out: TcpStream,
-    lines: std::io::Lines<BufReader<TcpStream>>,
-}
-
-impl Conn {
-    fn request(&mut self, line: &str) -> String {
-        writeln!(self.out, "{line}").unwrap();
-        self.lines.next().expect("connection closed").unwrap()
-    }
-
-    fn ok(&mut self, line: &str) {
-        let r = self.request(line);
-        assert!(r.contains(r#""ok":true"#), "{line} -> {r}");
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Rect {
@@ -92,11 +68,10 @@ fn dump(conn: &mut Conn, path: &Path) -> String {
         assert!(Instant::now() < deadline, "layout dump never written");
         std::thread::sleep(Duration::from_millis(100));
     }
-    std::thread::sleep(Duration::from_millis(50));
+    // Written atomically (`neowon_core::atomic_file`): present is whole.
     std::fs::read_to_string(path).unwrap()
 }
 
-/// Every dock section, by its `menu` script name.
 const SECTIONS: [&str; 11] = [
     "trigger",
     "horizontal",
@@ -114,38 +89,12 @@ const SECTIONS: [&str; 11] = [
 #[test]
 #[ignore = "opens a window"]
 fn no_panel_ever_covers_the_plot() {
-    let port = free_port();
-    let dir = std::env::temp_dir().join("neowon-uigeom");
-    std::fs::create_dir_all(&dir).unwrap();
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_neowon-app"))
-        .arg("--sim")
-        .env("NEOWON_CONTROL", port.to_string())
-        .env("NEOWON_WINDOW", "1520x820")
-        .env("NEOWON_UI_SCALE", "1.0")
-        .env_remove("NEOWON_SCRIPT")
-        .env("NEOWON_NO_STATE", "1")
-        .env("NEOWON_ORPHAN_EXIT", "15")
-        .spawn()
-        .expect("launch app");
-
-    let deadline = Instant::now() + Duration::from_secs(25);
-    let stream = loop {
-        match TcpStream::connect(("127.0.0.1", port)) {
-            Ok(s) => break s,
-            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(200)),
-            Err(e) => {
-                let _ = child.kill();
-                panic!("cannot connect: {e}");
-            }
-        }
-    };
-    stream
-        .set_read_timeout(Some(Duration::from_secs(15)))
-        .unwrap();
-    let mut conn = Conn {
-        out: stream.try_clone().unwrap(),
-        lines: BufReader::new(stream).lines(),
-    };
+    let dir = scratch("uigeom");
+    let (mut child, mut conn) = launch(
+        &["--sim"],
+        &[("NEOWON_WINDOW", "1520x820"), ("NEOWON_UI_SCALE", "1.0")],
+    );
+    conn.set_timeout(15);
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let path: PathBuf = dir.join("layout.json");

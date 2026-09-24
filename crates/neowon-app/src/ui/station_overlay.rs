@@ -1,9 +1,9 @@
-//! Station overlay on the spectrum (10.14.6): a tick at each known
+//! Station overlay on the spectrum: a tick at each known
 //! station's frequency and a label `name · WFM [· km]` in up to three
 //! staggered rows. Labels that cannot fit become ticks. Returns the hit
 //! regions so a click tunes to the station and picks the fitting
-//! demodulator (D21). Reference rows only — the operator's catalog has
-//! its own display (D20).
+//! demodulator. Reference rows only — the operator's catalog has
+//! its own display.
 
 use bevy_egui::egui;
 use neowon_refdb::{Service, Station};

@@ -1,5 +1,5 @@
 //! Deterministic complex (IQ) generator — the SDR half of the virtual
-//! testbench (D8).
+//! testbench.
 //!
 //! Every sample is a pure function of `(seed, index)`: randomness comes from
 //! counter-indexed [`splitmix64`] draws, never from a stateful PRNG, and
@@ -31,7 +31,6 @@ fn unit(seed: u64, index: u64) -> f64 {
     (splitmix64(seed, index) >> 11) as f64 * (1.0 / (1u64 << 53) as f64)
 }
 
-/// Draws one standard-normal value consumes.
 const NORMAL_DRAWS: u64 = 12;
 
 /// Approximately standard normal (Irwin–Hall, n = 12): exact mean 0 and
@@ -343,7 +342,7 @@ pub struct IqScene {
 }
 
 impl IqScene {
-    /// The scene the D8 fixture and `neowon sim iq` pin: a 0.5 FS tone
+    /// The scene the IQ fixture and `neowon sim iq` pin: a 0.5 FS tone
     /// 100 kHz above centre at 2.048 MS/s, in 0.05 FS noise. Changing it
     /// changes the fixture bytes, so treat it like a stimulus preset.
     pub fn reference() -> Self {
@@ -358,7 +357,6 @@ impl IqScene {
         }
     }
 
-    /// The I/Q pair at sample `index` for `seed`.
     pub fn sample(&self, seed: u64, index: u64) -> (f32, f32) {
         let (mut i, mut q) = (0.0f64, 0.0f64);
         let t = index as f64 / self.sample_rate;
@@ -389,7 +387,7 @@ impl IqScene {
                 continue;
             }
             // Tones keep their original phase arithmetic (offset / rate ×
-            // index) so the D8 fixture's bytes do not move.
+            // index) so the fixture's bytes do not move.
             let (amplitude, turns) = match *c {
                 IqComponent::Tone {
                     offset_hz,
@@ -523,8 +521,8 @@ mod tests {
     #[test]
     fn frame_is_a_complex_stream() {
         let f = IqScene::reference().frame(1, 0, 0, 256);
-        assert_eq!(f.layout, SampleLayout::Complex);
-        assert_eq!(f.channels[0].unit_count(f.layout), 256);
+        assert_eq!(f.layout(), SampleLayout::Complex);
+        assert_eq!(f.channels[0].unit_count(f.layout()), 256);
         assert!((f.duration() - 256.0 / 2.048e6).abs() < 1e-15);
     }
 

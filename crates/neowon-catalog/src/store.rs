@@ -21,6 +21,7 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use neowon_core::atomic_file::AtomicFile;
 use serde::{Deserialize, Serialize};
 
 use crate::migrate;
@@ -66,18 +67,17 @@ fn fsync_dir(dir: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-/// Write `bytes` to `path` atomically: temp file, fsync, rename, fsync
-/// the directory. The failpoints sit on either side of the rename.
+/// Write `bytes` to `path` atomically (`neowon_core::atomic_file`: temp,
+/// fsync, rename), then fsync the directory. The failpoints sit on either
+/// side of the rename.
 fn replace_file(dir: &Path, name: &str, bytes: &[u8], failpoints: bool) -> Result<(), Error> {
-    let tmp = dir.join(format!("{name}.tmp"));
-    let mut f = File::create(&tmp)?;
+    let mut f = AtomicFile::create(dir.join(name))?;
     f.write_all(bytes)?;
-    f.sync_all()?;
-    drop(f);
+    f.flush()?;
     if failpoints {
         failpoint("before-rename");
     }
-    std::fs::rename(&tmp, dir.join(name))?;
+    f.commit()?;
     if failpoints {
         failpoint("after-rename-before-fsync");
     }
@@ -89,6 +89,31 @@ fn segment_no(name: &str) -> Option<u64> {
         .strip_suffix(".log")?
         .parse()
         .ok()
+}
+
+fn snapshot_no(name: &str) -> Option<u64> {
+    name.strip_prefix("snapshot-")?
+        .strip_suffix(".json")?
+        .parse()
+        .ok()
+}
+
+/// A temp `replace_file` left for one of this store's own files
+/// (`.<target>.<pid>-<n>.tmp`, `neowon_core::atomic_file`'s pattern), and
+/// nothing that merely ends in `.tmp`.
+fn own_temp(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix('.').and_then(|n| n.strip_suffix(".tmp")) else {
+        return false;
+    };
+    let Some((target, tag)) = rest.rsplit_once('.') else {
+        return false;
+    };
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    neowon_core::atomic_file::is_temp(name)
+        && tag
+            .split_once('-')
+            .is_some_and(|(a, b)| digits(a) && digits(b))
+        && (target == "manifest.json" || snapshot_no(target).is_some())
 }
 
 impl Catalog {
@@ -153,7 +178,17 @@ impl Catalog {
         let mut seq = manifest.last_seq;
         let mut current_len = None;
         for (_, name) in &segments {
-            let (header, records, valid) = wal::read(&dir.join(name))?;
+            let Some((header, records, valid)) = wal::read(&dir.join(name))? else {
+                // A torn header: `Writer::create` died before the header
+                // was whole, so no record was ever appended. Not the
+                // manifest's segment: a checkpoint was interrupted; set it
+                // aside (the next checkpoint numbers past it and sweeps
+                // it). The manifest's own: recreated below.
+                if *name == manifest.wal {
+                    std::fs::remove_file(dir.join(name))?;
+                }
+                continue;
+            };
             if header.format != wal::WAL_FORMAT || header.schema > SCHEMA {
                 return Err(Error::TooNew(header.schema));
             }
@@ -221,7 +256,6 @@ impl Catalog {
         &self.dir
     }
 
-    /// A fresh id for a new entity.
     pub fn next_id(&mut self) -> crate::Id {
         self.state.alloc_id()
     }
@@ -229,31 +263,71 @@ impl Catalog {
     /// Validate, apply and durably log `op`; returns its sequence number
     /// once it is on disk.
     pub fn commit(&mut self, op: Op) -> Result<u64, Error> {
+        Ok(*self
+            .commit_many(vec![op])?
+            .last()
+            .expect("one op in, one seq out"))
+    }
+
+    /// Validate, apply and durably log `ops` in order, with **one** fsync for
+    /// the whole batch. Returns their sequence numbers.
+    ///
+    /// Semantics match a `commit` loop exactly, including the failure shape:
+    /// if an op is refused, everything before it is still committed (and
+    /// durable) and the error is returned. The saving is the fsync count,
+    /// which `wal_syncs` reports — without it a `catalog bulk tag` over 50
+    /// ids or a 200-entity import would pay one disk barrier per entity.
+    pub fn commit_many(&mut self, ops: Vec<Op>) -> Result<Vec<u64>, Error> {
         if self.poisoned {
             return Err(Error::Poisoned);
         }
-        let inverse = self.state.inverse(&op);
-        self.state.apply(&op)?;
-        let rec = Record {
-            seq: self.seq + 1,
-            op,
-        };
-        if let Err(e) = self.wal.append(&rec) {
+        let mut recs: Vec<Record> = Vec::with_capacity(ops.len());
+        let mut inverses: Vec<Option<Op>> = Vec::with_capacity(ops.len());
+        let mut refused = None;
+        for op in ops {
+            let inverse = self.state.inverse(&op);
+            if let Err(e) = self.state.apply(&op) {
+                // Whatever was applied before this op is real; log it, then
+                // report the refusal.
+                refused = Some(e);
+                break;
+            }
+            // Sequence numbers stay contiguous across the batch.
+            let seq = self.seq + recs.len() as u64 + 1;
+            inverses.push(inverse);
+            recs.push(Record { seq, op });
+        }
+        if let Err(e) = self.wal.append_all(&recs) {
             self.poisoned = true;
             return Err(e);
         }
-        self.seq = rec.seq;
-        if rec.op.undoable() {
-            self.undo.extend(inverse);
-        } else {
-            // History before a merge or purge cannot be taken back safely.
-            self.undo.clear();
+        let seqs: Vec<u64> = recs.iter().map(|r| r.seq).collect();
+        for (rec, inverse) in recs.iter().zip(inverses) {
+            self.seq = rec.seq;
+            match inverse {
+                Some(inverse) => self.undo.push(inverse),
+                // No exact inverse (a merge, purge or cascade, or an op
+                // whose restore would be refused or partial): the history
+                // before it cannot be taken back safely, and skipping the
+                // entry would let the next undo rewind something older.
+                None => self.undo.clear(),
+            }
+            self.since_checkpoint += 1;
         }
-        self.since_checkpoint += 1;
         if self.since_checkpoint >= self.checkpoint_every {
             self.checkpoint()?;
         }
-        Ok(rec.seq)
+        match refused {
+            Some(e) => Err(e),
+            None => Ok(seqs),
+        }
+    }
+
+    /// fsyncs the current WAL segment has paid for. A commit's cost is its
+    /// fsync, so this is how "one sync per batch" is checked rather than
+    /// claimed. Resets when a checkpoint starts a new segment.
+    pub fn wal_syncs(&self) -> u64 {
+        self.wal.syncs()
     }
 
     /// Take back the last undoable op of this session (logged as a new
@@ -276,9 +350,16 @@ impl Catalog {
         }
         let snap = format!("snapshot-{}.json", self.seq);
         replace_file(&self.dir, &snap, &serde_json::to_vec(&self.state)?, false)?;
-        let next_seg = segment_no(&self.manifest.wal).unwrap_or(0) + 1;
+        // Number past every segment on disk rather than delete a leftover
+        // from an interrupted checkpoint: until the manifest swap below,
+        // nothing proves a segment the manifest does not name is garbage.
+        let next_seg = std::fs::read_dir(&self.dir)?
+            .filter_map(|e| segment_no(e.ok()?.file_name().to_str()?))
+            .chain(segment_no(&self.manifest.wal))
+            .max()
+            .unwrap_or(0)
+            + 1;
         let seg = format!("wal-{next_seg}.log");
-        let _ = std::fs::remove_file(self.dir.join(&seg)); // leftover from an interrupted checkpoint
         let wal = Writer::create(&self.dir.join(&seg), SCHEMA)?;
         fsync_dir(&self.dir)?;
         let manifest = Manifest {
@@ -297,9 +378,13 @@ impl Catalog {
         // Committed: the old snapshot and segments are no longer needed.
         for e in std::fs::read_dir(&self.dir)?.flatten() {
             let name = e.file_name().to_string_lossy().to_string();
+            // Everything a segment or snapshot held is in `snap` now; the
+            // sweep touches only names this store creates.
             let stale_seg = segment_no(&name).is_some() && name != seg;
-            let stale_snap = name.starts_with("snapshot-") && name != snap;
-            if stale_seg || stale_snap {
+            let stale_snap = snapshot_no(&name).is_some() && name != snap;
+            // A temp a killed writer left: the lock proves it is dead.
+            let stale_tmp = own_temp(&name);
+            if stale_seg || stale_snap || stale_tmp {
                 let _ = std::fs::remove_file(e.path());
             }
         }

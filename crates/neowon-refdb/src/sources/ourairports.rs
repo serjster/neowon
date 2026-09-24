@@ -1,4 +1,4 @@
-//! OurAirports importer (D17; public domain): `airport-frequencies.csv`
+//! OurAirports importer (public domain): `airport-frequencies.csv`
 //! joined to `airports.csv` on the airport id, for coordinates and names.
 
 use std::collections::HashMap;

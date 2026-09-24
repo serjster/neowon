@@ -1,4 +1,4 @@
-//! EiBi shortwave schedule importer (D17). Files are `;`-separated
+//! EiBi shortwave schedule importer. Files are `;`-separated
 //! Latin-1 CSVs named `sked-<a|b><yy>.csv`; season A runs from the last
 //! Sunday of March to the last Sunday of October, B the rest of the year.
 //! Columns: `kHz;Time(UTC);Days;ITU;Station;Lng;Target;Remarks;P;Start;Stop`.

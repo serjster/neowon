@@ -1,4 +1,4 @@
-//! Audio output sink (Phase 10.10): the demodulated channel on the default
+//! Audio output sink: the demodulated channel on the default
 //! output device.
 //!
 //! A `cpal::Stream` is not `Send` on every host, so a thread owns it and the
@@ -8,7 +8,7 @@
 //! underrun rather than hiding it. A machine with no output device is a
 //! state (`available() == false`), not an error.
 //!
-//! **Opening is off the caller's path (review M17).** `spawn` starts the
+//! **Opening is off the caller's path.** `spawn` starts the
 //! thread and returns immediately; the device report is polled from the
 //! accessors, so a slow or absent device never stalls the frame loop.
 //! `SinkState::Starting` is a real, observable state between the two.
@@ -22,7 +22,6 @@ use std::sync::{Arc, Mutex};
 /// Queue depth (~1 s at 48 kHz): beyond it the oldest audio is dropped.
 pub const MAX_QUEUED: usize = 48_000;
 
-/// The queue the callback drains and the producer fills.
 #[derive(Default)]
 struct Shared {
     buf: VecDeque<f32>,
@@ -67,7 +66,7 @@ impl Shared {
 
 /// Where the output device is in its open sequence. `Starting` is a real,
 /// observable state: the thread that opens the device runs off the app's
-/// path (review M17), so the handle reports it until the thread answers.
+/// path, so the handle reports it until the thread answers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SinkState {
     Starting,
@@ -88,7 +87,7 @@ struct Outlet {
 /// why the device could not be opened.
 type DeviceReport = Result<(String, f64, usize), String>;
 
-/// A handle to the output device. Cheap to clone-free; owns the queue.
+/// A handle to the output device; owns the queue.
 pub struct AudioOut {
     shared: Arc<Mutex<Shared>>,
     volume: Arc<AtomicU32>,
@@ -323,7 +322,7 @@ mod tests {
         assert_eq!(s.underruns, 0);
     }
 
-    /// Review M17: opening the device must not stall the caller, and the
+    /// Opening the device must not stall the caller, and the
     /// state is named while the thread works.
     #[test]
     fn spawn_returns_immediately_with_a_named_state() {

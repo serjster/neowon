@@ -1,8 +1,8 @@
-//! 10.14.3 acceptance. Every fetch path runs against a local
-//! `TcpListener` stub serving the 10.14.2 fixtures (exact station
-//! equality), an HTTP 500 is retried once and then succeeds, a persistent
-//! failure names its source, and `locate_ip` reads the stub's JSON. No
-//! test in this file touches the public network (D19).
+//! Every fetch path runs against a local `TcpListener` stub serving the
+//! importer fixtures (exact station equality), an HTTP 500 is retried once
+//! and then succeeds, a persistent failure names its source, and
+//! `locate_ip` reads the stub's JSON. No test in this file touches the
+//! public network.
 
 use std::io::{Read, Write};
 use std::net::TcpListener;

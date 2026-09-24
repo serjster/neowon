@@ -1,4 +1,4 @@
-//! FIG parsing for tier 1: ensemble identity, sub-channels, services and their
+//! FIG parsing: ensemble identity, sub-channels, services and their
 //! labels.
 //!
 //! Clauses cited are from **ETSI EN 300 401 V2.1.1 (2017-01)**:
@@ -14,9 +14,8 @@
 //!   = `EId`), extension 1 the **programme service** label (identifier = `SId`)
 //!   — table 4 is explicit about those two.
 //!
-//! What tier 1 deliberately does not do: data services (`P/D = 1`, 32-bit
-//! `SId`) are counted but not tabled. Tier 2 closes the other gap: a short-form
-//! sub-channel's table index is resolved through table 8 (clause 11.3.1), so
+//! Data services (`P/D = 1`, 32-bit `SId`) are counted but not tabled. A
+//! short-form sub-channel's table index is resolved through table 8 (clause 11.3.1), so
 //! UEP sub-channels carry their exact size and bit rate like EEP ones.
 
 use super::{Protection, Service, SubChannel};
@@ -43,7 +42,7 @@ pub fn fig0(ensemble: &mut super::Ensemble, data: &[u8]) {
         1 => fig0_subchannel(ensemble, payload),
         2 => fig0_service(ensemble, payload, pd == 1),
         // Other extensions (time/date, programme type, region, CA ...) are
-        // legal and simply not tier 1's business.
+        // legal and simply not decoded here.
         _ => {}
     }
 }
@@ -64,7 +63,7 @@ fn fig0_ensemble(ensemble: &mut super::Ensemble, payload: &[u8]) {
 ///
 /// A short form's index is resolved through clause 11.3.1's table 8, so a UEP
 /// sub-channel reports its true size and bit rate rather than an index with no
-/// meaning (tier-1 deviation 2 closed). Table switch 1 is reserved by the
+/// meaning. Table switch 1 is reserved by the
 /// standard, so nothing is resolved for it — the index is still reported.
 fn fig0_subchannel(ensemble: &mut super::Ensemble, payload: &[u8]) {
     let mut pos = 0usize;
@@ -124,7 +123,7 @@ fn fig0_service(ensemble: &mut super::Ensemble, payload: &[u8], data_service: bo
     if payload.len() < sid_len + 1 {
         return;
     }
-    // Tier 1 tables programme services; data services are counted so the
+    // Programme services are tabled; data services are counted so the
     // readout can say they exist without pretending to have decoded them.
     if data_service {
         ensemble.data_services += 1;
@@ -200,8 +199,7 @@ pub fn fig1(ensemble: &mut super::Ensemble, data: &[u8]) {
 ///
 /// Charset 0 (complete EBU Latin, table 47 of the standard's label clause) and
 /// charset 15 (UTF-8) decode exactly. Any other charset is not transcribed, so
-/// its bytes are not guessed: printable ASCII passes and the rest is `?`
-/// (D27).
+/// its bytes are not guessed: printable ASCII passes and the rest is `?`.
 fn label(charset: u8, bytes: &[u8]) -> String {
     let end = bytes
         .iter()
@@ -351,7 +349,7 @@ mod tests {
     }
 
     /// Table switch 1 is reserved by the standard (clause 6.2.1), so the index
-    /// is reported but nothing is resolved through table 8 (D27).
+    /// is reported but nothing is resolved through table 8.
     #[test]
     fn reserved_table_switch_resolves_nothing() {
         let mut data = [0u8; 30];

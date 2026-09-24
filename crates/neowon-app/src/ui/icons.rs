@@ -13,7 +13,6 @@ pub enum Icon {
     ArrowDown,
     ZoomIn,
     ZoomOut,
-    /// Circular arrow (reset/re-centre).
     Recenter,
 }
 
@@ -27,7 +26,6 @@ fn pt(rect: Rect, x: f32, y: f32) -> Pos2 {
     )
 }
 
-/// Paint `icon` into `rect` with `color`.
 pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
     let stroke = Stroke::new((rect.width() * REL_STROKE).max(1.0), color);
     match icon {
@@ -95,7 +93,6 @@ fn arrow_v(painter: &egui::Painter, rect: Rect, stroke: Stroke, dir: f32) {
     painter.line_segment([tip, pt(rect, 0.5 + 0.20, 0.20 + 0.18)], stroke);
 }
 
-/// Square icon button with a tooltip; returns true on click.
 pub fn button(ui: &mut egui::Ui, icon: Icon, tooltip: &str, size: f32) -> Response {
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click());
     let color = if ui.is_enabled() {

@@ -189,7 +189,6 @@ pub struct SuperframeDecoder {
 }
 
 impl SuperframeDecoder {
-    /// Create a decoder for one sub-channel size.
     pub fn new(subchannel_index: u8) -> Result<Self, Error> {
         if subchannel_index == 0 || subchannel_index > MAX_SUBCHANNEL_INDEX {
             return Err(Error::InvalidSubchannelIndex(subchannel_index));
@@ -201,7 +200,6 @@ impl SuperframeDecoder {
         })
     }
 
-    /// The configured sub-channel index.
     #[must_use]
     pub fn subchannel_index(&self) -> u8 {
         self.subchannel_index
@@ -373,7 +371,6 @@ pub struct SuperframeEncoder {
 }
 
 impl SuperframeEncoder {
-    /// Create an encoder for one sub-channel size.
     pub fn new(subchannel_index: u8) -> Result<Self, Error> {
         if subchannel_index == 0 || subchannel_index > MAX_SUBCHANNEL_INDEX {
             return Err(Error::InvalidSubchannelIndex(subchannel_index));

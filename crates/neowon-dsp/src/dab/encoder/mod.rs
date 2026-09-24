@@ -10,15 +10,13 @@
 //! **Why it lives here and not in `neowon-sim`.** `neowon-sim` does not depend
 //! on `neowon-dsp` (the dependency runs the other way, in tests), and adding
 //! that edge to get an IQ source would be the wrong direction for the
-//! workspace. So the encoder sits next to the decoder it tests, and the
-//! `rf-dab` sim preset lands with the app wiring in 10.15.4 (deviation recorded
-//! in `docs/tasks/phase10-dab-spec.md`).
+//! workspace. So the encoder sits next to the decoder it tests.
 //!
 //! **Keep in mind what this proves and what it does not.** The encoder shares
 //! the normative tables and the clause-11.1.1 code with the decoder, so a shared
-//! misreading of the standard passes every test here. That is exactly why the
-//! spec's row 7 (a real capture on real air) exists, and why the table tests
-//! are written against the standard's own published figures.
+//! misreading of the standard passes every test here. That is why a real
+//! on-air capture is the final check, and why the table tests are written
+//! against the standard's own published figures.
 
 pub mod msc;
 
@@ -35,7 +33,6 @@ use super::{
     MSC_SYMBOLS, Protection, SYMBOLS_PER_FRAME, T_G, T_NULL, T_S, T_U,
 };
 
-/// One service to encode: identifier, label, and its sub-channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ServiceSpec<'a> {
     pub sid: u16,
@@ -57,14 +54,13 @@ pub struct SubChannelSpec {
     pub protection: Protection,
 }
 
-/// The ensemble to encode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnsembleSpec<'a> {
     pub eid: u16,
     pub label: &'a str,
     pub services: Vec<ServiceSpec<'a>>,
     /// Explicit sub-channel layout for FIG 0/1 and the MSC. Empty keeps the
-    /// tier-1 legacy layout — each service's sub-channel, 96 CU EEP 3-A, in
+    /// legacy layout — each service's sub-channel, 96 CU EEP 3-A, in
     /// service order — so existing fixtures encode byte-for-byte identically.
     pub sub_channels: Vec<SubChannelSpec>,
 }
@@ -93,7 +89,7 @@ fn label_field(text: &str, width: usize) -> Vec<u8> {
 
 impl<'a> EnsembleSpec<'a> {
     /// The sub-channels to signal and encode: the explicit layout when one was
-    /// given, otherwise the tier-1 legacy layout derived from the services.
+    /// given, otherwise the legacy layout derived from the services.
     pub fn layout(&self) -> Vec<SubChannelSpec> {
         if !self.sub_channels.is_empty() {
             return self.sub_channels.clone();
@@ -215,7 +211,6 @@ pub struct FicFrame {
 }
 
 impl FicFrame {
-    /// Encode an ensemble into one frame's FIC.
     pub fn new(spec: &EnsembleSpec<'_>) -> Self {
         let fibs = spec.fibs();
         let mut bits = Vec::with_capacity(FIC_SOFT_BITS);
@@ -242,7 +237,6 @@ impl FicFrame {
         Self { bits }
     }
 
-    /// The transmitted FIC bits of the frame.
     pub fn transmitted_bits(&self) -> &[u8] {
         &self.bits
     }
@@ -419,7 +413,6 @@ mod tests {
         assert_eq!((fibs[0][2], fibs[0][3]), (0xF0, 0x44));
     }
 
-    /// Encoding is deterministic: same spec, same bits.
     #[test]
     fn encoding_is_deterministic() {
         assert_eq!(

@@ -16,7 +16,13 @@ use crate::uitree;
 const LANE_H: f32 = 17.0;
 const MAX_LANES: usize = 4;
 
-pub fn show(ctx: &egui::Context, rm: &RefMap, sdr: &SdrState, script: &mut Script) {
+pub fn show(
+    ctx: &egui::Context,
+    rm: &RefMap,
+    sdr: &SdrState,
+    caps: Option<&neowon_backend::SdrCaps>,
+    script: &mut Script,
+) {
     if !rm.window {
         return;
     }
@@ -43,7 +49,7 @@ pub fn show(ctx: &egui::Context, rm: &RefMap, sdr: &SdrState, script: &mut Scrip
             });
             legend(ui, rm);
             ui.separator();
-            egui::ScrollArea::vertical().show(ui, |ui| rows(ui, rm, sdr, script));
+            egui::ScrollArea::vertical().show(ui, |ui| rows(ui, rm, sdr, caps, script));
         });
     if !open {
         script.inject(Action::RefMap(RefMapAction::Window(false)));
@@ -72,8 +78,14 @@ fn legend(ui: &mut egui::Ui, rm: &RefMap) {
 }
 
 /// One row per decade of the tuner's range.
-fn rows(ui: &mut egui::Ui, rm: &RefMap, sdr: &SdrState, script: &mut Script) {
-    let tuner = range(sdr);
+fn rows(
+    ui: &mut egui::Ui,
+    rm: &RefMap,
+    sdr: &SdrState,
+    caps: Option<&neowon_backend::SdrCaps>,
+    script: &mut Script,
+) {
+    let tuner = range(caps);
     let mut dec = 10f64.powf(tuner.0.log10().floor());
     let mut row = 0;
     while dec < tuner.1 {

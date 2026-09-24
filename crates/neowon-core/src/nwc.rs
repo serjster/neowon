@@ -27,7 +27,7 @@ use std::io::{self, Read, Write};
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::{AcqMode, CaptureFrame, ChannelCapture, IqCal, SampleLayout, SharedFrame};
+use crate::{AcqMode, Acquisition, CaptureFrame, ChannelCapture, IqCal, SampleLayout, SharedFrame};
 
 const MAGIC_V3: &[u8; 8] = b"NWCAP3\0\0";
 const MAGIC_V2: &[u8; 8] = b"NWCAP2\0\0";
@@ -59,14 +59,15 @@ fn layout_from_byte(b: u8) -> io::Result<SampleLayout> {
 }
 
 pub fn write(path: &Path, frames: &[SharedFrame]) -> io::Result<()> {
-    let mut file = io::BufWriter::new(std::fs::File::create(path)?);
+    // The capture appears at `path` only once every frame is in it.
+    let mut file = crate::atomic_file::AtomicFile::create(path)?;
     file.write_all(MAGIC_V3)?;
     file.write_all(&FLAG_ZSTD.to_le_bytes())?;
     let mut z = zstd::stream::Encoder::new(file, 0)?;
     for frame in frames {
         z.write_all(&frame.seq.to_le_bytes())?;
         z.write_all(&frame.sample_rate.to_le_bytes())?;
-        let (acq, avg) = match frame.acq {
+        let (acq, avg) = match frame.acq() {
             AcqMode::Sample => (0u8, 0u8),
             AcqMode::Peak => (1, 0),
             AcqMode::Average(n) => (2, n),
@@ -74,7 +75,7 @@ pub fn write(path: &Path, frames: &[SharedFrame]) -> io::Result<()> {
         z.write_all(&[
             acq,
             avg,
-            layout_byte(frame.layout),
+            layout_byte(frame.layout()),
             frame.channels.len() as u8,
         ])?;
         z.write_all(&[frame.t_capture.is_some() as u8])?;
@@ -95,7 +96,7 @@ pub fn write(path: &Path, frames: &[SharedFrame]) -> io::Result<()> {
             z.write_all(&bytes)?;
         }
     }
-    z.finish()?.flush()
+    z.finish()?.commit()
 }
 
 pub fn read(path: &Path) -> io::Result<Vec<SharedFrame>> {
@@ -209,14 +210,26 @@ pub fn read(path: &Path) -> io::Result<Vec<SharedFrame>> {
                 freq_meter,
             });
         }
-        frames.push(Arc::new(CaptureFrame {
-            seq: u64::from_le_bytes(seq),
+        // A file is not trusted to hold a legal layout x acq combination:
+        // it goes through the same constructor a backend does. The
+        // delivery a stored frame implies is its layout's — complex data
+        // only ever came off a stream.
+        let units = channels.first().map_or(0, |c| c.unit_count(layout));
+        let delivery = match layout {
+            SampleLayout::Complex => Acquisition::Stream { chunk: units },
+            SampleLayout::Real => Acquisition::Record { samples: units },
+        };
+        let frame = CaptureFrame::new(
+            u64::from_le_bytes(seq),
             t_capture,
             sample_rate,
             acq,
+            delivery,
             layout,
             channels,
-        }));
+        )
+        .map_err(|e| bad(&e.to_string()))?;
+        frames.push(Arc::new(frame));
     }
     Ok(frames)
 }
@@ -233,44 +246,51 @@ mod tests {
 
     fn sample_frames() -> Vec<SharedFrame> {
         vec![
-            Arc::new(CaptureFrame {
-                seq: 7,
-                t_capture: Some(1.5),
-                sample_rate: 250e3,
-                acq: AcqMode::Average(16),
-                layout: SampleLayout::Real,
-                channels: vec![
-                    ChannelCapture {
-                        ch: 0,
-                        data: (0..500).map(|i| ((i * 7) % 251 - 125) as f32).collect(),
-                        cal: IqCal::real(0.01, -0.5),
-                        clipped: true,
-                        freq_meter: Some(999.9),
-                    },
-                    ChannelCapture {
-                        ch: 1,
-                        data: vec![1.0, -1.0, 127.0, -128.0],
-                        cal: IqCal::real(0.2, 0.0),
-                        clipped: false,
-                        freq_meter: None,
-                    },
-                ],
-            }),
-            Arc::new(CaptureFrame {
-                seq: 8,
-                t_capture: None,
-                sample_rate: 2.5e3,
-                acq: AcqMode::Sample,
-                layout: SampleLayout::Real,
-                channels: vec![],
-            }),
+            Arc::new(
+                CaptureFrame::new(
+                    7,
+                    Some(1.5),
+                    250e3,
+                    AcqMode::Average(16),
+                    Acquisition::Record { samples: 500 },
+                    SampleLayout::Real,
+                    vec![
+                        ChannelCapture {
+                            ch: 0,
+                            data: (0..500).map(|i| ((i * 7) % 251 - 125) as f32).collect(),
+                            cal: IqCal::real(0.01, -0.5),
+                            clipped: true,
+                            freq_meter: Some(999.9),
+                        },
+                        ChannelCapture {
+                            ch: 1,
+                            data: vec![1.0, -1.0, 127.0, -128.0],
+                            cal: IqCal::real(0.2, 0.0),
+                            clipped: false,
+                            freq_meter: None,
+                        },
+                    ],
+                )
+                .unwrap(),
+            ),
+            Arc::new(
+                CaptureFrame::new(
+                    8,
+                    None,
+                    2.5e3,
+                    AcqMode::Sample,
+                    Acquisition::Record { samples: 0 },
+                    SampleLayout::Real,
+                    vec![],
+                )
+                .unwrap(),
+            ),
         ]
     }
 
     #[test]
     fn round_trips_field_exact() {
-        let dir = std::env::temp_dir().join("neowon-nwc-test");
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::test_scratch("nwc");
         let path = dir.join("rt.nwc");
         let frames = sample_frames();
         write(&path, &frames).unwrap();
@@ -279,8 +299,8 @@ mod tests {
         for (a, b) in frames.iter().zip(&back) {
             assert_eq!(a.seq, b.seq);
             assert_eq!(a.sample_rate, b.sample_rate);
-            assert_eq!(a.acq, b.acq);
-            assert_eq!(a.layout, b.layout);
+            assert_eq!(a.acq(), b.acq());
+            assert_eq!(a.layout(), b.layout());
             assert_eq!(a.channels.len(), b.channels.len());
             for (ca, cb) in a.channels.iter().zip(&b.channels) {
                 assert_eq!(ca.ch, cb.ch);
@@ -294,39 +314,41 @@ mod tests {
 
     #[test]
     fn complex_calibration_round_trips() {
-        let dir = std::env::temp_dir().join("neowon-nwc-test");
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::test_scratch("nwc");
         let path = dir.join("iq.nwc");
-        let frames = vec![Arc::new(CaptureFrame {
-            seq: 1,
-            t_capture: Some(0.0),
-            sample_rate: 1e6,
-            acq: AcqMode::Sample,
-            layout: SampleLayout::Complex,
-            channels: vec![ChannelCapture {
-                ch: 0,
-                data: vec![0.5, -0.25, 1.0, -1.0],
-                cal: IqCal {
-                    scale_i: 0.25,
-                    scale_q: 0.3,
-                    offset_i: -1.5,
-                    offset_q: 2.5,
-                },
-                clipped: false,
-                freq_meter: None,
-            }],
-        })];
+        let frames = vec![Arc::new(
+            CaptureFrame::new(
+                1,
+                Some(0.0),
+                1e6,
+                AcqMode::Sample,
+                Acquisition::Stream { chunk: 2 },
+                SampleLayout::Complex,
+                vec![ChannelCapture {
+                    ch: 0,
+                    data: vec![0.5, -0.25, 1.0, -1.0],
+                    cal: IqCal {
+                        scale_i: 0.25,
+                        scale_q: 0.3,
+                        offset_i: -1.5,
+                        offset_q: 2.5,
+                    },
+                    clipped: false,
+                    freq_meter: None,
+                }],
+            )
+            .unwrap(),
+        )];
         write(&path, &frames).unwrap();
         let back = read(&path).unwrap();
-        assert_eq!(back[0].layout, SampleLayout::Complex);
+        assert_eq!(back[0].layout(), SampleLayout::Complex);
         assert_eq!(back[0].channels[0].data, frames[0].channels[0].data);
         assert_eq!(back[0].channels[0].cal, frames[0].channels[0].cal);
     }
 
     #[test]
     fn rejects_bad_magic() {
-        let dir = std::env::temp_dir().join("neowon-nwc-test");
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::test_scratch("nwc");
         let path = dir.join("bad.nwc");
         std::fs::write(&path, b"not a capture file").unwrap();
         assert!(read(&path).is_err());
@@ -359,14 +381,13 @@ mod tests {
 
     #[test]
     fn reads_legacy_i8_channels_as_real() {
-        let dir = std::env::temp_dir().join("neowon-nwc-test");
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::test_scratch("nwc");
         for version in [1u8, 2] {
             let path = dir.join(format!("v{version}.nwc"));
             write_legacy(&path, version);
             let frames = read(&path).unwrap();
             let f = &frames[0];
-            assert_eq!(f.layout, SampleLayout::Real);
+            assert_eq!(f.layout(), SampleLayout::Real);
             assert_eq!(f.channels[0].cal, IqCal::real(0.02, -1.5));
             assert_eq!(f.channels[0].data, vec![0.0, -56.0, -100.0]);
             // v1 has no timestamp; v2 has an explicit "none".

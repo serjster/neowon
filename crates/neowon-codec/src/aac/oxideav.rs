@@ -4,17 +4,15 @@
 //! DAB+ 960 + SBR configuration is rejected with
 //! [`Error::SbrUnsupportedFrameFamily`] as soon as a bitstream carrying
 //! SBR is decoded. That is the surfaced limitation that made libfdk-aac
-//! the `fdk-aac` feature (DAB-G2).
+//! the `fdk-aac` feature.
 
 use super::{AudioSpecificConfig, DecodedAudio, Error, observed_support};
 
 use oxideav_aac::decode::StreamDecoder;
 use oxideav_aac::swb_offset::FrameFamily;
 
-/// [`crate::aac::AacDecoder::BACKEND`] value for this backend.
 pub(super) const BACKEND: &str = "oxideav-aac";
 
-/// The `oxideav-aac` decoder state for one stream.
 #[derive(Debug)]
 pub(super) struct Backend {
     inner: StreamDecoder,

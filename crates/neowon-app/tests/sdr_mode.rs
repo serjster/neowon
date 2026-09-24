@@ -2,97 +2,23 @@
 //!
 //! Every expectation is derived, not recorded: the carrier's frequency and
 //! level come from the scene definition, and the IQ fingerprint is
-//! recomputed from the D8 generator at the sample index the app reports.
+//! recomputed from the seeded IQ generator at the sample index the app reports.
 //!
 //! Needs a window (briefly), so `#[ignore]` by default:
 //!   cargo test -p neowon-app --test sdr_mode -- --ignored
 
-use std::io::{BufRead, BufReader, Write};
-use std::net::TcpStream;
-use std::time::{Duration, Instant};
+mod common;
+use common::*;
+
+use std::time::Duration;
 
 use neowon_sim::IqScene;
 use neowon_sim::iq::{fnv1a64, to_le_bytes};
 
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
-struct Conn {
-    out: TcpStream,
-    lines: std::io::Lines<BufReader<TcpStream>>,
-}
-
-impl Conn {
-    fn request(&mut self, line: &str) -> String {
-        writeln!(self.out, "{line}").unwrap();
-        self.lines.next().expect("connection closed").unwrap()
-    }
-
-    /// Poll `query` until `ok` accepts the reply, or fail after `secs`.
-    fn wait(&mut self, query: &str, secs: u64, ok: impl Fn(&str) -> bool) -> String {
-        let deadline = Instant::now() + Duration::from_secs(secs);
-        loop {
-            let r = self.request(query);
-            if ok(&r) {
-                return r;
-            }
-            assert!(Instant::now() < deadline, "{query} never settled: {r}");
-            std::thread::sleep(Duration::from_millis(100));
-        }
-    }
-}
-
-/// The raw text of a field of a flat JSON object.
-fn raw<'a>(json: &'a str, key: &str) -> &'a str {
-    let pat = format!("\"{key}\":");
-    let start = json
-        .find(&pat)
-        .unwrap_or_else(|| panic!("{key} missing: {json}"))
-        + pat.len();
-    let rest = &json[start..];
-    rest[..rest.find([',', '}']).unwrap()].trim()
-}
-
-/// A numeric field (`null` → NaN).
-fn field(json: &str, key: &str) -> f64 {
-    raw(json, key).parse().unwrap_or(f64::NAN)
-}
-
 #[test]
 #[ignore = "opens a window"]
 fn sdr_mode_tunes_measures_and_stays_deterministic() {
-    let port = free_port();
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_neowon-app"))
-        .arg("--sdr-sim")
-        .env("NEOWON_CONTROL", port.to_string())
-        .env_remove("NEOWON_SCRIPT")
-        .env("NEOWON_NO_STATE", "1")
-        .env("NEOWON_ORPHAN_EXIT", "15")
-        .spawn()
-        .expect("launch app");
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let stream = loop {
-        match TcpStream::connect(("127.0.0.1", port)) {
-            Ok(s) => break s,
-            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(200)),
-            Err(e) => {
-                let _ = child.kill();
-                panic!("cannot connect: {e}");
-            }
-        }
-    };
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .unwrap();
-    let mut conn = Conn {
-        out: stream.try_clone().unwrap(),
-        lines: BufReader::new(stream).lines(),
-    };
+    let (mut child, mut conn) = launch(&["--sdr-sim"], &[]);
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         // Default: rf-reference tuned to 100 MHz is a 0.5 FS tone at
@@ -108,7 +34,7 @@ fn sdr_mode_tunes_measures_and_stays_deterministic() {
             "{s}"
         );
 
-        // Move the hardware window into the FM-band scene (D10: `sdr tune`
+        // Move the hardware window into the FM-band scene (`sdr tune`
         // would move only the tuned cursor): its strongest in-band emitter
         // at 99 MHz ± 1.024 MHz is 99.4 MHz at 0.3 FS.
         assert!(conn.request("stimulus rf-fm-band").contains(r#""ok":true"#));
@@ -157,7 +83,7 @@ fn sdr_mode_tunes_measures_and_stays_deterministic() {
         assert_eq!(field(&conn.request("get sdr"), "sample_rate"), 2.048e6);
 
         // Determinism through the whole app: back on the reference scene,
-        // reseed, then the latest frame's bytes must be the D8 generator's.
+        // reseed, then the latest frame's bytes must be the generator's.
         assert!(
             conn.request("stimulus rf-reference")
                 .contains(r#""ok":true"#)

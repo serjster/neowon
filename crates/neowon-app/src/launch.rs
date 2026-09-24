@@ -36,9 +36,20 @@ impl Launch {
         }
     }
 
-    /// An SDR instrument was chosen.
     pub fn sdr(&self) -> bool {
         self.sdr_sim || self.rtl
+    }
+
+    /// The simulated family (`--sim` + `--sdr-sim`), for tests that switch
+    /// instrument. Test-only on purpose: the default `Launch` is the
+    /// hardware family, and a unit test must never open a real device.
+    #[cfg(test)]
+    pub(crate) fn sim() -> Self {
+        Self {
+            sim: true,
+            sdr_sim: true,
+            ..Default::default()
+        }
     }
 
     /// A supervisor for this launch's scope (`sdr` false) or SDR (`sdr`

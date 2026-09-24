@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::Error;
+use crate::history::ObsIndex;
 use crate::model::{Alias, Entity, Id, Observation, Signal};
 use crate::op::Op;
 
@@ -27,13 +28,42 @@ pub struct Tombstone {
     pub at: String,
 }
 
+/// The catalog's state. Its fields are public to read; every change goes
+/// through [`State::apply`], which keeps the derived history index in step
+/// with `entities`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(from = "Stored")]
 pub struct State {
     /// Next id to hand out; only moves forward.
     pub next_id: u64,
     pub entities: BTreeMap<Id, Entity>,
     pub redirects: BTreeMap<Id, Redirect>,
     pub tombstones: BTreeMap<Id, Tombstone>,
+    /// Derived from `entities`; not part of the stored form.
+    #[serde(skip)]
+    pub(crate) history: ObsIndex,
+}
+
+/// `State` as snapshots store it — the same four fields, unchanged — from
+/// which the history index is rebuilt on load.
+#[derive(Deserialize)]
+struct Stored {
+    next_id: u64,
+    entities: BTreeMap<Id, Entity>,
+    redirects: BTreeMap<Id, Redirect>,
+    tombstones: BTreeMap<Id, Tombstone>,
+}
+
+impl From<Stored> for State {
+    fn from(s: Stored) -> Self {
+        Self {
+            history: ObsIndex::build(&s.entities),
+            next_id: s.next_id,
+            entities: s.entities,
+            redirects: s.redirects,
+            tombstones: s.tombstones,
+        }
+    }
 }
 
 /// Fields `Op::Edit` may not touch.
@@ -67,109 +97,48 @@ impl State {
         Err(Error::RedirectLoop(id))
     }
 
-    /// Every entity that names `id` (observations and transmissions of a
-    /// signal, signals and emitters of a source).
-    pub fn referrers(&self, id: Id) -> Vec<Id> {
-        self.entities
-            .values()
-            .filter(|e| match e {
-                Entity::Observation(o) => o.signal == id || o.transmission == Some(id),
-                Entity::Transmission(t) => t.signal == id,
-                Entity::Signal(s) => s.source == Some(id),
-                Entity::Emitter(m) => m.source == Some(id),
-                _ => false,
-            })
-            .map(Entity::id)
-            .collect()
-    }
-
-    /// Everything that would dangle if `id` went: its referrers, theirs,
-    /// and so on (a source's signals and those signals' observations).
-    pub fn referrers_deep(&self, id: Id) -> Vec<Id> {
-        let (mut out, mut todo) = (Vec::new(), vec![id]);
-        while let Some(x) = todo.pop() {
-            for r in self.referrers(x) {
-                if !out.contains(&r) {
-                    out.push(r);
-                    todo.push(r);
-                }
-            }
-        }
-        out
-    }
-
     /// A signal's observations under any id that now redirects to it,
     /// ordered by (time, id).
     pub fn history(&self, id: Id) -> Result<Vec<&Observation>, Error> {
-        let canon = self.resolve(id)?;
-        let mut v: Vec<&Observation> = self
-            .entities
-            .values()
-            .filter_map(|e| match e {
-                Entity::Observation(o) if o.signal == canon => Some(o),
-                _ => None,
-            })
-            .collect();
-        v.sort_by(|a, b| {
-            a.obs
-                .t_start
-                .total_cmp(&b.obs.t_start)
-                .then(a.id.cmp(&b.id))
-        });
-        Ok(v)
+        Ok(self.history_visiting(id)?.0)
     }
 
-    /// Everything wrong with the catalog's references; empty when sound.
-    pub fn integrity(&self) -> Vec<String> {
-        let mut out = Vec::new();
-        let live = |id: Id, want: &str| match self.entities.get(&id) {
-            Some(e) if e.kind() == want => None,
-            Some(e) => Some(format!("{id} is a {}, not a {want}", e.kind())),
-            None => Some(format!("{id} ({want}) does not exist")),
-        };
-        for e in self.entities.values() {
-            let problems = match e {
-                Entity::Observation(o) => vec![
-                    live(o.signal, "signal"),
-                    o.transmission.and_then(|t| live(t, "transmission")),
-                ],
-                Entity::Transmission(t) => vec![live(t.signal, "signal")],
-                Entity::Signal(s) => vec![s.source.and_then(|x| live(x, "source"))],
-                Entity::Emitter(m) => vec![m.source.and_then(|x| live(x, "source"))],
-                _ => vec![],
-            };
-            out.extend(
-                problems
-                    .into_iter()
-                    .flatten()
-                    .map(|p| format!("{}: {p}", e.id())),
-            );
-        }
-        for (from, r) in &self.redirects {
-            match self.resolve(*from) {
-                Err(e) => out.push(e.to_string()),
-                Ok(to) if self.signal(to).is_none() => {
-                    out.push(format!("redirect {from} -> {} ends at no signal", r.to))
+    /// `history`, plus how many entities it looked at to answer — the
+    /// structural cost the history tests hold flat as the catalog grows.
+    pub(crate) fn history_visiting(&self, id: Id) -> Result<(Vec<&Observation>, usize), Error> {
+        let canon = self.resolve(id)?;
+        let mut visited = 0;
+        let v = self
+            .history
+            .of(canon)
+            .filter_map(|oid| {
+                visited += 1;
+                match self.entities.get(&oid) {
+                    Some(Entity::Observation(o)) => Some(o),
+                    _ => None,
                 }
-                Ok(_) => {}
-            }
-            if self.entities.contains_key(from) {
-                out.push(format!("{from} is both live and redirected"));
-            }
-        }
-        out
+            })
+            .collect();
+        Ok((v, visited))
     }
 
     /// The op that takes `op` back, computed before `op` is applied:
     /// single-entity edits are undone by replacing the entity with its
-    /// prior value, which restores it exactly.
+    /// prior value, which restores it exactly. `None` when no op restores
+    /// the prior state exactly: the caller must then clear its undo
+    /// history, not skip the entry.
     pub fn inverse(&self, op: &Op) -> Option<Op> {
+        if !op.undoable() {
+            return None;
+        }
         let prior = |id: &Id| {
             Some(Op::Replace {
                 entity: self.get(*id)?.clone(),
             })
         };
         match op {
+            // A pinned entity refuses the delete that would take it back.
+            Op::Insert { entity } | Op::Restore { entity } if entity.pinned() => None,
             Op::Insert { entity } | Op::Restore { entity } => Some(Op::Delete {
                 id: entity.id(),
                 cascade: false,
@@ -182,6 +151,11 @@ impl State {
             | Op::Tag { id, .. }
             | Op::Pin { id, .. }
             | Op::Edit { id, .. } => prior(id),
+            // Deleting a merge target drops the redirects into it (`retire`),
+            // and a restore brings back only the entity.
+            Op::Delete {
+                id, cascade: false, ..
+            } if self.redirects.values().any(|r| r.to == *id) => None,
             Op::Delete {
                 id, cascade: false, ..
             } => Some(Op::Restore {
@@ -206,43 +180,30 @@ impl State {
                 if !entity.finite() {
                     return Err(Error::Invalid(format!("{id} has a non-finite number")));
                 }
-                self.next_id = self.next_id.max(id.0);
-                self.entities.insert(id, entity.clone());
                 // References must hold at insert, as they must after.
-                let bad = self.integrity_of(id);
-                if !bad.is_empty() {
-                    self.entities.remove(&id);
-                    return Err(Error::Invalid(bad.join("; ")));
-                }
+                self.check_refs(entity)?;
+                self.next_id = self.next_id.max(id.0);
+                self.put(entity.clone());
             }
             Op::Restore { entity } => {
                 let id = entity.id();
                 if !self.tombstones.contains_key(&id) || self.redirects.contains_key(&id) {
                     return Err(Error::Invalid(format!("{id} was not deleted")));
                 }
-                self.entities.insert(id, entity.clone());
-                let bad = self.integrity_of(id);
-                if !bad.is_empty() {
-                    self.entities.remove(&id);
-                    return Err(Error::Invalid(bad.join("; ")));
-                }
+                self.check_refs(entity)?;
+                self.put(entity.clone());
                 self.tombstones.remove(&id);
             }
             Op::Replace { entity } => {
                 let id = entity.id();
-                let old = self.get(id).ok_or(Error::NotFound(id))?.clone();
-                if old.kind() != entity.kind() || !entity.finite() {
+                let kind = self.get(id).ok_or(Error::NotFound(id))?.kind();
+                if kind != entity.kind() || !entity.finite() {
                     return Err(Error::Invalid(format!(
-                        "{id}: replacement must be a finite {}",
-                        old.kind()
+                        "{id}: replacement must be a finite {kind}"
                     )));
                 }
-                self.entities.insert(id, entity.clone());
-                let bad = self.integrity_of(id);
-                if !bad.is_empty() {
-                    self.entities.insert(id, old);
-                    return Err(Error::Invalid(bad.join("; ")));
-                }
+                self.check_refs(entity)?;
+                self.put(entity.clone());
             }
             Op::Rename { id, name, at } => {
                 let e = self.entity_mut(*id)?;
@@ -308,12 +269,8 @@ impl State {
                 if !edited.finite() {
                     return Err(Error::Invalid(format!("{field} must be finite")));
                 }
-                self.entities.insert(*id, edited);
-                let bad = self.integrity_of(*id);
-                if !bad.is_empty() {
-                    self.entities.insert(*id, e);
-                    return Err(Error::Invalid(bad.join("; ")));
-                }
+                self.check_refs(&edited)?;
+                self.put(edited);
             }
             Op::Merge { from, to, at } => self.merge(*from, *to, at)?,
             Op::Delete { id, cascade, at } => {
@@ -382,12 +339,24 @@ impl State {
         }
         dst.tags.extend(src.tags.iter().cloned());
         dst.pinned |= src.pinned;
-        for e in self.entities.values_mut() {
-            match e {
-                Entity::Observation(o) if o.signal == from => o.signal = to,
-                Entity::Transmission(t) if t.signal == from => t.signal = to,
+        let moved: Vec<Id> = self
+            .entities
+            .values()
+            .filter(|e| match e {
+                Entity::Observation(o) => o.signal == from,
+                Entity::Transmission(t) => t.signal == from,
+                _ => false,
+            })
+            .map(Entity::id)
+            .collect();
+        for id in moved {
+            let Some(mut e) = self.take(id) else { continue };
+            match &mut e {
+                Entity::Observation(o) => o.signal = to,
+                Entity::Transmission(t) => t.signal = to,
                 _ => {}
             }
+            self.put(e);
         }
         // Compress: whatever pointed at `from` now points straight at `to`.
         for r in self.redirects.values_mut() {
@@ -406,12 +375,30 @@ impl State {
         Ok(())
     }
 
+    /// Put `e` in the entity map (replacing its id's entry), keeping the
+    /// history index in step. The only way an entity goes in.
+    fn put(&mut self, e: Entity) {
+        if let Some(old) = self.entities.get(&e.id()) {
+            self.history.entity_out(old);
+        }
+        self.history.entity_in(&e);
+        self.entities.insert(e.id(), e);
+    }
+
+    /// Take `id` out of the entity map, keeping the index in step. The only
+    /// way an entity comes out.
+    fn take(&mut self, id: Id) -> Option<Entity> {
+        let old = self.entities.remove(&id)?;
+        self.history.entity_out(&old);
+        Some(old)
+    }
+
     /// Remove an entity, leaving a tombstone. Redirects into a retired
     /// signal go with it: the ids merged into it are tombstoned already,
     /// and a redirect to nothing would break every lookup through it.
     fn retire(&mut self, id: Id, reason: &str, at: &str) {
         self.redirects.retain(|_, r| r.to != id);
-        if let Some(e) = self.entities.remove(&id) {
+        if let Some(e) = self.take(id) {
             self.tombstones.insert(
                 id,
                 Tombstone {
@@ -423,17 +410,11 @@ impl State {
         }
     }
 
+    /// In-place access for the edits that change only names, aliases, tags
+    /// or the pin — none of which moves an observation in the history index
+    /// (each refuses an observation). Anything else goes through `put`.
     fn entity_mut(&mut self, id: Id) -> Result<&mut Entity, Error> {
         self.entities.get_mut(&id).ok_or(Error::NotFound(id))
-    }
-
-    /// Integrity problems of one entity's own references.
-    fn integrity_of(&self, id: Id) -> Vec<String> {
-        let tag = format!("{id}:");
-        self.integrity()
-            .into_iter()
-            .filter(|p| p.starts_with(&tag))
-            .collect()
     }
 }
 

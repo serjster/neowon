@@ -1,35 +1,17 @@
-//! View-control verification through the control socket (Phase 7.7): one
+//! View-control verification through the control socket: one
 //! app launch, drive zoom/pan/home over TCP, assert the config state and
 //! the rendered pixels.
 //!
 //! Needs a window (briefly), so `#[ignore]` by default:
 //!   cargo test -p neowon-app --test view_controls -- --ignored
 
-use std::io::{BufRead, BufReader, Write};
-use std::net::TcpStream;
+mod common;
+use common::*;
+
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
-struct Conn {
-    out: TcpStream,
-    lines: std::io::Lines<BufReader<TcpStream>>,
-}
-
 impl Conn {
-    fn request(&mut self, line: &str) -> String {
-        writeln!(self.out, "{line}").unwrap();
-        self.lines.next().expect("connection closed").unwrap()
-    }
-
-    /// Poll `get config` until `needle` appears.
     fn wait_config(&mut self, needle: &str) -> String {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
@@ -78,36 +60,8 @@ fn mean_row(path: &PathBuf) -> f64 {
 #[test]
 #[ignore = "opens a window"]
 fn view_controls_move_the_window_and_the_pixels() {
-    let port = free_port();
-    let dir = std::env::temp_dir().join("neowon-viewctrl");
-    std::fs::create_dir_all(&dir).unwrap();
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_neowon-app"))
-        .arg("--sim")
-        .env("NEOWON_CONTROL", port.to_string())
-        .env_remove("NEOWON_SCRIPT")
-        .env("NEOWON_NO_STATE", "1")
-        .env("NEOWON_ORPHAN_EXIT", "15")
-        .spawn()
-        .expect("launch app");
-
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let stream = loop {
-        match TcpStream::connect(("127.0.0.1", port)) {
-            Ok(s) => break s,
-            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(200)),
-            Err(e) => {
-                let _ = child.kill();
-                panic!("cannot connect: {e}");
-            }
-        }
-    };
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .unwrap();
-    let mut conn = Conn {
-        out: stream.try_clone().unwrap(),
-        lines: BufReader::new(stream).lines(),
-    };
+    let dir = scratch("viewctrl");
+    let (mut child, mut conn) = launch(&["--sim"], &[]);
 
     // Shot via socket, polled to disk, retried while the display is still
     // blank (startup races the first readback).
@@ -138,7 +92,6 @@ fn view_controls_move_the_window_and_the_pixels() {
     };
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // Wait for the app to come up and stream frames.
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {
             let status = conn.request("get status");

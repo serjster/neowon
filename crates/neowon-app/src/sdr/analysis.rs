@@ -19,12 +19,13 @@ const EVERY: u64 = 8;
 
 /// Roll-off the lab assumes (the common RRC choice; also the simulator's).
 pub const ROLLOFF: f64 = 0.35;
-/// Pairs of a frame the lab looks at (bounds its cost; ≥ 800 symbols at
-/// the rates the simulator uses).
-const PAIRS: usize = 32 * 1024;
+/// Pairs of a frame the classifier looks at (bounds its cost).
+const CLASSIFY_PAIRS: usize = 32 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct Analysis {
+    /// Identity of the signal measured: the tracker's id, never reused in a
+    /// session. Every readout joins the lab to a detection by this.
     pub track: u64,
     pub centre_hz: f64,
     pub symbol_rate_hz: f64,
@@ -69,8 +70,13 @@ pub fn analyse(
     setting: Option<Modulation>,
 ) -> Option<Analysis> {
     let rate = frame.sample_rate;
+    // The whole frame (at most `neowon_core::stream_chunk_pairs`' 128 K
+    // pairs). A shorter window is not a cheaper measurement but a worse
+    // one: at 32 K pairs, 16QAM at 51.2 ksym/s gives ~800 symbols, three
+    // timing blocks and a 62.5 Hz symbol-rate resolution, and about one run
+    // in seven read EVM 5–13 % against the closed-form 4 %. Over the whole
+    // frame (2560 symbols) the worst of 146 runs was 0.5 % off.
     let data = &frame.channels[0].data;
-    let data = &data[..data.len().min(2 * PAIRS)];
     let obw = track.last.bandwidth_hz().max(rate / 1000.0);
     // Channel: the occupied band plus margin. An RRC signal reaches
     // ±Rs(1 + β)/2 ≈ ±OBW/2, so the cutoff sits well outside it, with taps
@@ -112,17 +118,28 @@ pub fn analyse(
     })
 }
 
+/// The classifier's verdict with the identity of the signal it judged —
+/// the same `track` as the lab run it came from.
+#[derive(Debug, Clone)]
+pub struct Classified {
+    pub track: u64,
+    pub verdict: Classification,
+}
+
 /// The DSP classifier's verdict on `track`.
-pub fn classify(frame: &CaptureFrame, centre_hz: f64, track: &Track) -> Option<Classification> {
+pub fn classify(frame: &CaptureFrame, centre_hz: f64, track: &Track) -> Option<Classified> {
     let data = &frame.channels[0].data;
-    let data = &data[..data.len().min(2 * PAIRS)];
+    let data = &data[..data.len().min(2 * CLASSIFY_PAIRS)];
     let f = features(
         data,
         frame.sample_rate,
         track.last.centre_hz - centre_hz,
         track.last.bandwidth_hz(),
     )?;
-    Some(dsp_classify(&f))
+    Some(Classified {
+        track: track.id,
+        verdict: dsp_classify(&f),
+    })
 }
 
 /// One lab run: the frame, the hardware centre it was taken at (the
@@ -138,9 +155,11 @@ struct Job {
 /// result the operator has since moved away from.
 pub struct LabResult {
     pub centre_hz: f64,
+    /// The target's identity, whatever the run produced.
+    pub track: u64,
     pub setting: Option<Modulation>,
     pub analysis: Option<Analysis>,
-    pub classification: Option<Classification>,
+    pub classification: Option<Classified>,
 }
 
 /// The lab's worker thread. At most one run is in flight: a frame that
@@ -163,6 +182,7 @@ impl Lab {
                 for job in rx {
                     let r = LabResult {
                         centre_hz: job.centre_hz,
+                        track: job.track.id,
                         setting: job.setting,
                         classification: classify(&job.frame, job.centre_hz, &job.track),
                         analysis: analyse(&job.frame, job.centre_hz, &job.track, job.setting),

@@ -31,10 +31,8 @@ pub const HVIEW_MIN_SPAN: f64 = 0.01;
 /// Samples per record before capabilities arrive (VDS1022/sim shape).
 pub const FALLBACK_RECORD_LEN: usize = 5000;
 
-/// Record length of the attached instrument.
 pub fn record_len(link: &Link) -> usize {
-    link.caps
-        .as_ref()
+    link.scope_caps()
         .map(|c| c.record_len())
         .unwrap_or(FALLBACK_RECORD_LEN)
 }
@@ -49,10 +47,8 @@ pub fn rate_for_s_per_div(s_div: f64, record_len: usize) -> f64 {
     record_len as f64 / (s_div.max(1e-15) * H_DIVS as f64)
 }
 
-/// The sample-rate ladder the instrument offers.
 pub fn rate_ladder(link: &Link) -> Vec<f64> {
-    link.caps
-        .as_ref()
+    link.scope_caps()
         .map(|c| c.sample_rates.clone())
         .unwrap_or_else(|| crate::ui::widgets::FALLBACK_RATES.to_vec())
 }
@@ -106,7 +102,6 @@ pub fn timebase_step(link: &mut Link, slower: bool) {
 /// threshold Rigol's MSO5000 uses.
 pub const ROLL_RATE: f64 = 2500.0;
 
-/// Does this sample rate put the instrument in roll mode?
 pub fn is_roll(rate: f64) -> bool {
     rate < ROLL_RATE
 }
@@ -286,8 +281,7 @@ pub fn step_ladder(ladder: &[f64], current: f64, up: bool) -> f64 {
 }
 
 fn vdiv_ladder(link: &Link) -> Vec<f64> {
-    link.caps
-        .as_ref()
+    link.scope_caps()
         .map(|c| c.volts_div.clone())
         .unwrap_or_else(|| FALLBACK_VDIV.to_vec())
 }
@@ -381,15 +375,14 @@ mod tests {
 
     #[test]
     fn timebase_zooms_out_into_seconds_per_division() {
-        // The complaint this phase fixes: at 250 kS/s the horizontal control
-        // stopped at the 20 ms record. Stepping the time base slower walks
-        // the rate ladder down to whole seconds per division.
+        // Stepping the time base slower from 250 kS/s walks the rate ladder
+        // down to whole seconds per division, past the 20 ms record.
         let mut link = link();
         link.config.sample_rate = 250e3;
         assert!((timebase(&link) - 2e-3).abs() < 1e-12);
         let mut p = Phosphor::default();
-        // "I remember setting the zoom to about 5 seconds": the ladder's
-        // neighbouring rungs are 4 s/div (125 S/s) and 10 s/div (50 S/s).
+        // The rungs around 5 s/div are 4 s/div (125 S/s) and 10 s/div
+        // (50 S/s).
         let mut rungs = Vec::new();
         for _ in 0..24 {
             hzoom(&mut link, &mut p, 0.5, false);
@@ -430,7 +423,7 @@ mod tests {
         assert_eq!(link.config.sample_rate, rate);
         assert!((p.hview.1 - 0.25).abs() < 1e-9);
         // Widening the window back to the whole record must not switch the
-        // mode off under the user — that unchecked the box mid-drag.
+        // mode off under the user mid-drag.
         p.hview = hview_clamp(0.5, 1.0);
         assert!(zoom_active(&p), "zoom at 1x is still zoom mode");
         set_zoom(&mut p, false);

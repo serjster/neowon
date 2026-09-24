@@ -5,7 +5,6 @@
 
 use std::f64::consts::TAU;
 
-/// A closed or repeating XY figure.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum XyFigure {
     Circle,

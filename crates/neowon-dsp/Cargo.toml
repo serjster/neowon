@@ -9,4 +9,5 @@ neowon-core.workspace = true
 rustfft = "6"
 
 [dev-dependencies]
+neowon-backend.workspace = true
 neowon-sim.workspace = true

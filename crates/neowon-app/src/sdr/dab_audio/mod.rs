@@ -1,4 +1,4 @@
-//! DAB audio playback (10.15.3): sub-channel bytes in, PCM out to the sink.
+//! DAB audio playback: sub-channel bytes in, PCM out to the sink.
 //!
 //! While `sdr dab play` is in force, the selected service's MSC logical
 //! frames are routed here (see [`super::dab::feed`]). DAB+ (`ASCTy` 63)
@@ -14,13 +14,17 @@
 //! sink each frame. A status shared through a mutex is what `get dab` and
 //! the dock read, so the readout can only say what the worker actually
 //! did — `starting` until the first block, `error` with the codec's own
-//! message when a stream cannot be decoded (the DAB-G2 limitation
-//! surfaces here rather than as silence).
+//! message when a stream cannot be decoded (an unsupported stream surfaces
+//! here rather than as silence).
+//!
+//! **Playback starts with a cushion** (`decode::PRIME_SECONDS`): `playing`
+//! means the device has audio queued behind its next sample, which is what
+//! makes "a playing transport does not starve" an invariant and not a race.
 //!
 //! **Rate.** Both codings deliver 48 kHz and output devices normally run
 //! at 48 kHz, so the converter below is identity in the common case. When
 //! a device reports another rate — or a DAB+ stream's DAC rate is 32 kHz —
-//! it is a stateful linear interpolator: 10.10's windowed-sinc resampler
+//! it is a stateful linear interpolator: the windowed-sinc resampler
 //! is private to `neowon_dsp::demod`'s `Receiver`, which resamples IQ, not
 //! codec PCM, and duplicating it here would fork the oracle. The sink is
 //! still the one device; no second stream is opened.
@@ -29,11 +33,6 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError};
-
-use neowon_codec::aac::{AacDecoder, AudioSpecificConfig};
-
-use neowon_dsp::dab::fec::{EepProfile, uep_profile};
-use neowon_dsp::dab::{Protection, SubChannel};
 
 use super::SdrState;
 
@@ -44,70 +43,18 @@ const MAX_MP2_BYTES_WITHOUT_SYNC: u64 = 64 * 1024;
 /// restarts from the next logical frame.
 const RESYNC_AFTER_BAD: u32 = 5;
 
-/// The audio coding of a service, from its `ASCTy` (EN 300 401 clause
-/// 8.1.14 / table 33).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Coding {
-    /// `ASCTy` 63: DAB+ (HE-AAC v2), TS 102 563.
-    DabPlus,
-    /// `ASCTy` 0: MPEG-1 Layer II (DAB classic).
-    Mp2,
-}
-
-impl Coding {
-    /// The coding this build decodes, or `None` for one it does not —
-    /// refused, never guessed (D27).
-    #[must_use]
-    pub fn from_ascty(ascty: Option<u8>) -> Option<Self> {
-        match ascty {
-            Some(0) => Some(Self::Mp2),
-            Some(63) => Some(Self::DabPlus),
-            _ => None,
-        }
-    }
-
-    /// The codec backend this build links, for the readout.
-    #[must_use]
-    pub fn backend(self) -> &'static str {
-        match self {
-            Self::DabPlus => AacDecoder::BACKEND,
-            // `neowon-codec` hides `oxideav-mp2` 0.0.10 behind its own
-            // adapter and exposes no `BACKEND` constant for it; the name
-            // here is that pinned dependency, not an invention.
-            Self::Mp2 => "oxideav-mp2",
-        }
-    }
-}
-
-/// What the worker needs to decode one service's stream.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct StreamSpec {
-    pub coding: Coding,
-    /// The MSC sub-channel the bytes arrive from.
-    pub sub_channel: u8,
-    /// DAB+: `subchannel_index` in 8 kbit/s units (TS 102 563 clause 5.1),
-    /// 1..=24. The super-frame decoder validates it.
-    pub subchannel_index: u8,
-    /// DAB+ only: use this config instead of `for_dabplus(header)`.
-    ///
-    /// Real streams pass `None` and take the standard-derived config; the
-    /// `rf-dab` sim scene's fixture is a 1024-line stream (no open encoder
-    /// emits the mandated 960 transform) and passes its encoder's own
-    /// config, which is the only way the playback path can be exercised
-    /// without hardware. See `tests/fixtures/README.md`.
-    pub asc_override: Option<AudioSpecificConfig>,
-}
-
 /// Where playback is, as `get dab` reports it. `off` is the absence of a
 /// worker, not a state inside this enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioState {
-    /// The worker is running; nothing has been decoded yet.
+    /// The worker is running; nothing has reached the device yet —
+    /// either nothing has decoded, or the start-up cushion is still
+    /// filling (`decode::PRIME_SECONDS`).
     Starting,
     /// PCM has reached the sink.
     Playing,
     /// The stream cannot be decoded by the compiled backend; `reason` says
-    /// which typed error (DAB-G2's `SbrUnsupportedFrameFamily`, a bad
+    /// which typed error (`SbrUnsupportedFrameFamily`, a bad
     /// `subchannel_index`, no super-frame sync, …). Never a silent stream.
     Error,
 }
@@ -225,13 +172,11 @@ impl DabAudio {
         }
     }
 
-    /// The service this worker decodes.
     #[must_use]
     pub fn sid(&self) -> u16 {
         self.sid
     }
 
-    /// The worker's own report.
     #[must_use]
     pub fn status(&self) -> AudioStatus {
         self.status.lock().map(|s| s.clone()).unwrap_or_default()
@@ -279,107 +224,17 @@ impl DabAudio {
 /// True while a service's audio transport is running.
 #[must_use]
 pub fn playing(sdr: &SdrState) -> bool {
-    sdr.dab_audio.is_some()
+    sdr.dab.audio.is_some()
 }
 
 /// The sub-channel the running playback is fed from, so `feed` can route
 /// those logical frames to the worker instead of the raw PAD path.
 #[must_use]
 pub fn playing_sub_channel(sdr: &SdrState) -> Option<u8> {
-    let _ = sdr.dab_audio.as_ref()?;
-    let sid = sdr.dab_service?;
-    let status = sdr.dab.as_ref()?.status();
+    let _ = sdr.dab.audio.as_ref()?;
+    let sid = sdr.dab.service?;
+    let status = sdr.dab.rx.as_ref()?.status();
     status.ensemble.services.get(&sid)?.sub_channel
-}
-
-/// Resolve the selected service into a stream this build can decode, or a
-/// reason the operator can read. Every fact comes from the FIC; nothing is
-/// assumed about the service.
-pub fn spec_for(sdr: &SdrState) -> Result<(u16, StreamSpec), String> {
-    let sid = sdr
-        .dab_service
-        .ok_or("dab play: no service selected (sdr dab service ...)")?;
-    let rx = sdr
-        .dab
-        .as_ref()
-        .ok_or("dab play: receiver is off (sdr dab on)")?;
-    let status = rx.status();
-    if !status.locked {
-        return Err("dab play: no ensemble table yet".into());
-    }
-    let service = status
-        .ensemble
-        .services
-        .get(&sid)
-        .ok_or_else(|| format!("dab play: SId {sid} not in the locked table"))?;
-    let sub_channel = service
-        .sub_channel
-        .ok_or_else(|| format!("dab play: service {sid:04X} has no audio sub-channel"))?;
-    let sub = status
-        .ensemble
-        .sub_channels
-        .get(&sub_channel)
-        .ok_or_else(|| format!("dab play: sub-channel {sub_channel} is not in the table"))?;
-    let coding = Coding::from_ascty(service.ascty).ok_or_else(|| {
-        format!(
-            "dab play: service {sid:04X} is ASCTy {}, which this build does not decode",
-            service
-                .ascty
-                .map_or_else(|| "unknown".into(), |a| a.to_string())
-        )
-    })?;
-    let (subchannel_index, asc_override) = match coding {
-        Coding::DabPlus => (
-            dabplus_index(sub)?,
-            super::dab_scene::asc_override(status.ensemble.eid, sid)
-                .map(AudioSpecificConfig::parse)
-                .transpose()
-                .map_err(|e| format!("dab play: the scene's ASC override is invalid: {e}"))?,
-        ),
-        Coding::Mp2 => (0, None),
-    };
-    Ok((
-        sid,
-        StreamSpec {
-            coding,
-            sub_channel,
-            subchannel_index,
-            asc_override,
-        },
-    ))
-}
-
-/// The DAB+ `subchannel_index` the FIC's sub-channel resolves to: TS 102 563
-/// clause 5.1 makes a super frame `subchannel_index × 110` bytes carried in
-/// five 24 ms logical frames, so one logical frame is `24 × index` bytes of
-/// information — the same `info_bits` the MSC profile resolves to. The FIC
-/// signals size and protection, not the index, so it is derived here exactly
-/// as the MSC decoder resolves it, refusing what the standard does not define.
-fn dabplus_index(sub: &SubChannel) -> Result<u8, String> {
-    let info_bits = match sub.protection {
-        Protection::Eep { option, level } => {
-            let size = sub
-                .size_cu
-                .ok_or_else(|| "dab play: sub-channel size unknown".to_string())?;
-            EepProfile::for_size(size, level, option).map(|p| p.info_bits())
-        }
-        Protection::Uep { table_index } => uep_profile(table_index).map(|p| p.info_bits()),
-    }
-    .ok_or_else(|| {
-        format!(
-            "dab play: sub-channel {} has an unresolved protection plan ({})",
-            sub.id,
-            sub.protection.label()
-        )
-    })?;
-    let index = info_bits / 8 / 24;
-    if !(1..=24).contains(&index) {
-        return Err(format!(
-            "dab play: sub-channel {} is {index} × 8 kbit/s useful, outside DAB+'s 1..=24",
-            sub.id
-        ));
-    }
-    Ok(index as u8)
 }
 
 /// Start playback of the selected service on the shared sink. Repeating
@@ -387,29 +242,28 @@ fn dabplus_index(sub: &SubChannel) -> Result<u8, String> {
 /// a fresh worker, which resets the decoders with it.
 pub fn play(sdr: &mut SdrState) -> Result<(), String> {
     let (sid, spec) = spec_for(sdr)?;
-    if let Some(audio) = &sdr.dab_audio
+    if let Some(audio) = &sdr.dab.audio
         && audio.sid() == sid
     {
         return Ok(());
     }
-    let (volume, mute) = (sdr.volume, sdr.mute);
-    let out = sdr
-        .audio
-        .get_or_insert_with(neowon_audio::sink::AudioOut::spawn);
-    out.set_volume(volume);
-    out.set_mute(mute);
-    let sink_rate = out.rate();
-    out.clear();
-    sdr.dab_audio = Some(DabAudio::start(sid, spec, sink_rate));
+    // Starting a transport takes the device from the demodulator
+    // (`SdrState::audio_owner`), so the queue is flushed here: whatever the
+    // previous owner left must not play under the new stream.
+    let sink_rate = sdr.audio.open_rate();
+    sdr.audio.set_volume(sdr.volume);
+    sdr.audio.set_mute(sdr.mute);
+    sdr.audio.clear();
+    sdr.dab.audio = Some(DabAudio::start(sid, spec, sink_rate));
     Ok(())
 }
 
 /// Stop playback: the worker is dropped (its decoders with it) and the
 /// sink's queue is cleared, so no tail of the stopped service plays on.
+/// The demodulator gets the device back on the next frame.
 pub fn stop(sdr: &mut SdrState) {
-    sdr.dab_audio = None;
-    if let Some(out) = &sdr.audio {
-        out.clear();
+    if sdr.dab.audio.take().is_some() {
+        sdr.audio.clear();
     }
 }
 
@@ -417,26 +271,24 @@ pub fn stop(sdr: &mut SdrState) {
 /// decoded PAD regions to the parsers. Called from `sdr::update`, so it
 /// also runs on frames where no new IQ arrived.
 pub fn drain(sdr: &mut SdrState) {
-    let Some(audio) = sdr.dab_audio.as_mut() else {
+    let rate = sdr.audio.rate();
+    let Some(audio) = sdr.dab.audio.as_mut() else {
         return;
     };
-    if let Some(out) = &sdr.audio {
-        audio.set_sink_rate(out.rate());
-    }
+    audio.set_sink_rate(rate);
     let mut pcm = Vec::new();
     let mut pads = Vec::new();
     audio.drain_into(&mut pcm, &mut pads);
     for (sub_channel, bytes) in pads {
-        sdr.dab_pad
+        sdr.dab
+            .pad
             .entry(sub_channel)
             .or_default()
             .push_pad_region(&bytes);
     }
-    if !pcm.is_empty()
-        && let Some(out) = &sdr.audio
-    {
-        out.push(&pcm);
-    }
+    // The device has one writer: while this transport runs it is the owner,
+    // and `push_audio` is what makes that true rather than a convention.
+    sdr.push_audio(super::AudioOwner::Dab, &pcm);
 }
 
 /// The worker loop: one stream at a time, publishing its status after every
@@ -452,7 +304,7 @@ fn worker(
         backend: spec.coding.backend(),
         ..Default::default()
     };
-    let mut converter = RateConverter::new(48_000.0, sink_rate);
+    let mut feed = SinkFeed::new(48_000.0, sink_rate);
     let mut stream = match Stream::new(spec) {
         Ok(stream) => Some(stream),
         Err(reason) => {
@@ -467,7 +319,7 @@ fn worker(
                     continue;
                 }
                 if let Some(stream) = stream.as_mut() {
-                    stream.push(&bytes, &mut converter, &out, &mut status);
+                    stream.push(&bytes, &mut feed, &out, &mut status);
                 }
             }
             Job::Reset => {
@@ -475,7 +327,7 @@ fn worker(
                     backend: spec.coding.backend(),
                     ..Default::default()
                 };
-                converter.reset();
+                feed.reset();
                 match Stream::new(spec) {
                     Ok(s) => stream = Some(s),
                     Err(reason) => {
@@ -484,7 +336,7 @@ fn worker(
                     }
                 }
             }
-            Job::SinkRate(rate) => converter.set_output(rate),
+            Job::SinkRate(rate) => feed.set_output(rate),
         }
         if let Ok(mut s) = shared.lock() {
             *s = status.clone();
@@ -498,13 +350,17 @@ fn fail(status: &mut AudioStatus, reason: String) {
 }
 
 mod decode;
+mod spec;
 mod transport;
+
+#[cfg(test)]
+use spec::dabplus_index;
+pub use spec::{Coding, StreamSpec, service_spec, spec_for};
 
 #[cfg(test)]
 pub(crate) use transport::DabPlusSync;
 
-use decode::Stream;
-use transport::RateConverter;
+use decode::{SinkFeed, Stream};
 
 #[cfg(test)]
 mod tests;

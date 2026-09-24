@@ -1,4 +1,4 @@
-//! The signal catalog in the app (Phase 10.2): the open `neowon_catalog`,
+//! The signal catalog in the app: the open `neowon_catalog`,
 //! its script actions, and its control-socket readouts. The catalog lives
 //! at `NEOWON_CATALOG` or `~/.neowon/catalog` and is the single writer's:
 //! a second app on the same directory is refused, not raced.
@@ -20,6 +20,9 @@ use crate::Link;
 use crate::sdr::SdrState;
 
 mod grammar;
+#[cfg(test)]
+mod join_tests;
+mod listing;
 mod readout;
 pub use grammar::{CatalogAction, parse};
 pub use readout::{catalog_json, history_json};
@@ -32,6 +35,9 @@ pub struct CatalogState {
     pub filter: String,
     pub window: bool,
     pub selected: Option<Id>,
+    /// What the window reads each frame, rebuilt only when the catalog or
+    /// the filter changes.
+    listing: listing::Listing,
 }
 
 impl CatalogState {
@@ -62,6 +68,7 @@ impl CatalogState {
             filter: String::new(),
             window: false,
             selected: None,
+            listing: Default::default(),
         }
     }
 
@@ -70,36 +77,39 @@ impl CatalogState {
         let Some(cat) = &self.cat else {
             return Vec::new();
         };
-        let f = self.filter.to_lowercase();
-        let mut v: Vec<&Signal> = cat
-            .state()
-            .entities
-            .values()
-            .filter_map(|e| match e {
-                Entity::Signal(s) => Some(s),
-                _ => None,
-            })
-            .filter(|s| {
-                f.is_empty()
-                    || s.name.to_lowercase().contains(&f)
-                    || s.tags.iter().any(|t| t.to_lowercase().contains(&f))
-                    || s.aliases.iter().any(|a| a.name.to_lowercase().contains(&f))
-            })
+        self.listing
+            .ids(cat, &self.filter)
+            .into_iter()
+            .filter_map(|id| cat.state().signal(id))
+            .collect()
+    }
+
+    /// The first `limit` listed signals and how many are listed: a frame's
+    /// worth, bounded whatever the catalog holds.
+    pub fn signals_page(&self, limit: usize) -> (usize, Vec<&Signal>) {
+        let Some(cat) = &self.cat else {
+            return (0, Vec::new());
+        };
+        let (total, ids) = self.listing.page(cat, &self.filter, limit);
+        let page = ids
+            .into_iter()
+            .filter_map(|id| cat.state().signal(id))
             .collect();
-        v.sort_by(|a, b| {
-            a.provenance
-                .timestamp
-                .cmp(&b.provenance.timestamp)
-                .then(a.id.cmp(&b.id))
-        });
-        v
+        (total, page)
     }
 
     pub fn observations_of(&self, id: Id) -> usize {
+        let Some(cat) = &self.cat else { return 0 };
+        self.listing
+            .observations(cat, &self.filter, id)
+            .unwrap_or_else(|| cat.state().history(id).map_or(0, |h| h.len()))
+    }
+
+    /// The catalog's integrity problem count (0 when sound or none open).
+    pub fn integrity_problems(&self) -> usize {
         self.cat
             .as_ref()
-            .and_then(|c| c.state().history(id).ok())
-            .map_or(0, |h| h.len())
+            .map_or(0, |cat| self.listing.problems(cat, &self.filter))
     }
 }
 
@@ -126,11 +136,11 @@ fn from_tuned(cat: &mut Catalog, sdr: &SdrState, at: &str) -> Result<Id, String>
             p.kind = ProvKind::Decoder;
             p.tool = "neowon detect".into();
             p.input_ref = Some(format!("track:{id}"));
+            // The classifier's verdict only when it judged this very track.
             let modulation = sdr.modulation.map(|m| m.label().to_string()).or_else(|| {
-                sdr.classification
-                    .as_ref()
-                    .filter(|c| !c.unknown)
-                    .map(|c| c.class.label().to_string())
+                sdr.classification_of(id)
+                    .filter(|c| !c.verdict.unknown)
+                    .map(|c| c.verdict.class.label().to_string())
             });
             (centre_hz, bandwidth_hz, modulation, p)
         }
@@ -288,7 +298,7 @@ fn apply(a: CatalogAction, st: &mut CatalogState, sdr: &SdrState) -> Result<(), 
                                 id,
                                 name,
                                 started: at.clone(),
-                                coverage: r.coverage.clone(),
+                                coverage: r.coverage.iter().map(Into::into).collect(),
                                 pinned: false,
                                 provenance: user(&at),
                             }),
@@ -309,6 +319,8 @@ fn apply(a: CatalogAction, st: &mut CatalogState, sdr: &SdrState) -> Result<(), 
                     commit(cat, neowon_catalog::edit_from_text(id, &field, &text))?
                 }
                 CatalogAction::Bulk(verb, ids, arg) => {
+                    // One fsync for the batch, not one per id.
+                    let mut ops = Vec::with_capacity(ids.len());
                     for id in ids {
                         let op = match verb.as_str() {
                             "tag" => Op::Tag {
@@ -330,8 +342,9 @@ fn apply(a: CatalogAction, st: &mut CatalogState, sdr: &SdrState) -> Result<(), 
                             },
                             v => return Err(format!("bulk {v}: use tag|untag|pin|unpin|delete")),
                         };
-                        commit(cat, op)?;
+                        ops.push(op);
                     }
+                    cat.commit_many(ops).map_err(|e| e.to_string())?;
                 }
                 CatalogAction::Undo => {
                     cat.undo()

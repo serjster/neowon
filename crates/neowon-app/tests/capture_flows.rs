@@ -1,23 +1,24 @@
-//! Phase 7 capture-workflow verification: spawn the real app with `--sim`
+//! Capture-workflow verification: spawn the real app with `--sim`
 //! and a NEOWON_SCRIPT that records, saves/reloads captures, scrubs
 //! history, and round-trips a session — then assert on the files.
 //!
 //! Needs a window (briefly), so `#[ignore]` by default:
 //!   cargo test -p neowon-app --test capture_flows -- --ignored
 
+mod common;
+use common::{Sandbox, scratch};
+
 use std::path::Path;
-use std::process::Command;
 
 fn run(dir: &Path, script: &str) {
-    std::fs::create_dir_all(dir).unwrap();
     let script_path = dir.join("script.txt");
     std::fs::write(&script_path, script).unwrap();
-    let status = Command::new(env!("CARGO_BIN_EXE_neowon-app"))
+    // A private home and none of the caller's NEOWON_* (common/sandbox.rs).
+    let sandbox = Sandbox::new("capture-flows");
+    let status = sandbox
+        .command(env!("CARGO_BIN_EXE_neowon-app"))
         .arg("--sim")
         .env("NEOWON_SCRIPT", &script_path)
-        .env_remove("NEOWON_SHOT")
-        // A killed harness must not leave the scripted app behind.
-        .env("NEOWON_ORPHAN_EXIT", "120")
         .status()
         .expect("launch app");
     assert!(status.success(), "app exited with {status}");
@@ -26,7 +27,8 @@ fn run(dir: &Path, script: &str) {
 #[test]
 #[ignore = "opens a window"]
 fn capture_history_session_roundtrip() {
-    let dir = std::env::temp_dir().join("neowon-capture-flows");
+    // Fresh: a file a previous run left must not pass for this run's.
+    let dir = scratch("capture-flows");
     let d = dir.display();
     run(
         &dir,
@@ -83,8 +85,7 @@ fn capture_history_session_roundtrip() {
 fn vendor_cap_import_loads() {
     // Build a minimal vendor-format .cap (the byte-exact fixtures live in
     // neowon-core's owon_cap tests) and load it through the app.
-    let dir = std::env::temp_dir().join("neowon-capture-flows-cap");
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = scratch("capture-flows-cap");
     let mut f: Vec<u8> = Vec::new();
     f.extend_from_slice(b"SPBVDS1022");
     for v in [100i32, 4, 0x03000000, 0, 10, 1] {

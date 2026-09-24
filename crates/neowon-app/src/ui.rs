@@ -1,6 +1,4 @@
-//! Scope-grade UI: the SDS2000X Plus screen anatomy (docs/ui-ux-research.md
-//! §1). Composition lives here; each region is its own module. The old
-//! monolithic collapsible panel is gone.
+//! SDS2000X Plus screen anatomy (docs/ui-ux-research.md §1); one module per region.
 
 pub mod bandmap_window;
 pub mod catalog_window;
@@ -26,6 +24,8 @@ pub mod menu;
 pub mod menubar;
 pub mod sdr_bands;
 pub mod sdr_dock;
+pub mod sdr_iq;
+pub mod sdr_marks;
 pub mod sdr_panel;
 pub mod sdr_view;
 pub mod settings;
@@ -93,7 +93,7 @@ pub fn panel(
         ctx.set_zoom_factor(layout.scale);
     }
     // egui's wheel zoom would swallow ctrl+wheel before the SDR canvas sees
-    // it (and this app owns the scale anyway: `uiscale`, persisted by D13),
+    // it (and this app owns the scale anyway: `uiscale`, persisted),
     // so its zoom modifier is off and ctrl+wheel reaches the canvas.
     if ctx.options(|o| o.input_options.zoom_modifier) != egui::Modifiers::NONE {
         ctx.options_mut(|o| o.input_options.zoom_modifier = egui::Modifiers::NONE);
@@ -201,7 +201,6 @@ fn spectrum_window(ctx: &egui::Context, fft: &mut FftState) {
             let rect = resp.rect;
             painter.rect_filled(rect, 2.0, egui::Color32::from_rgb(8, 10, 14));
 
-            // View interactions.
             if resp.double_clicked() {
                 fft.view = (0.0, 1.0);
                 fft.db = (-100.0, 20.0);

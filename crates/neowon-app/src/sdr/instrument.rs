@@ -4,10 +4,26 @@
 //! the config the UI already holds for it, so each mode resumes where it
 //! was left.
 
-use neowon_backend::InstrumentConfig;
+use neowon_backend::{InstrumentConfig, ScopeCaps, SdrCaps};
 
 use super::SdrState;
 use crate::Link;
+
+impl Link {
+    /// The scope's capabilities, when a scope is what is connected.
+    ///
+    /// The link carries one `Option<Capabilities>` and the variant is the
+    /// instrument; these two readers are its halves, so nothing
+    /// downstream keeps a second `Option` in step by hand.
+    pub fn scope_caps(&self) -> Option<&ScopeCaps> {
+        self.caps.as_ref()?.scope()
+    }
+
+    /// The SDR's capabilities, when an SDR is what is connected.
+    pub fn sdr_caps(&self) -> Option<&SdrCaps> {
+        self.caps.as_ref()?.sdr()
+    }
+}
 
 pub fn switch(to_sdr: bool, sdr: &mut SdrState, link: &mut Link) -> Result<(), String> {
     if to_sdr == sdr.active {
@@ -19,7 +35,6 @@ pub fn switch(to_sdr: bool, sdr: &mut SdrState, link: &mut Link) -> Result<(), S
     link.status = "connecting…".into();
     link.caps = None;
     link.latest = None;
-    sdr.caps = None;
     sdr.latest = None;
     sdr.frames_seen = 0;
     sdr.spectrum = None;
@@ -28,7 +43,7 @@ pub fn switch(to_sdr: bool, sdr: &mut SdrState, link: &mut Link) -> Result<(), S
     sdr.classification = None;
     sdr.tracker.clear();
     // The other instrument owns the signal now: a DAB table from the old
-    // stream would be a stale claim when this mode comes back (D27).
+    // stream would be a stale claim when this mode comes back.
     sdr.dab_reset();
     sdr.active = to_sdr;
     if to_sdr {

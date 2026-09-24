@@ -23,9 +23,7 @@ const DWELL: f64 = 1.0;
 
 #[derive(Resource)]
 pub struct AutoPeak {
-    /// Is the automatic rule active at all?
     pub on: bool,
-    /// Has the rule engaged peak detect right now?
     pub engaged: bool,
     /// What the user actually selected — restored on release, saved in
     /// sessions, and never overwritten by the rule.
@@ -45,7 +43,6 @@ impl Default for AutoPeak {
 }
 
 impl AutoPeak {
-    /// The user picked an acquisition mode: adopt it and re-evaluate.
     pub fn set_user(&mut self, acq: AcqMode) {
         self.user_acq = acq;
         self.engaged = false;

@@ -17,7 +17,7 @@
 //!    [`prs_reference`] is ~1 for DAB and ~`1/sqrt(1536)` for noise. A frame
 //!    below [`PRS_METRIC_MIN`] is rejected and *nothing* is decoded from it —
 //!    this is what keeps the receiver from naming an ensemble that is not there
-//!    (D27, and the spec's false-lock criterion).
+//!    (the spec's false-lock criterion).
 //! 3. **Remove the frequency offset.** The dongle's clock error rotates the
 //!    differential product by `2·pi·df·Ts` per symbol, which breaks DQPSK, so
 //!    the cyclic prefix of the PRS measures `df` and the frame's symbols are
@@ -27,28 +27,25 @@
 //!    and 72 MSC symbols; all 75 data symbols are demapped with the same
 //!    timing and carrier state, in one differential chain (the first against
 //!    the PRS, each later one against its predecessor). The FIC's 9216 soft
-//!    bits go to [`FicState`] exactly as tier 1 proved on air; the MSC's
-//!    221 184 go to [`MscDecoder`] as four CIFs of 55 296, which extracts and
-//!    decodes each sub-channel (phase 10.15.2). The FIC path's arithmetic did
-//!    not change — only its inputs, which are the same three symbols as
-//!    before.
+//!    bits go to [`FicState`]; the MSC's 221 184 go to [`MscDecoder`] as four
+//!    CIFs of 55 296, which extracts and decodes each sub-channel.
 //!
 //! Timing needs no fine search: the PRS correlation is insensitive to where
 //! inside the guard the window starts, and the resulting phase ramp is the same
 //! for every symbol, so it cancels in the differential product — both facts are
 //! properties of the modulation (clause 14.7), not of this implementation.
 
-use std::f32::consts::TAU;
-
 use rustfft::num_complex::Complex32;
 
 use super::fic::FicState;
 use super::msc::{DecodedFrame, MscDecoder};
-use super::ofdm::{Fft2048, demap_soft, prs_reference};
+use super::ofdm::{Fft2048, demap_soft};
 use super::{
     DabStatus, Ensemble, FIC_BITS_PER_SYMBOL, FIC_SOFT_BITS, FRAME_SAMPLES, MSC_BITS_PER_SYMBOL,
-    MSC_SOFT_BITS, MSC_SYMBOLS, SAMPLE_RATE, T_G, T_NULL, T_S, T_U,
+    MSC_SOFT_BITS, MSC_SYMBOLS, T_G, T_NULL, T_S, T_U,
 };
+
+mod sync;
 
 /// Lowest normalized PRS correlation accepted as a frame. DAB scores ~1, noise
 /// scores ~`1/sqrt(K)` (0.03 in practice): the gate exists to reject noise,
@@ -58,24 +55,12 @@ use super::{
 /// table honesty and cost half the stream.
 pub const PRS_METRIC_MIN: f32 = 0.35;
 
-/// Stride of the null-symbol search, in samples. The guard interval is 504
-/// samples, so an 8-sample grid leaves ample margin.
-const NULL_SEARCH_STRIDE: usize = 8;
-
-/// On the predicted frame grid, a PRS score below this means the clock is
-/// wrong (a shifted frame lands in payload and scores ≈ noise), not faded:
-/// give it up and re-search at once. Between this and `PRS_METRIC_MIN` the
-/// frame is kept as a soft miss.
 /// On the predicted frame grid, a PRS score below this means the clock is
 /// wrong (a shifted frame lands in payload and scores ≈ noise, ~0.03), not
-/// faded: give it up and re-search. Fades score 0.1–0.4 and must be kept —
-/// measured live, the old 0.15 abandoned a real grid on most frames of a
-/// marginal ensemble, which cost the MSC chain the continuity it needs.
+/// faded: give it up and re-search. Fades score 0.1–0.4 and must be kept as
+/// soft misses, or the MSC chain loses the continuity it needs.
 const CLOCK_LOST_METRIC: f32 = 0.06;
 
-/// Consecutive soft misses on the predicted grid before it is given up.
-/// Fades keep the MSC chain alive; a clock that is merely wrong is caught by
-/// `CLOCK_LOST_METRIC` long before this.
 /// Consecutive soft misses on the predicted grid before it is given up.
 /// Fades keep the MSC chain alive; only a run this long (~6 s at Mode I)
 /// of sub-noise scores means the grid is genuinely lost — the app's splice
@@ -83,12 +68,12 @@ const CLOCK_LOST_METRIC: f32 = 0.06;
 const CLOCK_STRIKES: u32 = 64;
 
 /// Consecutive frames that decode no accepted FIC before the published table
-/// is discarded (D27). A splice shorter than the lock window is deliberately
+/// is discarded. A splice shorter than the lock window is deliberately
 /// survived — keeping the table across a USB drop is what made air decoding
 /// usable — but a receiver that has attempted this many frames without
 /// accepting one is not listening to an ensemble, and publishing the old
 /// table would name a station that is not on the air. 48 frames ≈ 4.6 s at
-/// Mode I; on air the post-fix acceptance is about one attempt in three, so
+/// Mode I; on air acceptance is about one attempt in three, so
 /// a fading-but-decodable ensemble cannot reach it. The owner's own no-input
 /// case is shorter still ([`DabReceiver::no_input`]).
 pub const TABLE_EXPIRY_FRAMES: u32 = 48;
@@ -96,7 +81,6 @@ pub const TABLE_EXPIRY_FRAMES: u32 = 48;
 /// A streaming DAB Mode I receiver.
 pub struct DabReceiver {
     fft: Fft2048,
-    /// Samples not yet consumed, as complex baseband.
     pending: Vec<Complex32>,
     /// Scratch: power prefix sums for the null search.
     prefix: Vec<f32>,
@@ -122,15 +106,14 @@ pub struct DabReceiver {
     prs_metric: f32,
     /// The same score for the last attempt, accepted or not. Kept apart
     /// because a rejected attempt's score says nothing about the signal, and
-    /// reporting it as the signal's quality is a lie of the sort D27 forbids:
-    /// on air this read ~0.03 on a receiver decoding 98.9% of its FIBs.
+    /// reporting it as the signal's quality would be false: on air this read ~0.03 on a receiver decoding 98.9% of its FIBs.
     last_attempt_metric: f32,
     /// Frames decoded, and frames rejected for a failed PRS check.
     pub frames_decoded: u64,
     pub frames_rejected: u64,
     /// Where the next frame starts in `pending`, once a frame has been
     /// accepted. Re-searching the null symbol every frame is what starved the
-    /// MSC tier on air: the open-loop search lands on the true grid only a
+    /// MSC chain on air: the open-loop search lands on the true grid only a
     /// few percent of the time, and the receiver discarded the clause-12
     /// delay line on every miss, so it could never complete the 16 frames of
     /// continuity a sub-channel needs. `None` until the first accepted frame
@@ -142,6 +125,12 @@ pub struct DabReceiver {
     /// them. At [`TABLE_EXPIRY_FRAMES`] the published table expires; an
     /// accepted frame starts the count again.
     frames_since_accept: u32,
+    /// Test-only counterfactual switch: with `NEOWON_DAB_NO_PREDICTION` set in
+    /// the environment, the frame grid is never used, so every frame re-derives
+    /// its start from the null-symbol power dip. The capture harnesses use it
+    /// to show the MSC chain starving while the FIC stays clean. Unset (the
+    /// production path) changes nothing.
+    disable_prediction: bool,
 }
 
 impl DabReceiver {
@@ -166,6 +155,7 @@ impl DabReceiver {
             next_frame: None,
             clock_misses: 0,
             frames_since_accept: 0,
+            disable_prediction: std::env::var_os("NEOWON_DAB_NO_PREDICTION").is_some(),
         }
     }
 
@@ -182,10 +172,14 @@ impl DabReceiver {
         let mut decoded = 0;
         while self.pending.len() >= FRAME_SAMPLES + T_NULL {
             // With the frame grid known, decode at the predicted start; the
-            // open-loop null search is for acquisition and re-lock only.
-            let predicted = self
-                .next_frame
-                .filter(|&at| at + FRAME_SAMPLES + T_NULL <= self.pending.len());
+            // open-loop null search is for acquisition and re-lock only. The
+            // test-only switch disables the grid entirely (see the field).
+            let predicted = if self.disable_prediction {
+                None
+            } else {
+                self.next_frame
+                    .filter(|&at| at + FRAME_SAMPLES + T_NULL <= self.pending.len())
+            };
             let frame_start = predicted.unwrap_or_else(|| self.find_null_symbol());
             if frame_start + FRAME_SAMPLES > self.pending.len() {
                 break;
@@ -216,7 +210,7 @@ impl DabReceiver {
             if accepted {
                 self.frames_since_accept = 0;
             } else {
-                // D27: a table nobody can re-derive is not a table. Count
+                // A table nobody can re-derive is not a table. Count
                 // every unaccepted attempt — open-loop searches, noise on the
                 // predicted grid, fades — and expire once the run is long
                 // enough that "the signal is gone" is the only reading left.
@@ -282,9 +276,7 @@ impl DabReceiver {
             }
 
             // The 72 MSC symbols continue the same differential chain: the
-            // first MSC symbol is referenced to the last FIC symbol. The FIC's
-            // three symbols were demapped above with exactly the arithmetic
-            // tier 1 proved on air; this loop only feeds the MSC's own block.
+            // first MSC symbol is referenced to the last FIC symbol.
             self.prev_msc_spectrum
                 .copy_from_slice(&self.fic_spectra[2 * T_U..3 * T_U]);
             for symbol in 0..MSC_SYMBOLS {
@@ -310,7 +302,7 @@ impl DabReceiver {
                 self.fic.process_frame(&self.soft);
             }
             // The demux follows the FIC's sub-channel table: handlers appear
-            // and reset with it, and only CRC-clean FIGs reach the table (D27).
+            // and reset with it, and only CRC-clean FIGs reach the table.
             self.msc.sync(self.fic.ensemble());
             self.msc.push_frame(&self.msc_soft);
             self.frames_decoded += 1;
@@ -340,7 +332,7 @@ impl DabReceiver {
     /// Take the MSC logical frames decoded since the last call, oldest first.
     ///
     /// Each frame is one sub-channel's 24 ms payload (`24 × bit rate / 8`
-    /// bytes). This is the transport tier 3 consumes; tier 2 stops here.
+    /// bytes).
     pub fn take_msc_frames(&mut self) -> Vec<DecodedFrame> {
         self.msc.take_frames()
     }
@@ -355,14 +347,25 @@ impl DabReceiver {
         self.msc.set_payload_crc(true);
     }
 
+    /// Decoded MSC logical frames thrown away because the consumer never
+    /// drained the queue. Coverage lost, so it is reported rather than left
+    /// as a number only the decoder can see.
+    pub fn msc_dropped(&self) -> u64 {
+        self.msc.dropped_frames()
+    }
+
+    /// Samples buffered but not yet consumed by a frame attempt. Exposed so
+    /// an owner (and its tests) can see that a [`Self::discard_buffer`]
+    /// really happened, instead of assuming it.
+    pub fn buffered(&self) -> usize {
+        self.pending.len()
+    }
+
     /// Drop the buffered samples, keeping the lock window and the table.
     ///
     /// For a caller that has detected a **gap or an overlap** in its frame
     /// stream: spliced samples are worse than missing ones, because the null
-    /// symbol stops being the unique power dip and the sync wanders. On air,
-    /// before this existed, the receiver accepted ~3% of its attempts with the
-    /// PRS score pinned at the 0.5 threshold — the signature of a stream that is
-    /// not contiguous.
+    /// symbol stops being the unique power dip and the sync wanders.
     pub fn discard_buffer(&mut self) {
         self.pending.clear();
         self.msc.discard();
@@ -407,106 +410,6 @@ impl DabReceiver {
         self.frames_since_accept = 0;
     }
 
-    /// Refine a coarse frame start (a null-symbol power dip) to the PRS
-    /// correlation peak. Under multipath/SFN the null is shallow and its dip
-    /// position jitters by hundreds of samples, while the PRS correlation
-    /// peak is stable — a frame grid built on the dip loses lock almost every
-    /// frame on air, one built on the peak does not. Coarse then fine, and the
-    /// last extraction leaves `prs_spectrum` aligned with the chosen start
-    /// (it is the first FIC symbol's differential reference).
-    fn refine_frame_start(&mut self, coarse: usize) -> (usize, f32) {
-        const COARSE_STEP: usize = 32;
-        const FINE_STEP: usize = 8;
-        const COARSE_SPAN: usize = 1024;
-        let offset = self.freq_offset_hz;
-        let mut best = (coarse, f32::MIN);
-        // The refinement may only move the start later or earlier by
-        // `COARSE_SPAN`; a candidate without a whole frame behind it cannot be
-        // demapped, and returning one would overrun the sample buffer in the
-        // caller's symbol loops.
-        let last = self.pending.len().saturating_sub(FRAME_SAMPLES);
-        let mut at = coarse.saturating_sub(COARSE_SPAN);
-        let hi = (coarse + COARSE_SPAN).min(last);
-        while at <= hi {
-            let metric = self.extract_prs_spectrum(at, offset);
-            if metric > best.1 {
-                best = (at, metric);
-            }
-            at += COARSE_STEP;
-        }
-        let mut at = best.0.saturating_sub(COARSE_STEP);
-        let hi = (best.0 + COARSE_STEP).min(last);
-        while at <= hi {
-            let metric = self.extract_prs_spectrum(at, offset);
-            if metric > best.1 {
-                best = (at, metric);
-            }
-            at += FINE_STEP;
-        }
-        let metric = self.extract_prs_spectrum(best.0, offset);
-        (best.0, metric)
-    }
-
-    /// Position of the deepest sustained-power dip in the first frame period:
-    /// the null symbol, assuming a frame starts somewhere in the buffer.
-    fn find_null_symbol(&mut self) -> usize {
-        let available = self.pending.len().min(FRAME_SAMPLES + T_NULL);
-        self.prefix.clear();
-        self.prefix.push(0.0);
-        let mut running = 0.0f32;
-        for sample in &self.pending[..available] {
-            running += sample.norm_sqr();
-            self.prefix.push(running);
-        }
-        let mut best = (f32::MAX, 0usize);
-        let mut at = 0usize;
-        while at + T_NULL <= available && at < FRAME_SAMPLES {
-            let power = self.prefix[at + T_NULL] - self.prefix[at];
-            if power < best.0 {
-                best = (power, at);
-            }
-            at += NULL_SEARCH_STRIDE;
-        }
-        best.1
-    }
-
-    /// Transform the PRS symbol's useful part and score it against the known
-    /// sequence, storing it for the first FIC symbol's demap. Returns whether
-    /// the score clears [`PRS_METRIC_MIN`].
-    ///
-    /// A frame start without a full `T_NULL + T_G + T_U` behind it scores zero:
-    /// the refine scan can propose starts near the end of the buffered samples,
-    /// and "not enough samples to look" is not a signal quality.
-    fn extract_prs_spectrum(&mut self, frame_start: usize, offset_hz: f64) -> f32 {
-        let start = frame_start + T_NULL + T_G;
-        if start + T_U > self.pending.len() {
-            return 0.0;
-        }
-        let base = (start - frame_start) as f64;
-        let mut window = std::mem::take(&mut self.spectrum);
-        self.corrected_window(start, base, offset_hz, &mut window);
-        self.fft.forward(&mut window);
-
-        let reference = prs_reference();
-        let mut correlation = Complex32::new(0.0, 0.0);
-        let mut energy = 0.0f32;
-        let mut reference_energy = 0.0f32;
-        for bin in 0..T_U {
-            correlation += window[bin] * reference[bin].conj();
-            energy += window[bin].norm_sqr();
-            reference_energy += reference[bin].norm_sqr();
-        }
-        let denominator = (energy * reference_energy).sqrt();
-        let metric = if denominator > 0.0 {
-            correlation.norm() / denominator
-        } else {
-            0.0
-        };
-        self.prs_spectrum.copy_from_slice(&window);
-        self.spectrum = window;
-        metric
-    }
-
     /// The accepted frame's PRS correlation: the score behind the table.
     pub fn prs_metric(&self) -> f32 {
         self.prs_metric
@@ -515,52 +418,6 @@ impl DabReceiver {
     /// The last attempt's PRS correlation, whether or not it was believed.
     pub fn last_attempt_metric(&self) -> f32 {
         self.last_attempt_metric
-    }
-
-    /// Fill `window` with `T_U` samples at `start`, de-rotated by the estimated
-    /// carrier offset on the frame's time base.
-    ///
-    /// `base` is the window's offset from the frame start, in samples: the
-    /// phasor must run *continuously* across symbols, because the thing being
-    /// undone is a rotation accumulating in time.
-    fn corrected_window(&self, start: usize, base: f64, offset_hz: f64, window: &mut [Complex32]) {
-        let step = -f64::from(TAU) * offset_hz / SAMPLE_RATE;
-        for (i, slot) in window.iter_mut().enumerate() {
-            let phase = (step * (base + i as f64)) as f32;
-            *slot = self.pending[start + i] * Complex32::from_polar(1.0, phase);
-        }
-    }
-
-    /// Carrier frequency offset in Hz, from the cyclic prefix of the phase
-    /// reference symbol.
-    ///
-    /// The guard interval repeats the symbol's last `T_G` samples one useful
-    /// period earlier, so the correlation of the two copies carries
-    /// `arg = -2·pi·df·Tu/fs` — the sign is checked by
-    /// `frequency_offset_sign_is_pinned`, because getting it backwards doubles
-    /// the error instead of removing it.
-    /// Carrier offset from the PRS symbol's cyclic prefix, or `None` when the
-    /// guard correlation is too weak to trust (a faded frame, or no signal).
-    /// This runs on **every** attempt, not only accepted frames: the dongle's
-    /// LO drifts as it warms, and an offset that is only refreshed by accepted
-    /// frames strands the receiver the moment acceptance stops.
-    fn estimate_frequency_offset(&self, frame_start: usize) -> Option<f64> {
-        let start = frame_start + T_NULL;
-        if start + T_U + T_G > self.pending.len() {
-            return None;
-        }
-        let mut accumulator = Complex32::new(0.0, 0.0);
-        let mut energy = 0.0f32;
-        for m in 0..T_G {
-            let guard = self.pending[start + m];
-            let copy = self.pending[start + T_U + m];
-            accumulator += guard * copy.conj();
-            energy += guard.norm_sqr();
-        }
-        if energy <= f32::MIN_POSITIVE || accumulator.norm() < 0.3 * energy {
-            return None;
-        }
-        Some(-f64::from(accumulator.arg()) * SAMPLE_RATE / (f64::from(TAU) * T_U as f64))
     }
 }
 
@@ -571,79 +428,4 @@ impl Default for DabReceiver {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::dab::ofdm::{Fft2048, prs_reference};
-
-    /// Build the PRS symbol's samples (guard + useful part), optionally with a
-    /// carrier offset applied.
-    fn prs_samples(offset_hz: f64) -> Vec<Complex32> {
-        let mut fft = Fft2048::new();
-        let mut symbol = fft.symbol_from_spectrum(prs_reference());
-        for (i, value) in symbol.iter_mut().enumerate() {
-            let phase = (TAU as f64 * offset_hz * i as f64 / SAMPLE_RATE) as f32;
-            *value *= Complex32::from_polar(1.0, phase);
-        }
-        symbol
-    }
-
-    /// A frame-shaped buffer: the null symbol, then the samples given.
-    fn frame_with(samples: Vec<Complex32>) -> Vec<Complex32> {
-        let mut out = vec![Complex32::new(0.0, 0.0); T_NULL];
-        out.extend_from_slice(&samples);
-        out
-    }
-
-    /// The estimated offset has the right sign and size — the single most
-    /// dangerous sign in the front end, since a flip doubles the error.
-    #[test]
-    fn frequency_offset_sign_is_pinned() {
-        for injected in [-120.0f64, -40.0, 40.0, 120.0] {
-            let mut receiver = DabReceiver::new();
-            receiver.pending = frame_with(prs_samples(injected));
-            let estimated = receiver
-                .estimate_frequency_offset(0)
-                .expect("a clean guard correlates");
-            assert!(
-                (estimated - injected).abs() < 5.0,
-                "injected {injected} Hz, estimated {estimated} Hz"
-            );
-        }
-    }
-
-    /// The PRS score separates DAB from noise by more than an order of
-    /// magnitude: that gap is what the false-lock criterion rests on.
-    #[test]
-    fn prs_metric_separates_signal_from_noise() {
-        let mut receiver = DabReceiver::new();
-        receiver.pending = frame_with(prs_samples(0.0));
-        let signal_metric = receiver.extract_prs_spectrum(0, 0.0);
-        assert!(signal_metric > 0.95, "PRS metric {signal_metric}");
-
-        let mut noise = DabReceiver::new();
-        let mut rng: u32 = 0xDEAD_BEEF;
-        for _ in 0..(T_NULL + T_G + T_U) {
-            rng = rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            let i = ((rng >> 16) as i16 as f32) / 32768.0;
-            rng = rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            let q = ((rng >> 16) as i16 as f32) / 32768.0;
-            noise.pending.push(Complex32::new(i, q));
-        }
-        let noise_metric = noise.extract_prs_spectrum(0, 0.0);
-        assert!(
-            noise_metric < 0.1,
-            "noise metric {noise_metric} should be far below the DAB score"
-        );
-    }
-
-    /// An empty buffer decodes nothing and does not panic.
-    #[test]
-    fn empty_input_is_harmless() {
-        let mut receiver = DabReceiver::new();
-        assert_eq!(receiver.push_iq(&[]), 0);
-        assert_eq!(receiver.push_iq(&[0.0, 0.0]), 0);
-        let status = receiver.status();
-        assert!(!status.locked);
-        assert_eq!(status.frames, 0);
-    }
-}
+mod tests;

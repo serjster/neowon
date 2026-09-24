@@ -50,7 +50,6 @@ pub fn show(
         .small(),
     );
 
-    // History browser: scrub through the recorded ring.
     ui.separator();
     let n = rec.frames.len();
     ui.horizontal(|ui| {
@@ -142,7 +141,6 @@ pub fn show(
         }
     });
 
-    // Load a saved capture (path box + button).
     ui.horizontal(|ui| {
         if ui.button("Load").clicked() {
             let path = rec.load_path.clone();

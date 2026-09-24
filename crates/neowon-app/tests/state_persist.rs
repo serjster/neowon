@@ -1,4 +1,4 @@
-//! Phase 10.12 (D13): the app saves its state and comes back the way it
+//! The app saves its state and comes back the way it
 //! was left — UI scale, window size, dock sections, SDR tuning and
 //! demodulator — while scripted runs never touch the file, and a saved
 //! value the instrument cannot take is dropped with a status line.
@@ -11,15 +11,12 @@ use common::*;
 use std::time::{Duration, Instant};
 
 fn tmp(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("neowon-state-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    scratch(&format!("state-{name}"))
 }
 
 /// Ask the app to quit and wait for it to exit by itself (the exit save
 /// runs on the way out).
-fn quit(mut child: std::process::Child, c: &mut Conn) {
+fn quit(mut child: App, c: &mut Conn) {
     let _ = c.request("quit");
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
@@ -94,7 +91,7 @@ fn state_survives_a_restart() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Operator request 2026-09-19: the workspace mode (SCOPE | SDR) is part
+/// The workspace mode (SCOPE | SDR) is part
 /// of the saved state — the launch flags still pick the family, the file
 /// picks which of the family's two instruments comes up.
 #[test]
@@ -187,13 +184,13 @@ fn a_scripted_run_writes_no_state() {
     let state = dir.join("state.nws");
     let script = dir.join("run.nws");
     std::fs::write(&script, "uiscale 1.5\nwait 3\nquit\n").unwrap();
-    let status = std::process::Command::new(env!("CARGO_BIN_EXE_neowon-app"))
+    let sandbox = Sandbox::new("state-script");
+    let status = sandbox
+        .command(env!("CARGO_BIN_EXE_neowon-app"))
         .arg("--sim")
         .env("NEOWON_SCRIPT", &script)
         .env("NEOWON_STATE", &state)
         .env_remove("NEOWON_NO_STATE")
-        // A killed harness must not leave the scripted app behind.
-        .env("NEOWON_ORPHAN_EXIT", "120")
         .status()
         .unwrap();
     assert!(status.success());

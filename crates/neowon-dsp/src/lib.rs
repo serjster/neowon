@@ -1,5 +1,5 @@
 //! Signal processing over capture frames. CPU implementations are the
-//! correctness oracle; GPU variants (added later, in the app's render world)
+//! correctness oracle; GPU variants (in the app's render world)
 //! must match these within tolerance.
 
 pub mod acq;
@@ -15,6 +15,7 @@ pub mod measure;
 pub mod modlab;
 pub mod modmeas;
 pub mod stats;
+pub mod survey;
 pub mod timeline;
 
 pub use acq::peak_advised;
@@ -28,4 +29,5 @@ pub use measure::{
     BasicStats, Measurements, basic_stats, estimate_frequency, measure, measure_envelope,
 };
 pub use stats::StatTrack;
+pub use survey::{Survey, SurveyPlan, SurveyResult};
 pub use timeline::{NO_DATA, Reduced, Segment, Tiles, reduce, summarize};

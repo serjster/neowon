@@ -175,7 +175,6 @@ impl Fft2048 {
         }
     }
 
-    /// In-place forward transform.
     pub fn forward(&mut self, buffer: &mut [Complex32]) {
         assert_eq!(buffer.len(), T_U);
         self.scratch.resize(
@@ -331,7 +330,6 @@ mod tests {
         }
     }
 
-    /// A carrier with no energy becomes an erasure, not a decision.
     #[test]
     fn silent_carriers_are_erasures() {
         let symbol = vec![Complex32::new(0.0, 0.0); T_U];

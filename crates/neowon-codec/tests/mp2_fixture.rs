@@ -6,9 +6,9 @@
 //!
 //! The two decoders share the ISO floating-point synthesis filterbank
 //! contract, so the alignment is expected at (or very near) lag 0. The
-//! test asserts: normalised correlation ≥ 0.999 (measured 1.00000),
-//! relative RMS error ≤ 0.01 (measured ≤ 0.0002), the expected tone
-//! dominating by ≥ 8×, and an amplitude ratio within 0.95–1.05.
+//! test asserts: normalised correlation ≥ 0.999 (measured 0.999999990 L /
+//! 0.999999989 R), relative RMS error ≤ 0.01 (measured ≤ 0.00015), the
+//! expected tone dominating by ≥ 8×, and an amplitude ratio within 0.95–1.05.
 
 mod common;
 
@@ -46,6 +46,7 @@ fn mp2_fixture_decodes_within_the_stated_metric() {
         let other = if index == 0 { 880.0 } else { 440.0 };
 
         let agreement = common::align_and_compare(ours, reference, 64);
+        common::report_agreement("tone.mp2", index, &agreement);
         assert!(
             agreement.correlation >= 0.999,
             "channel {index}: correlation {:.6} (lag {})",

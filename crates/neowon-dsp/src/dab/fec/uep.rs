@@ -83,7 +83,6 @@ impl UepProfile {
     }
 }
 
-/// The 64 profiles, re-exported from the generated table module.
 pub use super::uep_table::UEP_PROFILES;
 
 /// The profile a FIC short-form `table 8` index names. The table has no gaps:
@@ -94,8 +93,7 @@ pub fn uep_profile(table_index: u8) -> Option<UepProfile> {
 }
 
 /// The profile for a bit rate and level, found by value rather than by index —
-/// for callers that only have the two numbers (tests, and any future
-/// reconfiguration path).
+/// for callers that only have the two numbers.
 pub fn uep_profile_for(bitrate_kbps: u16, level: u8) -> Option<UepProfile> {
     UEP_PROFILES
         .iter()
@@ -112,8 +110,7 @@ pub fn depuncture_uep(soft: &[i8], profile: &UepProfile) -> Vec<i8> {
 mod tests {
     use super::*;
 
-    /// Row 11 of the spec's verification contract, against clause 11.3.1's
-    /// table 8 as printed: every index's size and bit rate, including the
+    /// Clause 11.3.1's table 8 as printed: every index's size and bit rate, including the
     /// missing combinations.
     #[test]
     fn table_8_bit_rates_and_sizes_match_the_clause() {
@@ -196,7 +193,7 @@ mod tests {
         }
     }
 
-    /// Table 15's row for the profile the tier-2 fixture uses: 128 kbit/s,
+    /// Table 15's row for the profile the MSC fixture uses: 128 kbit/s,
     /// level 3 is table index 35, `L = [11, 22, 60, 3]`, `PI = [16, 9, 6, 10]`,
     /// 4 padding bits, 96 CUs.
     #[test]

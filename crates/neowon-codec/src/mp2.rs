@@ -17,7 +17,6 @@ use crate::Error;
 use oxideav_mp2::frame::{Ancillary, FrameDecodeState, decode_frame_with};
 use oxideav_mp2::header::{FrameHeader, find_sync};
 
-/// One decoded MP2 frame.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DecodedMp2 {
     /// Interleaved f32 PCM in `[-1, 1)`, `channels` samples per frame.
@@ -126,7 +125,6 @@ impl Mp2Decoder {
     }
 }
 
-/// Convert the codec's per-channel `f64` PCM and ancillary tail.
 fn convert(pcm: &[Vec<f64>], sample_rate: u32, ancillary: &Ancillary) -> DecodedMp2 {
     let channels = pcm.len();
     let frames = pcm.first().map_or(0, Vec::len);

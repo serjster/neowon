@@ -1,4 +1,4 @@
-//! D8: the reference IQ scene, seed 1, 1024 pairs, is bit-identical to the
+//! The reference IQ scene, seed 1, 1024 pairs, is bit-identical to the
 //! checked-in fixture on every platform. The fixture was written by
 //! `cargo run -p neowon-cli -- sim iq --seed 1 --n 1024 --out <fixture>`;
 //! a legitimate change to `IqScene::reference` regenerates it the same way.

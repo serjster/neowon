@@ -13,7 +13,6 @@ use super::layout::{Layout, Roi};
 use super::menu::MenuState;
 use super::widgets::{RUN_COLOR, STOP_COLOR, WAIT_COLOR};
 
-/// Run/stop/wait classification for the badge.
 pub fn run_state(link: &Link, now: f64) -> (&'static str, egui::Color32) {
     if !link.config.running {
         return ("STOP", STOP_COLOR);
@@ -46,12 +45,13 @@ pub fn show(
                 menus(ui, bar);
                 ui.separator();
                 if bar.sdr.active {
-                    return sdr_status(ui, bar.sdr, bar.refmap, &link.status);
+                    let caps = link.sdr_caps();
+                    return sdr_status(ui, bar.sdr, caps, bar.refmap, &link.status, now);
                 }
                 // Run state badge (manual 8.5: Run = yellow, Stop = red).
                 let (label, color) = run_state(link, now);
                 badge(ui, label, color);
-                let record_len = link.caps.as_ref().map(|c| c.record_len()).unwrap_or(5000);
+                let record_len = crate::view::record_len(link);
                 let per_div = record_len as f64 / link.config.sample_rate / 10.0;
                 // While the timeline is on, the on-screen time/div is the
                 // window's, not the record's — show both rather than let the
@@ -130,7 +130,8 @@ pub fn show(
                              starving or the instrument stopped.",
                         );
                     if let Some(caps) = &link.caps {
-                        ui.weak(format!("{} · {}", caps.name, caps.serial));
+                        ui.weak(format!("{} · {}", caps.name(), caps.serial()));
+                        bar_error(ui, &link.status, now);
                     } else {
                         ui.weak(link.status.clone());
                     }
@@ -153,13 +154,13 @@ fn badge(ui: &mut egui::Ui, label: &str, color: egui::Color32) {
     );
 }
 
-/// The bar's readouts in SDR mode: run state, tuning, the band it is in,
-/// and the instrument.
 fn sdr_status(
     ui: &mut egui::Ui,
     sdr: &crate::sdr::SdrState,
+    caps: Option<&neowon_backend::SdrCaps>,
     refmap: &crate::refmap::RefMap,
     status: &str,
+    now: f64,
 ) {
     let c = &sdr.config;
     if c.running {
@@ -211,11 +212,47 @@ fn sdr_status(
         let n = format!("#{}", sdr.frames_seen);
         ui.label(egui::RichText::new(format!("{n:>8}")).monospace())
             .on_hover_text("IQ frames since the SDR connected.");
-        match &sdr.caps {
-            Some(c) => ui.weak(format!("{} · {}", c.name, c.tuner)),
-            None => ui.weak(status),
+        match caps {
+            Some(c) => {
+                ui.weak(format!("{} · {}", c.name, c.tuner));
+                bar_error(ui, status, now);
+            }
+            None => {
+                ui.weak(status);
+            }
         };
     });
+}
+
+/// How long a refusal stays in the SDR bar after it happened; the log and
+/// `get status` keep it after that.
+const ERROR_SHOW_S: f64 = 15.0;
+
+/// The home for an action's refusal, in either workspace: with a device
+/// connected the bar names the device, not `link.status`, so a failing verb
+/// needs a place of its own. Shown while fresh, truncated to the bar with
+/// the whole message on hover.
+fn bar_error(ui: &mut egui::Ui, status: &str, now: f64) {
+    let id = egui::Id::new("sdr-bar-error");
+    let seen: Option<(String, f64)> = ui.data(|d| d.get_temp(id));
+    let since = match seen {
+        Some((text, at)) if text == status => at,
+        _ => {
+            ui.data_mut(|d| d.insert_temp(id, (status.to_string(), now)));
+            now
+        }
+    };
+    let error = status.starts_with("error:") || status.starts_with("disconnected:");
+    if !error || now - since > ERROR_SHOW_S {
+        return;
+    }
+    let short: String = if status.chars().count() > 72 {
+        status.chars().take(71).chain(['…']).collect()
+    } else {
+        status.to_string()
+    };
+    ui.colored_label(ui.visuals().error_fg_color, short)
+        .on_hover_text(status);
 }
 
 /// What the menus need to reach. Bundled so the bar keeps one parameter.
@@ -354,12 +391,26 @@ fn menus(ui: &mut egui::Ui, bar: &mut BarState<'_>) {
     }
 }
 
-/// The View menu in the SDR workspace: the RF reference views and the
-/// windows that belong to the radio.
 fn sdr_view_menu(ui: &mut egui::Ui, bar: &mut BarState<'_>) {
+    for a in sdr_views(ui, bar.refmap, bar.sdr) {
+        bar.script.inject(a);
+    }
+    sdr_view_plan(ui, bar);
+}
+
+/// The View menu's toggles, returned as the script actions they stand for
+/// (script parity): the RF reference views, and the DAB receiver —
+/// `sdr dab on|off`, which opens the dock's DAB section and scrolls it into
+/// view, so DAB has a door outside the dock.
+fn sdr_views(
+    ui: &mut egui::Ui,
+    rm: &crate::refmap::RefMap,
+    sdr: &crate::sdr::SdrState,
+) -> Vec<crate::script::Action> {
     use crate::refmap::RefMapAction as R;
     use crate::script::Action;
-    let rm = bar.refmap;
+    use crate::sdr::{DabVerb, SdrAction};
+    let mut out = Vec::new();
     for (label, on, act) in [
         ("RF map", rm.window, R::Window as fn(bool) -> R),
         ("Band strip", rm.strip, R::Strip),
@@ -367,9 +418,28 @@ fn sdr_view_menu(ui: &mut egui::Ui, bar: &mut BarState<'_>) {
     ] {
         let mut v = on;
         if ui.checkbox(&mut v, label).changed() {
-            bar.script.inject(Action::RefMap(act(v)));
+            out.push(Action::RefMap(act(v)));
         }
     }
+    let mut dab = sdr.dab.on();
+    if ui
+        .checkbox(&mut dab, "DAB receiver")
+        .on_hover_text("sdr dab on|off - decode the Band III ensemble at the hardware centre")
+        .changed()
+    {
+        out.push(Action::Sdr(SdrAction::Dab(if dab {
+            DabVerb::On
+        } else {
+            DabVerb::Off
+        })));
+    }
+    out
+}
+
+fn sdr_view_plan(ui: &mut egui::Ui, bar: &mut BarState<'_>) {
+    use crate::refmap::RefMapAction as R;
+    use crate::script::Action;
+    let rm = bar.refmap;
     ui.menu_button(format!("Band plan: {}", rm.stem()), |ui| {
         for (stem, plan) in &rm.plans {
             if ui
@@ -389,5 +459,90 @@ fn sdr_view_menu(ui: &mut egui::Ui, bar: &mut BarState<'_>) {
         bar.script
             .inject(Action::Catalog(crate::catalog::CatalogAction::Window(true)));
         ui.close();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy_egui::egui::accesskit::{self, ActionRequest, NodeId, Role, TreeId, TreeUpdate};
+
+    /// The first node with this role and label, from one frame's AccessKit
+    /// update — the tree `get uitree` renders.
+    fn find(tree: &TreeUpdate, role: Role, label: &str) -> Option<(NodeId, Option<bool>)> {
+        tree.nodes
+            .iter()
+            .find(|(_, n)| n.role() == role && n.label() == Some(label))
+            .map(|(id, n)| (*id, n.toggled().map(|t| t == accesskit::Toggled::True)))
+    }
+
+    fn click(id: NodeId) -> Vec<egui::Event> {
+        vec![egui::Event::AccessKitActionRequest(ActionRequest {
+            action: accesskit::Action::Click,
+            target_tree: TreeId::ROOT,
+            target_node: id,
+            data: None,
+        })]
+    }
+
+    fn frame(
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+        rm: &crate::refmap::RefMap,
+        sdr: &crate::sdr::SdrState,
+    ) -> (Vec<String>, TreeUpdate) {
+        let raw = egui::RawInput {
+            events,
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 600.0),
+            )),
+            ..Default::default()
+        };
+        let mut acts = Vec::new();
+        let out = ctx.run_ui(raw, |ui| {
+            ui.menu_button("View", |ui| acts = sdr_views(ui, rm, sdr));
+        });
+        let tree = out.platform_output.accesskit_update.expect("accesskit on");
+        let acts = acts
+            .iter()
+            .map(|a| match a {
+                crate::script::Action::Sdr(a) => a.to_string(),
+                other => format!("{other:?}"),
+            })
+            .collect();
+        (acts, tree)
+    }
+
+    /// DAB has a door outside the dock. The SDR View menu carries a
+    /// "DAB receiver" toggle that shows the receiver's state and stands for
+    /// `sdr dab on|off` — the script action, so the menu and a script take
+    /// the same path (script parity).
+    #[test]
+    fn the_sdr_view_menu_has_a_dab_receiver_toggle_bound_to_its_script_action() {
+        let rm = crate::refmap::RefMap::shipped_only();
+        for on in [false, true] {
+            let mut sdr = crate::sdr::SdrState::default();
+            if on {
+                sdr.dab.rx = Some(neowon_dsp::dab::DabReceiver::new());
+            }
+            let ctx = egui::Context::default();
+            ctx.enable_accesskit();
+            let (_, tree) = frame(&ctx, Vec::new(), &rm, &sdr);
+            let (view, _) = find(&tree, Role::Button, "View").expect("View menu button");
+            let (_, tree) = frame(&ctx, click(view), &rm, &sdr);
+            let entry = find(&tree, Role::CheckBox, "DAB receiver").or_else(|| {
+                find(
+                    &frame(&ctx, Vec::new(), &rm, &sdr).1,
+                    Role::CheckBox,
+                    "DAB receiver",
+                )
+            });
+            let (entry, toggled) = entry.expect("View menu has no DAB receiver entry");
+            assert_eq!(toggled, Some(on), "the entry shows the receiver's state");
+            let (acts, _) = frame(&ctx, click(entry), &rm, &sdr);
+            let want = if on { "sdr dab off" } else { "sdr dab on" };
+            assert_eq!(acts, vec![want.to_string()], "the entry's script action");
+        }
     }
 }

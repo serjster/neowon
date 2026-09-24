@@ -1,4 +1,4 @@
-//! Positions and the operator's location (D18): decimal degrees, Maidenhead
+//! Positions and the operator's location: decimal degrees, Maidenhead
 //! locators, great-circle distance, and the tiny `location.json` file.
 //! Nothing here performs network I/O — `location ip` is `fetch`'s job.
 
@@ -169,7 +169,7 @@ impl Location {
     }
 }
 
-/// `~/.neowon/location.json` (D18), or `$NEOWON_LOCATION`. Tests point
+/// `~/.neowon/location.json`, or `$NEOWON_LOCATION`. Tests point
 /// the override at a temp file so they never touch the operator's fix.
 pub fn location_path() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("NEOWON_LOCATION") {

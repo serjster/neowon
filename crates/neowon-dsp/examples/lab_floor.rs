@@ -2,7 +2,7 @@
 //! without noise at 10, 20 and 40 samples per symbol, against the closed
 //! form (noise RMS / amplitude). Noise-free, what remains is the RRC
 //! truncation floor (~0.12%); a result far above it points at a recovery
-//! stage (this is how a residual-carrier phase ramp was found).
+//! stage.
 //!
 //! `cargo run -p neowon-dsp --example lab_floor`
 use neowon_core::Modulation;

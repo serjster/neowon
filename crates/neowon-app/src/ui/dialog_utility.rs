@@ -1,5 +1,3 @@
-//! Utility dialog — MULTI port, pass/fail engine, spectrum (FFT) controls.
-
 use bevy_egui::egui;
 use neowon_backend::{Command, MultiMode};
 use neowon_dsp::Window;

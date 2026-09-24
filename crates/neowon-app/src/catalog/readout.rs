@@ -1,5 +1,3 @@
-//! Control-socket readouts for the catalog: `get catalog`, `get history`.
-
 use neowon_catalog::Id;
 
 use super::CatalogState;
@@ -59,7 +57,7 @@ pub fn catalog_json(st: &CatalogState) -> String {
         esc(&st.path.display().to_string()),
         cat.seq(),
         cat.state().entities.len(),
-        cat.state().integrity().len(),
+        st.integrity_problems(),
         rows.join(",")
     )
 }

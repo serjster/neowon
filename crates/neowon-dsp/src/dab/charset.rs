@@ -11,11 +11,10 @@
 //! Charset 0 decodes byte-for-byte through the table; charset 15 is UTF-8 by
 //! the standard's assignment. Any other charset is *not* guessed: printable
 //! ASCII passes, everything else becomes `?`, so a wrong letter never reaches
-//! a display (the same rule as tier 1's label decoder, D27).
+//! a display (the same rule as the FIG label decoder).
 
 /// The EBU Latin repertoire, 0x00..=0xFF → Unicode. Reserved codes map to
 /// U+FFFD; they never carry printable text.
-// Ported from dabradio 0.5.0 (MIT); notice in docs/protocol-dab.md
 static EBU_LATIN: [char; 256] = [
     // 0x00–0x0F
     '\u{FFFD}', // 0x00 — reserved

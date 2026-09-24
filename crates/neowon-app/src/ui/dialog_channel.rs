@@ -1,5 +1,3 @@
-//! Channel (vertical) dialog — per-channel scale, coupling, probe, offset.
-
 use bevy_egui::egui;
 use neowon_core::Coupling;
 
@@ -11,8 +9,7 @@ use crate::derived::fmt_si;
 
 pub fn show(ui: &mut egui::Ui, link: &mut Link, ch: usize) {
     let vdiv_ladder: Vec<f64> = link
-        .caps
-        .as_ref()
+        .scope_caps()
         .map(|c| c.volts_div.clone())
         .unwrap_or_else(|| FALLBACK_VDIV.to_vec());
 
@@ -54,8 +51,6 @@ pub fn show(ui: &mut egui::Ui, link: &mut Link, ch: usize) {
             c.probe = probe;
             dirty = true;
         }
-        // Rotary controls for the two continuous-feeling vertical knobs —
-        // the mouse-scroll/drag substitutes on the front panel.
         ui.horizontal(|ui| {
             let mut vdiv = c.volts_div;
             if knob(

@@ -7,12 +7,26 @@
 //!   cargo test -p neowon-mcp --test mcp_e2e -- --ignored
 
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ExitStatus, Stdio};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
+// The app suites' isolation rule, included rather than restated: a private
+// HOME and none of the caller's NEOWON_*.
+#[path = "../../neowon-app/tests/common/sandbox.rs"]
+mod sandbox;
+use sandbox::{Sandbox, scratch, unique};
 
 struct Mcp {
     child: Child,
-    stdin: std::process::ChildStdin,
+    /// The spawned app's home (it inherits the MCP server's environment).
+    _sandbox: Sandbox,
+    /// `None` once closed: closing it is how an MCP client ends a stdio
+    /// server.
+    stdin: Option<std::process::ChildStdin>,
     lines: std::io::Lines<BufReader<std::process::ChildStdout>>,
+    /// The server's stderr lines, drained on a thread so it never blocks.
+    stderr: mpsc::Receiver<String>,
 }
 
 impl Mcp {
@@ -33,9 +47,7 @@ impl Mcp {
         // A throwaway reference store with one known station, and a
         // throwaway location file: the spawned app must never read the
         // operator's.
-        let dir = std::env::temp_dir().join(format!("neowon-mcp-ref-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = scratch("mcp-ref");
         std::fs::write(
             dir.join("wikidata.json"),
             r#"[{"source":"wikidata","id":"Q1001","name":"Antena 1","freq_hz":100300000.0,
@@ -49,33 +61,83 @@ impl Mcp {
                  "origin":"fixture","licence":"CC0"}]"#,
         )
         .unwrap();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_neowon-mcp"))
+        // The spawned app inherits the server's environment: a private
+        // HOME, a throwaway catalog, and a token both processes share. The
+        // token is this launch's nonce: an app on the port that this test
+        // did not start refuses it, so the gated tools fail loudly instead
+        // of driving a stranger.
+        let sandbox = Sandbox::new("mcp");
+        let mut child = sandbox
+            .command(env!("CARGO_BIN_EXE_neowon-mcp"))
             .arg("--spawn-sim")
             .env("NEOWON_MCP_PORT", port.to_string())
-            // The spawned app inherits this: a throwaway catalog, not the
-            // user's.
-            .env(
-                "NEOWON_CATALOG",
-                std::env::temp_dir().join(format!("neowon-mcp-cat-{}", std::process::id())),
-            )
+            .env("NEOWON_CONTROL_TOKEN", unique("mcp-token"))
+            .env("NEOWON_CATALOG", scratch("mcp-cat"))
             .env("NEOWON_REFDB", &dir)
             .env("NEOWON_LOCATION", dir.join("location.json"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .expect("launch neowon-mcp");
-        let stdin = child.stdin.take().unwrap();
+        let stdin = child.stdin.take();
         let lines = BufReader::new(child.stdout.take().unwrap()).lines();
+        let (tx, stderr) = mpsc::channel();
+        let err = child.stderr.take().unwrap();
+        std::thread::spawn(move || {
+            for line in BufReader::new(err).lines().map_while(Result::ok) {
+                let _ = tx.send(line);
+            }
+        });
         Self {
             child,
+            _sandbox: sandbox,
             stdin,
             lines,
+            stderr,
         }
     }
 
     fn send(&mut self, msg: &str) {
-        writeln!(self.stdin, "{msg}").unwrap();
+        writeln!(self.stdin.as_mut().expect("stdin open"), "{msg}").unwrap();
+    }
+
+    /// The pid of the app the server spawned, from its stderr report.
+    fn app_pid(&self) -> u32 {
+        const TAG: &str = "neowon-mcp: spawned neowon-app pid ";
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.stderr.recv_timeout(left) {
+                Ok(line) => {
+                    if let Some(pid) = line.strip_prefix(TAG) {
+                        return pid.trim().parse().expect("pid");
+                    }
+                }
+                Err(e) => panic!("the server never reported its app's pid: {e}"),
+            }
+        }
+    }
+
+    /// End the server the way an MCP client does: close its stdin and let
+    /// it exit, which ends the app it spawned. Killing the server instead
+    /// would orphan that app until its `NEOWON_ORPHAN_EXIT` watchdog fired.
+    /// The kill is only the fallback for a server that does not
+    /// exit; `None` says it had to be used.
+    fn shutdown(&mut self) -> Option<ExitStatus> {
+        drop(self.stdin.take());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Ok(Some(status)) = self.child.try_wait() {
+                return Some(status);
+            }
+            if Instant::now() > deadline {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 
     /// Read messages until one carries the given id; requests from the
@@ -94,9 +156,50 @@ impl Mcp {
 
 impl Drop for Mcp {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        self.shutdown();
     }
+}
+
+/// Whether `pid` names a live process (`kill -0`: a signal check that
+/// sends nothing).
+fn alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// Whatever spawns the app ends it: once the test is done with the MCP
+/// server, the app that `--spawn-sim` started is gone too — checked by its
+/// pid, within a bound far below the 30 s orphan watchdog.
+#[test]
+#[ignore = "opens a window (spawns the sim app)"]
+fn the_spawned_app_ends_with_the_server() {
+    let mut mcp = Mcp::spawn();
+    mcp.send(
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"e2e","version":"0"}}}"#,
+    );
+    assert!(mcp.recv_id(1).contains("serverInfo"));
+    let app = mcp.app_pid();
+    assert!(alive(app), "the spawned app (pid {app}) is not running");
+
+    // The test is done with the server: this is what its end does.
+    let status = mcp.shutdown();
+    drop(mcp);
+    let ended = Instant::now();
+    while alive(app) {
+        assert!(
+            ended.elapsed() < Duration::from_secs(3),
+            "the spawned app (pid {app}) outlived its server by {:.1}s (server: {status:?})",
+            ended.elapsed().as_secs_f64()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        status.is_some_and(|s| s.success()),
+        "the server did not exit by itself when its stdin closed: {status:?}"
+    );
 }
 
 #[test]
@@ -142,7 +245,6 @@ fn mcp_tools_drive_the_sim() {
         assert!(tools.contains(name), "missing tool {name}: {tools}");
     }
 
-    // Configure a channel, then read the change back.
     mcp.send(
         r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"configure_channel","arguments":{"ch":0,"volts_div":0.1}}}"#,
     );
@@ -170,7 +272,6 @@ fn mcp_tools_drive_the_sim() {
         std::thread::sleep(std::time::Duration::from_millis(300));
     }
 
-    // Screenshot returns PNG image content.
     mcp.send(&format!(
         r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":"screenshot","arguments":{{}}}}}}"#
     ));

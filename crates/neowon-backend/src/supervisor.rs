@@ -105,6 +105,12 @@ struct Averager {
     n: u8,
     count: u32,
     acc: Vec<Vec<f32>>,
+    /// The connected instrument's sample grid, from its `Capabilities`
+    /// ([`Capabilities::count_range`]): `Some` for an instrument whose
+    /// frames carry ADC counts, `None` for one carrying real-valued
+    /// full-scale samples. The supervisor is instrument-agnostic, so it
+    /// must not assume the scope's i8 range here.
+    counts: Option<(f32, f32)>,
 }
 
 impl Averager {
@@ -114,8 +120,10 @@ impl Averager {
         self.acc.clear();
     }
 
-    /// Fold `frame` in; returns the averaged replacement frame.
-    fn fold(&mut self, frame: &CaptureFrame) -> CaptureFrame {
+    /// Fold `frame` in; returns the averaged replacement frame, or `None`
+    /// where the record has no averaged form (a complex stream frame)
+    /// and the original must pass through untouched.
+    fn fold(&mut self, frame: &CaptureFrame) -> Option<CaptureFrame> {
         if self.acc.len() != frame.channels.len()
             || frame
                 .channels
@@ -134,15 +142,17 @@ impl Averager {
                 }
             }
         }
-        let mut out = frame.clone();
-        for (cap, acc) in out.channels.iter_mut().zip(&self.acc) {
-            cap.data = acc
-                .iter()
-                .map(|&a| a.round().clamp(-128.0, 127.0))
-                .collect();
+        let mut channels = frame.channels.clone();
+        for (cap, acc) in channels.iter_mut().zip(&self.acc) {
+            cap.data = match self.counts {
+                // Counts stay on the instrument's grid.
+                Some((lo, hi)) => acc.iter().map(|&a| a.round().clamp(lo, hi)).collect(),
+                // Real-valued samples are already in their own units:
+                // rounding them to a count grid would erase the signal.
+                None => acc.clone(),
+            };
         }
-        out.acq = AcqMode::Average(self.n);
-        out
+        frame.with_acq(AcqMode::Average(self.n), channels).ok()
     }
 }
 
@@ -151,6 +161,44 @@ fn averaging(cfg: &InstrumentConfig) -> Option<u8> {
     match cfg.scope()?.acq {
         AcqMode::Average(n) => Some(n),
         _ => None,
+    }
+}
+
+/// Units (samples, or I/Q pairs) a frame holds.
+fn units_of(frame: &CaptureFrame) -> u64 {
+    frame
+        .channels
+        .first()
+        .map_or(0, |c| c.unit_count(frame.layout())) as u64
+}
+
+/// Add `carry` units of loss to what `frame` already reports.
+///
+/// Dropping a frame rather than stalling acquisition is the right call, but
+/// the samples in it are gone: unless a later frame says so, the consumer
+/// sees a hole it cannot know about — and a hole it cannot know about is the
+/// whole reason splice detection could not be exact. So the loss rides
+/// forward on the next delivered frame, the same mechanism a backend uses
+/// for a USB overflow, applied one stage later. `carry == 0` is the normal
+/// case and touches nothing.
+fn carry_loss(frame: SharedFrame, carry: u64) -> SharedFrame {
+    if carry == 0 {
+        return frame;
+    }
+    let owed = frame.dropped_before() + carry;
+    // Unwrap when we hold the only reference (the usual case straight from a
+    // backend), so recovering from a drop does not copy the samples.
+    let f = Arc::try_unwrap(frame).unwrap_or_else(|a| (*a).clone());
+    Arc::new(f.with_dropped_before(owed))
+}
+
+/// Auto-set is a scope function: it answers with a `ScopeConfig`. Asked of
+/// any other instrument it is refused by name, rather than reported as the
+/// scope's "no signal" — which read as a scope fault on a radio.
+fn autoset_refusal(caps: &Capabilities) -> Option<&'static str> {
+    match caps {
+        Capabilities::Scope(_) => None,
+        Capabilities::Sdr(_) => Some("autoset: scope only, not available on an SDR"),
     }
 }
 
@@ -180,8 +228,16 @@ fn run(
             }
         };
         let caps = backend.capabilities().clone();
+        // Whatever bounds averaged samples comes from the instrument, not
+        // from an assumption about which instrument it is.
+        averager.counts = caps.count_range();
         info!(name = %caps.name(), serial = %caps.serial(), "backend connected");
-        let _ = events.send(Event::Connected(caps));
+        let _ = events.send(Event::Connected(caps.clone()));
+        // Units owed to the consumer: what a frame we could not hand over
+        // took with it. Reset by the next frame that gets through, and per
+        // connection — a reconnect restarts the clock, so a carry from the
+        // old link would be nonsense on the new one.
+        let mut carry: u64 = 0;
 
         if let Some(cfg) = &wanted
             && let Err(e) = backend.apply(cfg)
@@ -266,7 +322,9 @@ fn run(
                     }
                 }
             }
-            if do_autoset {
+            if do_autoset && let Some(why) = autoset_refusal(&caps) {
+                let _ = events.try_send(Event::Error(why.into()));
+            } else if do_autoset {
                 match backend.autoset() {
                     Ok(Some(cfg)) => {
                         let cfg = InstrumentConfig::Scope(cfg);
@@ -292,14 +350,20 @@ fn run(
                 match backend.poll_frame(Duration::from_millis(100)) {
                     Ok(Some(frame)) => {
                         let frame = match wanted.as_ref().and_then(averaging) {
-                            Some(_) => Arc::new(averager.fold(&frame)),
+                            Some(_) => averager.fold(&frame).map_or(frame, Arc::new),
                             None => frame,
                         };
-                        // Prefer dropping frames over blocking acquisition.
                         // Prefer dropping frames over blocking acquisition,
-                        // but account for what was dropped.
+                        // but account for what was dropped: the frame we
+                        // could not deliver is a hole, and the next one we do
+                        // deliver has to say so.
+                        let frame = carry_loss(frame, carry);
+                        let owed = frame.dropped_before() + units_of(&frame);
                         if events.try_send(Event::Frame(frame)).is_err() {
                             dropped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            carry = owed;
+                        } else {
+                            carry = 0;
                         }
 
                         // Single sweep: one record, then stop.
@@ -340,37 +404,189 @@ fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use neowon_core::{ChannelCapture, IqCal, SampleLayout};
+    use neowon_core::{Acquisition, ChannelCapture, IqCal, SampleLayout};
 
-    fn frame(vals: &[i8]) -> CaptureFrame {
-        CaptureFrame {
-            t_capture: None,
-            seq: 0,
-            sample_rate: 1.0,
-            acq: AcqMode::Sample,
-            layout: SampleLayout::Real,
-            channels: vec![ChannelCapture {
+    fn frame(vals: &[f32]) -> CaptureFrame {
+        CaptureFrame::new(
+            0,
+            None,
+            1.0,
+            AcqMode::Sample,
+            Acquisition::Record {
+                samples: vals.len(),
+            },
+            SampleLayout::Real,
+            vec![ChannelCapture {
                 ch: 0,
-                data: vals.iter().map(|&v| v as f32).collect(),
+                data: vals.to_vec(),
                 cal: IqCal::real(1.0, 0.0),
                 clipped: false,
                 freq_meter: None,
             }],
-        }
+        )
+        .expect("a real record is a valid frame")
+    }
+
+    fn scope_caps(acquisition: Acquisition) -> Capabilities {
+        Capabilities::Scope(neowon_core::ScopeCaps {
+            name: "test".into(),
+            serial: "0".into(),
+            channels: 1,
+            sample_rates: vec![1.0],
+            volts_div: vec![1.0],
+            probes: vec![1.0],
+            acquisition,
+            hardware_trigger: false,
+        })
     }
 
     #[test]
     fn averager_converges() {
-        let mut avg = Averager::default();
+        let mut avg = Averager {
+            counts: scope_caps(Acquisition::Record { samples: 2 }).count_range(),
+            ..Default::default()
+        };
         avg.reset(4);
-        let a = avg.fold(&frame(&[100, 0]));
+        let a = avg.fold(&frame(&[100.0, 0.0])).unwrap();
         assert_eq!(a.channels[0].data, vec![100.0, 0.0]);
         // Fold in an opposite frame repeatedly: converges toward the mean of
         // the last window, never oscillates outside bounds.
-        let b = avg.fold(&frame(&[0, 100]));
+        let b = avg.fold(&frame(&[0.0, 100.0])).unwrap();
         assert_eq!(b.channels[0].data, vec![50.0, 50.0]);
-        let c = avg.fold(&frame(&[0, 100]));
+        let c = avg.fold(&frame(&[0.0, 100.0])).unwrap();
         assert!(c.channels[0].data[0] < 50.0 && c.channels[0].data[1] > 50.0);
-        assert_eq!(c.acq, AcqMode::Average(4));
+        assert_eq!(c.acq(), AcqMode::Average(4));
+    }
+
+    /// The clamp is the instrument's, not the scope's. A scope's i8
+    /// counts keep their grid and their rails; a streaming backend's
+    /// full-scale samples must survive averaging untouched — rounding
+    /// them to integers would erase a ±1.0 signal outright.
+    #[test]
+    fn averaged_samples_follow_the_instrument_range() {
+        let scope = scope_caps(Acquisition::Record { samples: 2 });
+        assert_eq!(scope.count_range(), Some((-128.0, 127.0)));
+        let mut avg = Averager {
+            counts: scope.count_range(),
+            ..Default::default()
+        };
+        avg.reset(2);
+        // Off-grid and past the rails: rounded onto the count grid, held
+        // at the i8 limits.
+        let out = avg.fold(&frame(&[0.4, 200.0, -200.0])).unwrap();
+        assert_eq!(out.channels[0].data, vec![0.0, 127.0, -128.0]);
+
+        let sdr = Capabilities::Sdr(neowon_core::SdrCaps {
+            name: "test".into(),
+            serial: "0".into(),
+            tuner: "none".into(),
+            freq_range_hz: (1.0, 2.0),
+            sample_rates: vec![1.0],
+            gains_db: vec![0.0],
+            acquisition: Acquisition::Stream { chunk: 2 },
+        });
+        assert_eq!(sdr.count_range(), None);
+        let mut avg = Averager {
+            counts: sdr.count_range(),
+            ..Default::default()
+        };
+        avg.reset(2);
+        let out = avg.fold(&frame(&[0.4, 0.9, -0.9])).unwrap();
+        assert_eq!(out.channels[0].data, vec![0.4, 0.9, -0.9]);
+        // …and the running mean of two full-scale frames is the mean, not
+        // a rounded, clipped ghost of it.
+        let out = avg.fold(&frame(&[0.6, 0.1, -0.1])).unwrap();
+        assert_eq!(out.channels[0].data, vec![0.5, 0.5, -0.5]);
+    }
+
+    /// A complex stream frame has no averaged form: the supervisor
+    /// passes it through instead of minting an illegal record.
+    #[test]
+    fn complex_frames_are_not_averaged() {
+        let complex = CaptureFrame::new(
+            0,
+            None,
+            1.0,
+            AcqMode::Sample,
+            Acquisition::Stream { chunk: 1 },
+            SampleLayout::Complex,
+            vec![ChannelCapture {
+                ch: 0,
+                data: vec![0.5, -0.5],
+                cal: IqCal::real(1.0, 0.0),
+                clipped: false,
+                freq_meter: None,
+            }],
+        )
+        .unwrap();
+        let mut avg = Averager::default();
+        avg.reset(4);
+        assert!(avg.fold(&complex).is_none());
+    }
+
+    /// A frame the consumer could not take is coverage lost, and the loss has
+    /// to reach the consumer on the next frame — otherwise the hole is
+    /// invisible and every continuity claim downstream is unfalsifiable.
+    #[test]
+    fn a_dropped_frames_loss_rides_on_the_next_one() {
+        // Nothing owed: the same Arc goes through untouched.
+        let f = Arc::new(frame(&[1.0, 2.0, 3.0]));
+        let ptr = Arc::as_ptr(&f);
+        let out = carry_loss(f, 0);
+        assert_eq!(Arc::as_ptr(&out), ptr, "no carry must not copy the samples");
+        assert_eq!(out.dropped_before(), 0);
+
+        // Three units owed from a dropped frame: the next frame says so.
+        let out = carry_loss(Arc::new(frame(&[1.0, 2.0])), 3);
+        assert_eq!(out.dropped_before(), 3);
+
+        // And it adds to what the backend itself reported, never replaces it.
+        let reported = Arc::new(frame(&[1.0, 2.0]).with_dropped_before(10));
+        assert_eq!(carry_loss(reported, 3).dropped_before(), 13);
+
+        // What a dropped frame owes is its own samples plus its own gap.
+        let f = frame(&[1.0, 2.0, 3.0, 4.0]).with_dropped_before(7);
+        assert_eq!(units_of(&f), 4, "a real frame's units are its samples");
+        assert_eq!(f.dropped_before() + units_of(&f), 11);
+    }
+
+    #[test]
+    fn autoset_is_refused_by_name_on_an_sdr() {
+        assert_eq!(
+            autoset_refusal(&scope_caps(Acquisition::Record { samples: 2 })),
+            None
+        );
+        let sdr = Capabilities::Sdr(neowon_core::SdrCaps {
+            name: "test".into(),
+            serial: "0".into(),
+            tuner: "none".into(),
+            freq_range_hz: (1.0, 2.0),
+            sample_rates: vec![1.0],
+            gains_db: vec![0.0],
+            acquisition: Acquisition::Stream { chunk: 2 },
+        });
+        let why = autoset_refusal(&sdr).expect("an SDR has no autoset");
+        assert!(why.contains("SDR") && !why.contains("no signal"), "{why}");
+    }
+
+    #[test]
+    fn units_of_counts_pairs_for_a_complex_frame() {
+        let complex = CaptureFrame::new(
+            0,
+            None,
+            1.0,
+            AcqMode::Sample,
+            Acquisition::Stream { chunk: 2 },
+            SampleLayout::Complex,
+            vec![ChannelCapture {
+                ch: 0,
+                data: vec![0.5, -0.5, 0.25, -0.25],
+                cal: IqCal::real(1.0, 0.0),
+                clipped: false,
+                freq_meter: None,
+            }],
+        )
+        .unwrap();
+        assert_eq!(units_of(&complex), 2);
     }
 }

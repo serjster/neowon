@@ -1,4 +1,4 @@
-//! Catalog entities (D4/D7). Ids are opaque and immutable; every entity
+//! Catalog entities. Ids are opaque and immutable; every entity
 //! carries provenance; confidence appears only on derived values.
 
 use std::collections::BTreeSet;
@@ -39,9 +39,17 @@ pub enum ProvKind {
     Fingerprint,
 }
 
-/// Where a record came from. `input_ref` names what it was derived from
-/// (an id such as `#12`, a file, a capture); ids in it are resolved
-/// through merge redirects on read.
+/// Where a record came from. `input_ref` names what it was derived from,
+/// as opaque text the catalog stores and prints but never resolves: a
+/// detector track (`track:7`), a reference-database row
+/// (`refdb:wikidata:Q1001`), a capture, or an imported document's id
+/// followed by the entity's own earlier `input_ref` (`import:#12 track:7`).
+///
+/// It is not a reference between catalog entities — those are the typed
+/// fields (`Observation::signal`, `Signal::source`, …), which merges
+/// rewrite and integrity checks. An `#id` in it names an id in
+/// *another* catalog's document, so resolving it through this catalog's
+/// merge redirects would bind it to an unrelated local entity.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Provenance {
     pub kind: ProvKind,
@@ -112,7 +120,7 @@ pub struct Source {
     pub provenance: Provenance,
 }
 
-/// A specific physical transmitter (10.7 fingerprinting attaches here).
+/// A specific physical transmitter (fingerprinting attaches here).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Emitter {
     pub id: Id,
@@ -138,10 +146,11 @@ pub struct BandPlanEntry {
     pub provenance: Provenance,
 }
 
-/// What a survey did to one band; an unscanned or truncated band leaves
-/// its signals `unknown`, never `gone` (10.4).
+/// `neowon_core::BandCoverage`, as stored (core stays serde-free): what a
+/// survey did to one band. An unscanned or truncated band leaves its
+/// signals `unknown`, never `gone`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct BandCoverage {
+pub struct CoverageRecord {
     pub lo_hz: f64,
     pub hi_hz: f64,
     pub scanned: bool,
@@ -153,12 +162,44 @@ pub struct BandCoverage {
     pub retained_power_floor_dbfs: f64,
 }
 
+impl From<&neowon_core::BandCoverage> for CoverageRecord {
+    fn from(c: &neowon_core::BandCoverage) -> Self {
+        Self {
+            lo_hz: c.lo_hz,
+            hi_hz: c.hi_hz,
+            scanned: c.scanned,
+            bins: c.bins,
+            threshold_db: c.threshold_db,
+            truncated: c.truncated,
+            peak_cap: c.peak_cap,
+            selection_rule: c.selection_rule.clone(),
+            retained_power_floor_dbfs: c.retained_power_floor_dbfs,
+        }
+    }
+}
+
+impl From<&CoverageRecord> for neowon_core::BandCoverage {
+    fn from(c: &CoverageRecord) -> Self {
+        Self {
+            lo_hz: c.lo_hz,
+            hi_hz: c.hi_hz,
+            scanned: c.scanned,
+            bins: c.bins,
+            threshold_db: c.threshold_db,
+            truncated: c.truncated,
+            peak_cap: c.peak_cap,
+            selection_rule: c.selection_rule.clone(),
+            retained_power_floor_dbfs: c.retained_power_floor_dbfs,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Survey {
     pub id: Id,
     pub name: String,
     pub started: String,
-    pub coverage: Vec<BandCoverage>,
+    pub coverage: Vec<CoverageRecord>,
     pub pinned: bool,
     pub provenance: Provenance,
 }
@@ -203,7 +244,7 @@ impl From<&ObsRecord> for neowon_core::SignalObservation {
     }
 }
 
-/// A `SignalObservation` filed against a signal (D7): identity plus
+/// A `SignalObservation` filed against a signal: identity plus
 /// provenance around the record detection emitted.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Observation {

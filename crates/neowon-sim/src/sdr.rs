@@ -2,7 +2,7 @@
 //!
 //! A scene places emitters at absolute RF frequencies; tuning selects which
 //! of them fall inside `centre ± rate/2` and turns them into the baseband
-//! `IqScene`. Samples come from the D8 generator, so they are a pure
+//! `IqScene`. Samples come from the `iq` generator, so they are a pure
 //! function of (seed, sample index): pacing uses the wall clock, the signal
 //! never does. Gain and AGC are accepted and ignored (the scene is already
 //! in full-scale units); ppm shifts the band the way a real crystal
@@ -16,30 +16,45 @@ use std::time::{Duration, Instant};
 
 use neowon_backend::{
     Acquisition, Backend, BackendError, Capabilities, InstrumentConfig, SdrCaps, SdrConfig,
+    sdr_config,
 };
+use neowon_core::ladders::{RTL_SAMPLE_RATES, r82xx_gains_db};
 use neowon_core::{SharedFrame, stream_chunk_pairs};
 
 use neowon_core::Modulation;
 
 use crate::iq::{IqBuffer, IqComponent, IqScene};
 
-/// An analogue-modulated carrier: AM depth, or FM deviation, on a tone.
+/// What an emitter transmits. One kind, not a set of independent
+/// `Option`s that could all be set at once with the baseband silently
+/// preferring one of them.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Analog {
-    Am { depth: f64, tone_hz: f64 },
-    Fm { deviation_hz: f64, tone_hz: f64 },
+pub enum EmitterKind {
+    Carrier,
+    Am {
+        depth: f64,
+        tone_hz: f64,
+    },
+    Fm {
+        deviation_hz: f64,
+        tone_hz: f64,
+    },
+    Digital {
+        modulation: Modulation,
+        symbol_rate: f64,
+        rolloff: f64,
+    },
 }
 
-/// A transmitter in a scene: a carrier, an analogue-modulated carrier, or a
-/// digitally modulated signal (modulation, symbol rate, roll-off).
+/// A transmitter in a scene: where it sits, how loud it is, and what it
+/// transmits.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Emitter {
     pub freq_hz: f64,
     /// Full-scale units (for a digital emitter, the symbol amplitude after
     /// a matched filter).
     pub amplitude: f64,
-    pub digital: Option<(Modulation, f64, f64)>,
-    pub analog: Option<Analog>,
+    pub kind: EmitterKind,
 }
 
 /// A carrier (see `dig` for a digital emitter).
@@ -47,8 +62,7 @@ pub const fn em(freq_hz: f64, amplitude: f64) -> Emitter {
     Emitter {
         freq_hz,
         amplitude,
-        digital: None,
-        analog: None,
+        kind: EmitterKind::Carrier,
     }
 }
 
@@ -56,8 +70,11 @@ const fn dig(freq_hz: f64, amplitude: f64, m: Modulation, symbol_rate: f64) -> E
     Emitter {
         freq_hz,
         amplitude,
-        digital: Some((m, symbol_rate, 0.35)),
-        analog: None,
+        kind: EmitterKind::Digital {
+            modulation: m,
+            symbol_rate,
+            rolloff: 0.35,
+        },
     }
 }
 
@@ -65,8 +82,7 @@ const fn am(freq_hz: f64, amplitude: f64, depth: f64, tone_hz: f64) -> Emitter {
     Emitter {
         freq_hz,
         amplitude,
-        digital: None,
-        analog: Some(Analog::Am { depth, tone_hz }),
+        kind: EmitterKind::Am { depth, tone_hz },
     }
 }
 
@@ -74,11 +90,10 @@ const fn fm(freq_hz: f64, amplitude: f64, deviation_hz: f64, tone_hz: f64) -> Em
     Emitter {
         freq_hz,
         amplitude,
-        digital: None,
-        analog: Some(Analog::Fm {
+        kind: EmitterKind::Fm {
             deviation_hz,
             tone_hz,
-        }),
+        },
     }
 }
 
@@ -95,7 +110,7 @@ pub struct RfScene {
 /// Scenes the embedding app hands the sim under a preset name.
 ///
 /// The sim cannot synthesise a DAB ensemble — that needs `neowon_dsp`, which
-/// must not become a sim dependency (tier-1 deviation 1) — so the app builds
+/// must not become a sim dependency — so the app builds
 /// the IQ and installs it here; `RfScene::preset` then resolves the stable
 /// preset name like any built-in. The registry is process-global because the
 /// backend lives on the supervisor thread; the app installs before it sends
@@ -112,7 +127,6 @@ pub fn install_scene(name: &str, scene: RfScene) {
         .insert(name.to_string(), scene);
 }
 
-/// The installed scene under `name`, if the app put one there.
 pub fn installed_scene(name: &str) -> Option<RfScene> {
     INSTALLED
         .get_or_init(Default::default)
@@ -194,33 +208,34 @@ impl RfScene {
             .map(|e| e.freq_hz - centre_hz + shift)
             .zip(&self.emitters)
             .filter(|(off, _)| off.abs() < rate / 2.0)
-            .map(|(offset_hz, e)| match (e.digital, e.analog) {
-                (Some((modulation, symbol_rate, rolloff)), _) => IqComponent::Digital {
+            .map(|(offset_hz, e)| match e.kind {
+                EmitterKind::Digital {
+                    modulation,
+                    symbol_rate,
+                    rolloff,
+                } => IqComponent::Digital {
                     modulation,
                     symbol_rate,
                     offset_hz,
                     amplitude: e.amplitude,
                     rolloff,
                 },
-                (None, Some(Analog::Am { depth, tone_hz })) => IqComponent::Am {
+                EmitterKind::Am { depth, tone_hz } => IqComponent::Am {
                     offset_hz,
                     amplitude: e.amplitude,
                     depth,
                     tone_hz,
                 },
-                (
-                    None,
-                    Some(Analog::Fm {
-                        deviation_hz,
-                        tone_hz,
-                    }),
-                ) => IqComponent::Fm {
+                EmitterKind::Fm {
+                    deviation_hz,
+                    tone_hz,
+                } => IqComponent::Fm {
                     offset_hz,
                     amplitude: e.amplitude,
                     deviation_hz,
                     tone_hz,
                 },
-                (None, None) => IqComponent::Tone {
+                EmitterKind::Carrier => IqComponent::Tone {
                     offset_hz,
                     amplitude: e.amplitude,
                     phase: 0.0,
@@ -261,15 +276,11 @@ impl SimSdrBackend {
                 serial: "sim-sdr-0".into(),
                 tuner: "sim".into(),
                 freq_range_hz: (500e3, 1.766e9),
-                sample_rates: vec![
-                    250e3, 1.024e6, 1.536e6, 1.792e6, 1.92e6, 2.048e6, 2.16e6, 2.4e6, 2.56e6,
-                    2.88e6, 3.2e6,
-                ],
-                gains_db: vec![
-                    0.0, 0.9, 1.4, 2.7, 3.7, 7.7, 8.7, 12.5, 14.4, 15.7, 16.6, 19.7, 20.7, 22.9,
-                    25.4, 28.0, 29.7, 32.8, 33.8, 36.4, 37.2, 38.6, 40.2, 42.1, 43.4, 43.9, 44.5,
-                    48.0, 49.6,
-                ],
+                // The dongle's own ladders, from their one home in core:
+                // a sim that accepted a rate the hardware refuses would
+                // be a lie the tests could not catch.
+                sample_rates: RTL_SAMPLE_RATES.to_vec(),
+                gains_db: r82xx_gains_db(),
                 acquisition: Acquisition::Stream {
                     chunk: stream_chunk_pairs(cfg.sample_rate),
                 },
@@ -284,7 +295,6 @@ impl SimSdrBackend {
         }
     }
 
-    /// Start on `scene` instead of a preset.
     pub fn with_scene(scene: RfScene) -> Self {
         let mut b = Self::new();
         b.scene = scene;
@@ -311,9 +321,7 @@ impl Backend for SimSdrBackend {
     }
 
     fn apply(&mut self, cfg: &InstrumentConfig) -> Result<(), BackendError> {
-        let c = cfg
-            .sdr()
-            .ok_or_else(|| BackendError::Transient("scope config sent to an SDR backend".into()))?;
+        let c = sdr_config(cfg)?;
         if c.sample_rate <= 0.0 {
             return Err(BackendError::Transient(
                 "sample rate must be positive".into(),
@@ -474,7 +482,7 @@ mod tests {
         let mut b = SimSdrBackend::new();
         b.apply(&tuned(100e6)).unwrap();
         let (f0, f1) = (next(&mut b), next(&mut b));
-        assert_eq!(f0.layout, SampleLayout::Complex);
+        assert_eq!(f0.layout(), SampleLayout::Complex);
         assert!((f1.t_start() - (f0.t_start() + f0.duration())).abs() < 1e-12);
         // Sample 0 of seed 1 is the fixture's first pair.
         let d = &f0.channels[0].data;

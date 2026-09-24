@@ -79,9 +79,17 @@ pub enum Op {
 }
 
 impl Op {
-    /// Ops a user can take back within a session.
+    /// Ops a user can take back within a session: those whose kind has an
+    /// exact inverse (`State::inverse`). A merge, a purge and a cascading
+    /// delete retire more than one entity and rewrite what referred to
+    /// them; no single op restores that, so committing one clears the
+    /// session's undo history rather than leave it to rewind something
+    /// unrelated.
     pub fn undoable(&self) -> bool {
-        !matches!(self, Op::Merge { .. } | Op::Purge { .. })
+        !matches!(
+            self,
+            Op::Merge { .. } | Op::Purge { .. } | Op::Delete { cascade: true, .. }
+        )
     }
 }
 

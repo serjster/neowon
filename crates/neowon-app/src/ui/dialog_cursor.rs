@@ -1,5 +1,3 @@
-//! Cursor dialog — time/amplitude cursors and readouts.
-
 use bevy_egui::egui;
 
 use crate::Link;

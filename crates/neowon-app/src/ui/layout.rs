@@ -155,8 +155,7 @@ impl Layout {
 
 /// Where the UI regions *actually* painted this frame, as egui reports them
 /// — the geometry the `Layout` rects only promise. UI tests assert these
-/// against the promise (nothing may overlap the plot), which is how the dock
-/// sliding over the waveform when a section expanded was caught.
+/// against the promise (nothing may overlap the plot).
 #[derive(Resource, Debug, Clone, Default)]
 pub struct UiRects {
     pub regions: Vec<(&'static str, Rect)>,
@@ -304,22 +303,18 @@ mod tests {
             let l = Layout::compute(w, h, s);
             let (w, h) = (l.window.x, l.window.y);
             let plot = l.plot;
-            // Descriptors hug the plot bottom, same width.
             assert!((l.descriptors.top() - plot.bottom() - DESC_GAP * s).abs() < 1e-3);
             assert_eq!(l.descriptors.width(), plot.width());
             assert_eq!(l.descriptors.left(), plot.left());
-            // Dock flush right, fixed width, beside the plot.
             assert!(l.dialog.left() >= plot.right());
             assert!((l.dialog.width() - DIALOG_W * s).abs() < 1e-3);
             assert_eq!(l.dialog.right(), w);
-            // Chrome strips span the full width.
             assert_eq!(l.menu_bar.width(), w);
             assert_eq!(l.front_panel.width(), w);
             // The plot stays usefully large — in divisions, not pixels, so
             // the check means the same thing at every scale.
             assert!(plot.width() / s >= 580.0, "{w}x{h}@{s}: plot {plot:?}");
             assert!(plot.height() / s >= 320.0, "{w}x{h}@{s}: plot {plot:?}");
-            // Everything on screen, nothing overlapping the plot.
             for r in Roi::ALL {
                 let r = r.rect(&l);
                 assert!(r.min.x >= 0.0 && r.min.y >= 0.0, "{r:?}");

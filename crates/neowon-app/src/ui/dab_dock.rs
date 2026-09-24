@@ -1,32 +1,39 @@
-//! The DAB dock section: the receiver switch, the sync quality that backs
-//! whatever is shown, the ensemble's service list (click to select) and the
-//! selected service's DLS line. The section body lives here rather than in
-//! `sdr_dock.rs` so that file keeps its line budget.
-//!
 //! The sync line is always drawn while the receiver runs: an unlocked
 //! receiver that silently showed nothing would look like an absent one.
+//!
+//! **Everything here fits the rail**: the dock scrolls vertically
+//! only, so a row wider than the rail is cut off, unreachably. Rows that can
+//! grow (the block row, the transport's status) wrap, and long readouts are
+//! labels, which wrap, rather than one-line monospace runs.
 
 use bevy_egui::egui;
 
 use super::sdr_view::inject;
 use crate::refmap::RefMap;
 use crate::script::Script;
-use crate::sdr::{DabChannel, DabService, DabVerb, SdrAction, SdrState};
+use crate::sdr::{DabChannel, DabService, DabVerb, GoneCause, SdrAction, SdrState};
 use crate::uitree;
 
-pub fn show(ui: &mut egui::Ui, sdr: &SdrState, rm: &RefMap, script: &mut Script) {
-    ui.horizontal(|ui| {
-        let mut on = sdr.dab.is_some();
+pub fn show(
+    ui: &mut egui::Ui,
+    sdr: &SdrState,
+    caps: Option<&neowon_backend::SdrCaps>,
+    rm: &RefMap,
+    script: &mut Script,
+    now: f64,
+) {
+    ui.horizontal_wrapped(|ui| {
+        let mut on = sdr.dab.on();
         if ui.checkbox(&mut on, "Decode").changed() {
             inject(
                 script,
                 SdrAction::Dab(if on { DabVerb::On } else { DabVerb::Off }),
             );
         }
-        if sdr.dab.is_some() && ui.button("Reset").clicked() {
+        if sdr.dab.on() && ui.button("Reset").clicked() {
             inject(script, SdrAction::Dab(DabVerb::Reset));
         }
-        if let Some(rx) = &sdr.dab {
+        if let Some(rx) = &sdr.dab.rx {
             ui.label(format!("{:+} Hz", rx.freq_offset_hz.round()));
         }
     });
@@ -48,14 +55,14 @@ pub fn show(ui: &mut egui::Ui, sdr: &SdrState, rm: &RefMap, script: &mut Script)
         if ui.button("Set 2.048 MS/s").clicked() {
             inject(script, SdrAction::Rate(neowon_dsp::dab::SAMPLE_RATE));
         }
-    } else if sdr.dab.is_some() {
+    } else if sdr.dab.on() {
         // The wheel does not move a DAB link's rate (sdr::zoom pins it),
         // so what it does instead is said here rather than left to look
         // like a broken gesture.
         ui.weak("rate pinned to 2.048 MS/s; wheel zooms the span only");
     }
-    if sdr.dab.is_some() {
-        let sim = sdr.caps.as_ref().is_some_and(|c| c.tuner == "sim");
+    if sdr.dab.on() {
+        let sim = caps.is_some_and(|c| c.tuner == "sim");
         let mhz = sdr.config.centre_hz / 1e6;
         if !sim && !(174.0..=240.0).contains(&mhz) {
             ui.colored_label(
@@ -64,148 +71,32 @@ pub fn show(ui: &mut egui::Ui, sdr: &SdrState, rm: &RefMap, script: &mut Script)
             );
         }
     }
-    let Some(rx) = &sdr.dab else {
+    let Some(rx) = &sdr.dab.rx else {
         ui.weak("off - pick a Band III block above, then Decode");
         return;
     };
     let status = rx.status();
-    let rate = status
-        .fib_crc_rate()
-        .map_or_else(|| "-".to_string(), |r| format!("{:.0}%", r * 100.0));
-    let sync = format!(
-        "FIB CRC {rate}  {} frames  {}",
-        status.frames,
-        if status.locked {
-            // The accepted-frame score: the one behind the table.
-            format!("PRS {:.2}", rx.prs_metric())
-        } else {
-            // While unlocked the accepted-frame metric is 0 by construction,
-            // so it answers nothing. The attempt score is what says whether
-            // DAB energy is present at the tuned centre at all, and the
-            // rejected count shows the receiver is still looking.
-            format!(
-                "PRS attempt {:.2}  {} rejected",
-                rx.last_attempt_metric(),
-                rx.frames_rejected
-            )
-        }
-    );
     if !status.locked {
-        ui.monospace(format!("not locked\n{sync}"));
-        return;
+        return unlocked(ui, sdr, rx, &status, now);
     }
     let ensemble = &status.ensemble;
     ui.monospace(format!(
-        "{}  EId {:04X}\n{sync}",
+        "{}  EId {:04X}",
         ensemble.label.as_deref().unwrap_or("<no label yet>"),
         ensemble.eid.unwrap_or(0)
     ));
+    ui.label(format!("locked  PRS {:.2}", rx.prs_metric()));
+    cumulative(ui, rx, &status);
 
-    // The services: click to select. The selection is what `sdr dab service`
-    // sets, so the UI and a script land on the same state.
+    // The transport and the DLS line sit above the list: they are what a
+    // click on a service changes, and at the default window a list of five
+    // services pushed them below the fold.
     ui.separator();
-    ui.label("Services");
-    for service in ensemble.services.values() {
-        let selected = sdr.dab_service == Some(service.sid);
-        let label = format!(
-            "{:04X}  {}  {}",
-            service.sid,
-            service.label.as_deref().unwrap_or("<no label yet>"),
-            service.coding_label()
-        );
-        if ui
-            .selectable_label(selected, label)
-            .on_hover_text(format!(
-                "sub-channel {}",
-                service
-                    .sub_channel
-                    .map_or("-".to_string(), |id| id.to_string())
-            ))
-            .clicked()
-        {
-            inject(
-                script,
-                SdrAction::Dab(DabVerb::Service(DabService::Sid(service.sid))),
-            );
-        }
-    }
-    if ensemble.data_services > 0 {
-        ui.weak(format!(
-            "{} data services (not decoded in tier 1)",
-            ensemble.data_services
-        ));
-    }
-
-    // Transport: the playback worker's own report, and a meter of the last
-    // decoded block. `error` shows the backend's typed reason (a stream this
-    // build cannot decode is loud, not silent).
-    let playing = crate::sdr::dab_audio::playing(sdr);
-    ui.horizontal(|ui| {
-        let selected = sdr.dab_service.is_some();
-        if ui
-            .add_enabled(selected && !playing, egui::Button::new("Play"))
-            .on_disabled_hover_text("click a service in the list above first")
-            .clicked()
-        {
-            inject(script, SdrAction::Dab(DabVerb::Play));
-        }
-        if ui.add_enabled(playing, egui::Button::new("Stop")).clicked() {
-            inject(script, SdrAction::Dab(DabVerb::Stop));
-        }
-        match &sdr.dab_audio {
-            None => {
-                if let Some(reason) = &sdr.dab_play_error {
-                    ui.colored_label(ui.visuals().error_fg_color, reason);
-                }
-                ui.weak(if selected {
-                    "audio off - Press Play"
-                } else {
-                    "audio off - select a service"
-                });
-            }
-            Some(worker) => {
-                let status = worker.status();
-                ui.label(status.state.label());
-                let meter = ui.add(
-                    egui::ProgressBar::new(status.peak.clamp(0.0, 1.0))
-                        .desired_width(90.0)
-                        .text(format!("{:.3}", status.peak)),
-                );
-                let mut detail = if status.rate > 0 {
-                    format!(
-                        "{}  {} Hz  {} ch",
-                        status.backend, status.rate, status.channels
-                    )
-                } else {
-                    status.backend.to_string()
-                };
-                // While the transport starts, the counters are the diagnosis:
-                // zero decoded means no sub-channel bytes reached the codec.
-                detail.push_str(&format!("  {} decoded", status.decoded));
-                if status.dropped > 0 {
-                    detail.push_str(&format!("  {} dropped", status.dropped));
-                }
-                let text = ui.weak(detail);
-                uitree::node(
-                    ui.ctx(),
-                    ui.id().with("dab-audio"),
-                    egui::accesskit::Role::Label,
-                    &format!("dab audio {} peak {:.3}", status.state.label(), status.peak),
-                    meter.rect.union(text.rect),
-                );
-                if status.state == crate::sdr::dab_audio::AudioState::Error
-                    && !status.reason.is_empty()
-                {
-                    ui.colored_label(ui.visuals().error_fg_color, &status.reason);
-                }
-            }
-        }
-    });
-
+    transport(ui, sdr, &status, script);
     // The dynamic label of the selected service; a partial or CRC-bad label
-    // is never shown (D27), so `-` means "not decoded yet".
+    // is never shown, so `-` means "not decoded yet".
     let dls = crate::sdr::dab::dls(sdr).unwrap_or("-");
-    let response = ui.monospace(format!("DLS  {dls}"));
+    let response = ui.label(egui::RichText::new(format!("DLS  {dls}")).monospace());
     uitree::node(
         ui.ctx(),
         ui.id().with("dab-dls"),
@@ -213,6 +104,233 @@ pub fn show(ui: &mut egui::Ui, sdr: &SdrState, rm: &RefMap, script: &mut Script)
         &format!("dab dls {dls}"),
         response.rect,
     );
+
+    // The selection is what `sdr dab service` sets, so the UI and a script
+    // land on the same state. A service this build can never play is greyed
+    // and says why — the reason is the one `sdr dab play` would give, from
+    // the same function.
+    ui.separator();
+    ui.label("Services");
+    for service in ensemble.services.values() {
+        let selected = sdr.dab.service == Some(service.sid);
+        let why_not = crate::sdr::dab_audio::service_spec(&status, service.sid).err();
+        let text = format!(
+            "{:04X}  {}  {}",
+            service.sid,
+            service.label.as_deref().unwrap_or("<no label yet>"),
+            service.coding_label()
+        );
+        let text = match &why_not {
+            Some(_) => egui::RichText::new(text).weak(),
+            None => egui::RichText::new(text),
+        };
+        let sub = service
+            .sub_channel
+            .map_or("-".to_string(), |id| id.to_string());
+        let row = ui
+            .selectable_label(selected, text)
+            .on_hover_text(match &why_not {
+                Some(why) => format!("sub-channel {sub}\ncannot play: {why}"),
+                None => format!("sub-channel {sub}"),
+            });
+        if row.clicked() {
+            inject(
+                script,
+                SdrAction::Dab(DabVerb::Service(DabService::Sid(service.sid))),
+            );
+        }
+        let mut rect = row.rect;
+        if let Some(why) = &why_not {
+            rect = rect.union(ui.small(format!("   cannot play: {why}")).rect);
+        }
+        uitree::node(
+            ui.ctx(),
+            ui.id().with(("dab-service", service.sid)),
+            egui::accesskit::Role::Label,
+            &match &why_not {
+                Some(why) => format!("dab service {:04X} cannot play: {why}", service.sid),
+                None => format!("dab service {:04X} playable", service.sid),
+            },
+            rect,
+        );
+    }
+    if ensemble.data_services > 0 {
+        ui.weak(format!(
+            "{} data services (not decoded in tier 1)",
+            ensemble.data_services
+        ));
+    }
+}
+
+/// Scroll the DAB section to the top of the rail on the frame the receiver
+/// turns on, whoever turned it on (dock, View menu, script): the switch
+/// that reveals DAB has to reveal it, not open a section below the fold.
+pub fn reveal(ui: &egui::Ui, header: &egui::Response, on: bool) {
+    let was_on = egui::Id::new("sdr-dock-dab-was-on");
+    if on && !ui.data(|d| d.get_temp::<bool>(was_on).unwrap_or(false)) {
+        header.scroll_to_me(Some(egui::Align::TOP));
+    }
+    ui.data_mut(|d| d.insert_temp(was_on, on));
+}
+
+/// The unlocked readout: what happened, then how hard the receiver is
+/// looking. "not locked" alone reads the same for a receiver that never
+/// found anything, one whose ensemble just went away and one with no input
+/// at all, so each is said in words.
+fn unlocked(
+    ui: &mut egui::Ui,
+    sdr: &SdrState,
+    rx: &neowon_dsp::dab::DabReceiver,
+    status: &neowon_dsp::dab::DabStatus,
+    now: f64,
+) {
+    let warn = ui.visuals().warn_fg_color;
+    let what = match &sdr.dab.gone {
+        _ if !sdr.config.running => "no input - the SDR is stopped (front panel Run)".to_string(),
+        Some(g) => {
+            let age = (now - g.at).max(0.0);
+            let which = g
+                .ensemble
+                .as_ref()
+                .map_or_else(|| "the ensemble".to_string(), |e| e.describe());
+            match g.cause {
+                GoneCause::Expired => format!(
+                    "lock lost {age:.0} s ago: {which} - no clean FIC since, its table expired"
+                ),
+                GoneCause::NoInput => {
+                    format!("no input for {age:.0} s: the IQ stream stopped; {which} dropped")
+                }
+            }
+        }
+        None => "not locked - searching for an ensemble at this centre".to_string(),
+    };
+    let heading = ui.colored_label(warn, &what);
+    uitree::node(
+        ui.ctx(),
+        ui.id().with("dab-lock"),
+        egui::accesskit::Role::Label,
+        &format!("dab lock {what}"),
+        heading.rect,
+    );
+    // While unlocked the accepted-frame metric is 0 by construction, so it
+    // answers nothing. The attempt score is what says whether DAB energy is
+    // present at the tuned centre at all.
+    ui.label(format!(
+        "last attempt PRS {:.2} (lock needs {:.2})",
+        rx.last_attempt_metric(),
+        neowon_dsp::dab::PRS_METRIC_MIN
+    ));
+    cumulative(ui, rx, status);
+}
+
+/// The receiver's lifetime counters, labelled as such: a FIB CRC rate of
+/// 100% beside "lock lost" is not a contradiction once it says it counts
+/// since the receiver started.
+fn cumulative(
+    ui: &mut egui::Ui,
+    rx: &neowon_dsp::dab::DabReceiver,
+    status: &neowon_dsp::dab::DabStatus,
+) {
+    let rate = status
+        .fib_crc_rate()
+        .map_or_else(|| "-".to_string(), |r| format!("{:.0}%", r * 100.0));
+    let text = format!(
+        "since on/reset: FIB CRC {rate} of {}, {} frames, {} rejected",
+        status.fib_total, status.frames, rx.frames_rejected
+    );
+    let r = ui.weak(&text).on_hover_text(
+        "cumulative counters since Decode was switched on or last reset; \
+         the lock state above is the current one",
+    );
+    uitree::node(
+        ui.ctx(),
+        ui.id().with("dab-cumulative"),
+        egui::accesskit::Role::Label,
+        &format!("dab cumulative {text}"),
+        r.rect,
+    );
+}
+
+/// Play/Stop and the playback worker's own report. `error` shows the
+/// backend's typed reason (a stream this build cannot decode is loud, not
+/// silent); a selection that can never play has Play disabled with the
+/// reason, rather than offered and refused.
+fn transport(
+    ui: &mut egui::Ui,
+    sdr: &SdrState,
+    status: &neowon_dsp::dab::DabStatus,
+    script: &mut Script,
+) {
+    let playing = crate::sdr::dab_audio::playing(sdr);
+    let why_not = sdr
+        .dab
+        .service
+        .map(|sid| crate::sdr::dab_audio::service_spec(status, sid).err());
+    ui.horizontal_wrapped(|ui| {
+        let can_play = matches!(why_not, Some(None)) && !playing;
+        let play = ui
+            .add_enabled(can_play, egui::Button::new("Play"))
+            .on_disabled_hover_text(match &why_not {
+                None => "click a service in the list below first".to_string(),
+                Some(Some(why)) => format!("cannot play: {why}"),
+                Some(None) => "playing".to_string(),
+            });
+        if play.clicked() {
+            inject(script, SdrAction::Dab(DabVerb::Play));
+        }
+        if ui.add_enabled(playing, egui::Button::new("Stop")).clicked() {
+            inject(script, SdrAction::Dab(DabVerb::Stop));
+        }
+        match &sdr.dab.audio {
+            None => ui.weak(match why_not {
+                None => "audio off - select a service",
+                Some(Some(_)) => "this service cannot play",
+                Some(None) => "audio off - press Play",
+            }),
+            // The device's state, from the one place that names it, so the
+            // dock, `get audio` and `get dab` cannot disagree.
+            Some(_) => ui.label(sdr.audio_state()),
+        };
+    });
+    let Some(worker) = &sdr.dab.audio else {
+        if let Some(reason) = &sdr.dab.play_error {
+            ui.colored_label(ui.visuals().error_fg_color, reason);
+        }
+        return;
+    };
+    let status = worker.status();
+    ui.horizontal_wrapped(|ui| {
+        let meter = ui.add(
+            egui::ProgressBar::new(status.peak.clamp(0.0, 1.0))
+                .desired_width(90.0)
+                .text(format!("{:.3}", status.peak)),
+        );
+        let mut detail = if status.rate > 0 {
+            format!(
+                "{}  {} Hz  {} ch",
+                status.backend, status.rate, status.channels
+            )
+        } else {
+            status.backend.to_string()
+        };
+        // While the transport starts, the counters are the diagnosis: zero
+        // decoded means no sub-channel bytes reached the codec.
+        detail.push_str(&format!("  {} decoded", status.decoded));
+        if status.dropped > 0 {
+            detail.push_str(&format!("  {} dropped", status.dropped));
+        }
+        let text = ui.weak(detail);
+        uitree::node(
+            ui.ctx(),
+            ui.id().with("dab-audio"),
+            egui::accesskit::Role::Label,
+            &format!("dab audio {} peak {:.3}", sdr.audio_state(), status.peak),
+            meter.rect.union(text.rect),
+        );
+    });
+    if status.state == crate::sdr::dab_audio::AudioState::Error && !status.reason.is_empty() {
+        ui.colored_label(ui.visuals().error_fg_color, &status.reason);
+    }
 }
 
 /// The Band III block row: the block under the hardware centre, a picker
@@ -228,7 +346,10 @@ fn channel_row(ui: &mut egui::Ui, sdr: &SdrState, rm: &RefMap, script: &mut Scri
         .as_ref()
         .is_some_and(|c| blocks.iter().any(|b| b.label == c.label));
 
-    let row = ui.horizontal(|ui| {
+    // Wrapped: the plan's verdict beside the block is the widest thing in
+    // the section, and on one line it pushed the rail's content past its
+    // right edge.
+    let row = ui.horizontal_wrapped(|ui| {
         ui.label("Block");
         ui.add_enabled_ui(!blocks.is_empty(), |ui| {
             egui::ComboBox::from_id_salt("dab-channel")

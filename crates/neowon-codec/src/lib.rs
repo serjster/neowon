@@ -1,4 +1,4 @@
-//! Engine-free audio codecs and DAB+ transport framing — Phase 10.15.3.
+//! Engine-free audio codecs and DAB+ transport framing.
 //!
 //! This crate owns the part of DAB that is *after* the sub-channel bytes:
 //! the DAB+ audio superframe and its Reed–Solomon protection
@@ -7,7 +7,7 @@
 //! [`aac`] and [`mp2`]). It carries no Bevy/GPU dependency and no device
 //! access; the app wires its output into `neowon-audio`'s sink.
 //!
-//! DAB-G2 (operator, 2026-09-20): the HE-AAC v2 decoder is the pure-Rust
+//! The HE-AAC v2 decoder is the pure-Rust
 //! MIT `oxideav-aac` by default, with the `fdk-aac` C binding (MIT
 //! binding over Fraunhofer's BSD-based libfdk-aac, no patent grant) as
 //! the feature-gated fallback that decodes real DAB+ — the 960-line
@@ -42,5 +42,4 @@ pub mod mp2;
 
 pub use error::Error;
 
-/// Result alias used throughout the crate.
 pub type Result<T> = std::result::Result<T, Error>;

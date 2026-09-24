@@ -1,4 +1,4 @@
-//! 10.14.2 acceptance: each importer parses its fixture to a golden count
+//! Each importer parses its fixture to a golden count
 //! and to field-exact golden stations, malformed rows are skipped with a
 //! reason, and **every** truncation of every fixture (all byte prefixes, a
 //! superset of every line boundary) parses without panicking.

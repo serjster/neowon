@@ -1,6 +1,5 @@
 //! Spectrum analysis: windowed FFT with amplitude-correct scaling.
-//! CPU implementation via rustfft — the correctness oracle for the GPU FFT
-//! that arrives with the waterfall view.
+//! CPU implementation via rustfft — the correctness oracle for the GPU FFT.
 
 use rustfft::FftPlanner;
 use rustfft::num_complex::Complex64;

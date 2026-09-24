@@ -1,4 +1,4 @@
-//! Phase 10.10: the audio demodulator over the control socket on the
+//! The audio demodulator over the control socket on the
 //! simulator. Audible sound cannot be asserted; the DSP oracle
 //! (`neowon-dsp --test demod_golden`) covers demodulation, and this asserts
 //! the state machine and that audio is actually produced on a real output

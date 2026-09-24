@@ -13,33 +13,12 @@
 //!
 //!   cargo test -p neowon-app --test accuracy -- --ignored
 
-use std::io::{BufRead, BufReader, Write};
-use std::net::TcpStream;
+mod common;
+use common::*;
+
 use std::time::{Duration, Instant};
 
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
-struct Conn {
-    out: TcpStream,
-    lines: std::io::Lines<BufReader<TcpStream>>,
-}
-
 impl Conn {
-    fn request(&mut self, line: &str) -> String {
-        writeln!(self.out, "{line}").unwrap();
-        self.lines.next().expect("connection closed").unwrap()
-    }
-    fn ok(&mut self, line: &str) {
-        let r = self.request(line);
-        assert!(r.contains(r#""ok":true"#), "{line} -> {r}");
-    }
-
     /// A metric from `get measure`, once the app has produced one at the
     /// current settings.
     fn metric(&mut self, slot: usize, name: &str) -> Option<f64> {
@@ -90,40 +69,21 @@ fn pick(json: &str, slot: usize, name: &str) -> Option<f64> {
     None
 }
 
-fn start(port: u16) -> (std::process::Child, Conn) {
-    let child = std::process::Command::new(env!("CARGO_BIN_EXE_neowon-app"))
-        .arg("--sim")
-        .env("NEOWON_CONTROL", port.to_string())
-        .env("NEOWON_WINDOW", "1520x820")
-        .env("NEOWON_UI_SCALE", "1.0")
-        .env_remove("NEOWON_SCRIPT")
-        .env("NEOWON_NO_STATE", "1")
-        .env("NEOWON_ORPHAN_EXIT", "15")
-        .spawn()
-        .expect("launch app");
-    let deadline = Instant::now() + Duration::from_secs(25);
-    let stream = loop {
-        match TcpStream::connect(("127.0.0.1", port)) {
-            Ok(s) => break s,
-            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(200)),
-            Err(e) => panic!("cannot connect: {e}"),
-        }
-    };
-    stream
-        .set_read_timeout(Some(Duration::from_secs(15)))
-        .unwrap();
-    let conn = Conn {
-        out: stream.try_clone().unwrap(),
-        lines: BufReader::new(stream).lines(),
-    };
+/// The app at a pinned window and scale, in its own sandbox and on a port
+/// proven to be its own (`common::launch`).
+fn start() -> (App, Conn) {
+    let (child, conn) = launch(
+        &["--sim"],
+        &[("NEOWON_WINDOW", "1520x820"), ("NEOWON_UI_SCALE", "1.0")],
+    );
+    conn.set_timeout(15);
     (child, conn)
 }
 
 #[test]
 #[ignore = "opens a window"]
 fn measurements_do_not_depend_on_the_instrument_settings() {
-    let port = free_port();
-    let (mut child, mut conn) = start(port);
+    let (mut child, mut conn) = start();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         for cmd in [
@@ -208,12 +168,10 @@ fn measurements_do_not_depend_on_the_instrument_settings() {
 #[test]
 #[ignore = "opens a window"]
 fn the_timeline_does_not_move_while_a_page_fills() {
-    // The complaint this guards: the display jittered horizontally and
-    // records came and went. In page mode the window is a fixed slice of the
-    // session clock, so the reported window must not change between rebuilds
-    // even as new records arrive.
-    let port = free_port();
-    let (mut child, mut conn) = start(port);
+    // In page mode the window is a fixed slice of the session clock, so the
+    // reported window must not change between rebuilds even as new records
+    // arrive.
+    let (mut child, mut conn) = start();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         for cmd in [

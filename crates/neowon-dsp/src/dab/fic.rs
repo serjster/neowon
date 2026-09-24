@@ -6,7 +6,7 @@
 //! dispersed, and split into three FIBs whose CRC decides whether any of it is
 //! believed (clause 5.2.1).
 //!
-//! **Lock policy (D27).** The table is published only when the FIC is decoding
+//! **Lock policy.** The table is published only when the FIC is decoding
 //! reliably, and `locked` additionally requires an ensemble identity — a
 //! CRC-clean FIC with no `EId` is "receiving something", not "locked to a
 //! station". Service labels arrive on their own schedule (once per second), so
@@ -54,7 +54,7 @@ impl FicState {
     }
 
     /// Drop the lock and the ensemble after the signal has been undecodable
-    /// for long enough that publishing them would be a stale claim (D27).
+    /// for long enough that publishing them would be a stale claim.
     ///
     /// The window is emptied rather than filled with misses, so the window
     /// rate reports "no window" until `LOCK_WINDOW_FRAMES` new frames arrive;
@@ -113,7 +113,7 @@ impl FicState {
         ok_this_frame
     }
 
-    /// Is the FIC decoding well enough to be believed (D27)?
+    /// Is the FIC decoding well enough to be believed?
     fn crc_rate_ok(&self) -> bool {
         let (ok, total) = self.window.iter().fold((0u32, 0u32), |(o, t), (fo, ft)| {
             (o + *fo as u32, t + *ft as u32)
@@ -129,7 +129,7 @@ impl FicState {
     }
 
     /// Is the FIC decoding well enough to be believed *and* identifying an
-    /// ensemble (D27)?
+    /// ensemble?
     pub fn is_locked(&self) -> bool {
         self.crc_rate_ok() && self.ensemble.eid.is_some()
     }
@@ -289,7 +289,7 @@ mod tests {
 
     /// An expiry (the signal was gone for seconds) drops the lock and the
     /// table but keeps the cumulative FIB counters: those are history, the
-    /// table is the claim (D27). New frames rebuild the table.
+    /// table is the claim. New frames rebuild the table.
     #[test]
     fn expire_drops_the_table_and_keeps_the_history() {
         let spec = spec(
