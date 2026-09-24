@@ -213,9 +213,10 @@ cargo run --release -p neowon-app -- --demo     # Oscilloscope Quake (see below)
 ```
 
 Only one process may use the scope at a time — close the vendor app first.
-The Instrument menu (or the `instrument scope|sdr` script action) switches
-between the two at run time within the launch's family: the simulators swap
-for each other, and the VDS1022 swaps for the RTL-SDR.
+The app bar's **SCOPE | SDR** switch (⌘/Ctrl+1, ⌘/Ctrl+2, or the
+`instrument scope|sdr` script action) switches between the two at run time
+within the launch's family: the simulators swap for each other, and the VDS1022
+swaps for the RTL-SDR.
 
 **The RTL-SDR driver has only been tested on macOS.** Linux and Windows
 build the same pure-Rust `nusb` stack, and Linux ships
@@ -262,11 +263,16 @@ scripts/fetch-demo.sh
 
 ```sh
 cargo run -p neowon-cli --                    # `neowon` binary
-  probe | dump | stream | smoke | autoset
+  probe | dump | stream | smoke | autoset | sim | sdr smoke
 ```
 
 `neowon smoke` verifies the whole stack against the scope's own 1 kHz
-probe-compensation signal.
+probe-compensation signal. `neowon sim` writes deterministic simulator output
+and never opens a device. `neowon sdr smoke --freq <hz>` tunes the RTL-SDR,
+detects, classifies and decodes the signal there and writes a JSON readout
+(`--json-out`, `--doc`); it fails on no peak within ±2 RBW, class `unknown`,
+confidence < 0.70 or an empty decode. `--sim <scene>` runs the same pipeline on
+the simulator instead of the dongle.
 
 ### Scripting
 
@@ -277,10 +283,25 @@ The full grammar is documented at the top of `crates/neowon-app/src/script/mod.r
 
 ### Remote control & MCP
 
-Set `NEOWON_CONTROL=<port>` and the app serves a line-oriented control
-API on `127.0.0.1:<port>`: any script action per line (acked with JSON),
-plus `get status` / `get config` / `get measure` queries returning
-structured JSON. Every external transport builds on this.
+The app serves a line-oriented control API on `127.0.0.1:7777` **by
+default**: any script action per line (acked with JSON), plus `get status`
+/ `get config` / `get measure` queries returning structured JSON. Every
+external transport builds on this. `NEOWON_CONTROL=<port>` moves it and
+`NEOWON_CONTROL=off` turns it off.
+
+Driving the instrument and every `get …` query are open. **Write verbs
+need a token**: anything that writes a file, reads one you named, reaches
+the network or ends the process (`shot`, `export`, `capsave`/`capload`,
+`sessionsave`/`sessionload`, `sdr iqdump`, `refdb fetch|import`, `quit`, …)
+is refused until the connection sends `auth <token>`. The app writes the
+token to `~/.neowon/control/<port>.token` (mode 0600), and a bare `auth`
+replies with that path:
+
+```sh
+{ echo "auth $(cat ~/.neowon/control/7777.token)"; cat; } | nc 127.0.0.1 7777
+```
+
+`neowon-mcp` performs the handshake itself.
 
 `neowon-mcp` is an [MCP](https://modelcontextprotocol.io) stdio server
 over that socket, so an LLM client (Claude Code, Claude Desktop, …) can
@@ -292,8 +313,8 @@ screenshots of the display **returned as images the model can see**.
 # zero-setup demo: the server spawns the simulator itself
 claude mcp add neowon -- ./target/release/neowon-mcp --spawn-sim
 
-# or attach to a running app (real hardware or sim)
-NEOWON_CONTROL=7777 cargo run --release -p neowon-app &
+# or attach to a running app (real hardware or sim); the socket is on by default
+cargo run --release -p neowon-app &
 claude mcp add neowon -- ./target/release/neowon-mcp --connect 127.0.0.1:7777
 ```
 

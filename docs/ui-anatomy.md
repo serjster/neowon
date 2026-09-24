@@ -27,10 +27,11 @@ every bug report costs a round trip.
 
 ## The regions
 
-**App bar** (`ui/menubar.rs`) — the top strip. Drop-down menus on the left
-(File, View, Instrument, Settings) for things about the *application*; ambient status on
-the right: run state, time base, sample rate, ROLL and TIMELINE badges, the
-instrument's name and serial, and the **acquisition counter** (`#1234`). That
+**App bar** (`ui/menubar.rs`) — the top strip. The **SCOPE | SDR** workspace
+switch, then the drop-down menus (File, View) and the Settings button, for
+things about the *application*; ambient status on the right: run state, time
+base, sample rate, ROLL and TIMELINE badges, the instrument's name and serial,
+and the **acquisition counter** (`#1234`). That
 counter is the number of records captured since launch — it should climb
 steadily, and a stalled one means the trigger is starving or the instrument
 has stopped.
@@ -75,16 +76,24 @@ or the SDR. The **SCOPE | SDR** switch, first in the app bar (⌘/Ctrl+1,
 time within the
 launch's family: the simulators swap for each other, and the VDS1022 swaps
 for the RTL-SDR. Each keeps its settings across a switch. (Plain `mode` is
-the scope's *trace* mode: vectors, dots or XY.)
+the scope's *trace* mode: vectors, dots or XY.) A keyboard shortcut acts
+only in the workspace whose controls it drives: the scope's keys (Space,
+arrows, A, F, `[`/`]`, …; the table is `shortcuts.rs`) do nothing while the
+SDR is up, and ⌘/Ctrl+1/2 work in both.
 
 In SDR mode the regions keep their names and change their content; no
 scope control is on screen (D12):
 
 - **App bar** — the workspace switch, the menus (View lists the RF map,
-  band strip, minimap, band plan and Catalog), RUN/STOP, then the tuned
+  band strip, minimap, **DAB receiver** — `sdr dab on|off`, which opens the
+  dock's DAB section and scrolls it into view — band plan and Catalog),
+  RUN/STOP, then the tuned
   frequency, the IQ rate, the gain (or AGC) and the **band** the tuned
   frequency is in, coloured by kind (the narrowest allocation; hover for
   all of them); on the right, the SDR's name and the **IQ frame counter**.
+  A refused SDR action (`error: …`, or `disconnected: …`) shows in red
+  beside the SDR's name for 15 s, truncated to the bar with the whole
+  message on hover; `get status` and the log keep it after that.
 - **Minimap** (`ui/sdr_bands.rs`, `bandmap mini`) — across the top of the
   canvas: every band of the active plan on a log axis over the tuner's
   whole range, the IQ window as a white bracket, the tuned frequency as a
@@ -112,16 +121,36 @@ scope control is on screen (D12):
   wheel's x axis pans, and *double-click* resets the view. A tuned
   frequency outside the view shows an edge arrow with its frequency; the
   hardware centre is a faint amber line when it differs from the tuned
-  frequency.
+  frequency, and it is tagged **hw centre · DC notch** above the frequency
+  ticks: the trace and waterfall mask the RTL's DC spike there (a few kHz,
+  display only — see Display), so the dip under it is not the signal's.
+  A one-line **gesture hint** sits in the waterfall's bottom-left corner
+  (shortened on a narrow canvas); hovering "Tuned" gives the full map.
 - **SDR dock** (`ui/sdr_dock.rs`) — collapsible sections like the scope's,
   labels in the left column: **Tuning** (the Tuned frequency in large type,
   the band it is in, Centre, Follow, Width), **Receiver** (rate, gain, RTL
-  AGC, ppm), **Display** (span, FFT, reference and range, peak and floor),
-  **Audio** (demod, volume, mute, squelch, state), **Signals** (Detect,
+  AGC, ppm, drops), **Display** (span, FFT, reference and range, peak and
+  floor, and the **DC notch** width), **Audio** (demod, volume, mute,
+  squelch, state), **DAB** (below), **Signals** (Detect,
   threshold and the resizable signal list), **Analysis** (the modulation
   lab and the constellation; open while the lab runs) and, on the
   simulator, **Simulator** (the scene). Hovering "Tuned" lists the canvas
-  mouse gestures.
+  mouse gestures. Unlike the scope's dock this rail scrolls **vertically
+  only**, so every row wraps to the rail's width rather than running past
+  its edge (D12; `sdr_dab` asserts it from the UI tree in every DAB state).
+- **DAB section** (`ui/dab_dock.rs`) — Decode and Reset, the Band III
+  block row, the rate requirement; once locked the ensemble and its PRS
+  score, the **cumulative** counters (FIB CRC, frames, rejected — since
+  Decode or the last reset, not the current state), then the transport
+  (Play/Stop, state, meter) and the DLS line, then the service list. A
+  service this build can never play is greyed with the reason under it
+  (the one `sdr dab play` would give; `get dab` → `services[].playable` /
+  `why_not`), and Play is disabled for it. Unlocked, the section says what
+  happened: **lock lost N s ago** (which ensemble, table expired), **no
+  input** (stopped, or the stream stalled), or **searching** — never a bare
+  "not locked" (`get dab` → `gone`). Held open while the receiver runs, and
+  scrolled into view the moment it turns on (from the dock, View → DAB
+  receiver or a script).
 - **RF map window** (`ui/bandmap_window.rs`, `bandmap window`) — the whole
   tunable range as a band chart: one row per decade, log frequency within
   it, nested allocations stacked, a legend of kinds, the plan selector, the
@@ -170,8 +199,11 @@ SDR vocabulary:
 - **Squelch** — mutes the demodulated audio when the channel power falls
   below the threshold (`sdr squelch`); `off` leaves the gate open.
 - **Audio state** — `playing`, `muted`, `squelched`, `no device`,
-  `starting` or `off`. All but the first mean silence, so the dock names
-  which one applies.
+  `starting`, `error` or `off`. All but the first mean silence, so the dock
+  names which one applies. `error` is reachable when a DAB transport owns the
+  device and its stream cannot be decoded (before the device had one
+  owner this read `off`). `get audio` also reports `owner`
+  (`none|demod|dab`), so it and `get dab`'s `audio.state` cannot disagree.
 - **Span** — how much of the IQ band is displayed. *Full* means the whole
   sample rate.
 - **Pan** — where the span sits, as an offset from the hardware centre
@@ -238,6 +270,10 @@ window pixels, plus the painted regions of the layout dump. It is egui's
 AccessKit tree, built each frame while a control socket is open. Assert
 layout and presence from it rather than from screenshots; a new
 custom-painted element should call `uitree::node` so it shows up.
+
+`get uitree` reads the tree over the socket and needs nothing; `uitree
+<path>` writes a file, so over the socket it needs the connection's token
+like every other write verb (D29 — see AGENTS.md's live-development loop).
 
 ## Conventions
 

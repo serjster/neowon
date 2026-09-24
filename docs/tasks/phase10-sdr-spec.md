@@ -389,13 +389,18 @@ manifest `last_seq` watermark makes replay idempotent; a **checkpoint** compacts
 the WAL (on clean close or every N records) and replay starts after the
 watermark; durability = **zero loss for acknowledged writes**. **WAL segments are
 versioned** (`format`/`schema`) so a v0 tail is checkpointed, not lost, on
-upgrade. Ordered index `(signal_id, time, seq)` serves history/sparkline.
+upgrade. Ordered index `(signal_id, time, observation id)` serves
+history/sparkline (observations carry no WAL seq, so the observation id is
+the tie-break).
 
 Migrations: manifest `"format":"neowon-catalog","schema":1`; v0 = no `schema` key,
 `Emission` read into `Transmission`; version > current refused.
 
 Provenance: `{kind ∈ {user,decoder,classifier,db,import,merge,fingerprint}, tool,
-tool_version, timestamp: RFC3339, input_ref}`; `input_ref` follows redirects;
+tool_version, timestamp: RFC3339, input_ref}`; `input_ref` is plain text and is
+never resolved (M27, 2026-09-23: an imported `import:#N` names another
+catalog's entity, so resolving it through this catalog's redirects would be the
+M15 cross-wire);
 confidence only on derived values. Results ordered `(time, id)`.
 
 Script: `catalog list|add|rename|delete|purge|merge|tag|alias|edit|bulk|undo|pin|
@@ -425,15 +430,20 @@ autocorrelation/SCD + symbol-rate/carrier-offset; M5 parameter estimation; M6
 synchroniser + slicer → bits.
 
 **Done when:** `cargo test -p neowon-dsp --test mod_estimators`, fixture table
-(class tolerance): 16-QAM EVM at 30 dB = closed form ±0.5%; QPSK symbol rate 100
-ksym/s within 1%; BPSK/QPSK C42 = published values ±0.02 (N=8192).
+(class tolerance): 16-QAM EVM at 30 dB = closed form ±0.05 percentage points;
+QPSK symbol rate 100 ksym/s within 0.01%; BPSK/QPSK C42 = published values
+±0.02 (N=8192). *(Tolerances tightened 2026-09-22 per M21: the old ±0.5 pp /
+1 % were two orders looser than the measured agreement.)*
 
 **Status 2026-09-19: 10.3 DONE.** `cargo test -p neowon-dsp --test
 mod_estimators -- --nocapture`:
-- 16QAM EVM 3.156% against the 3.162% closed form (±0.5 is read as
-  percentage points);
-- QPSK Rs 100 001.9 Hz;
-- C42 −2.0000 (BPSK) and −1.0000 (QPSK) over 8192 recovered symbols.
+- 16QAM EVM 3.156% against the 3.162% closed form (measured agreement 0.006 pp;
+  the test's bound is ±0.05 pp);
+- QPSK Rs 100 001.9 Hz (+0.0019%; the test's bound is 0.01%);
+- C42 −1.9992 (BPSK) and −1.0000 (QPSK) over 8192 recovered symbols. These are
+  the recovered-symbol measurements the command prints; −2.0000/−1.0000 are the
+  ideal-constellation constants, asserted as such by `modlab::cumulants`' table
+  test, not this row's output.
 In-app: `cargo test -p neowon-app --test sdr_modlab -- --ignored`.
 
 ### 10.4 — Scanning & survey
@@ -442,7 +452,7 @@ In-app: `cargo test -p neowon-app --test sdr_modlab -- --ignored`.
 threshold, truncated, peak_cap, selection_rule, retained_power_floor}`; an
 unscanned or pruned peak is `unknown`, never `gone`.
 
-**Done when:** `cargo test -p neowon-sdr --test survey_diff` (class fixed-order):
+**Done when:** `cargo test -p neowon-dsp --test survey_diff` (class fixed-order):
 seeded new tone `new`, removed tone `gone`, raised tone `stronger`, truncated band
 overflow `unknown`, unscanned band all `unknown`.
 
@@ -469,8 +479,11 @@ gates` re-checks D9. If D9 fails, the record says the learned path is abandoned.
 **Status 2026-09-19: 10.5 partial.**
 - Done: C1 (`neowon_dsp::classify`), C3 (unknown, top-2, trust) and C7
   (preset labels). `cargo test -p neowon-dsp --test classify_golden --
-  --nocapture` (statistical, seed 42, N 500/class) gives macro precision
-  1.0 at 10 and 20 dB on the simulator.
+  --nocapture` (statistical, seed 42, N 500/class) gives, on the simulator,
+  macro precision / recall / unknown-rate of **0.9995 / 0.9567 / 4.29 %** at
+  10 dB and **0.9994 / 0.9580 / 4.16 %** at 20 dB (measured 2026-09-23;
+  both rows are asserted — the earlier "macro precision 1.0" quoted
+  precision alone and rounded it).
 - Blocked on a D9 corpus: C2 (`MlClassifier` on `ort`), C5 (precision
   curves from a checked-in harness), C6 (held-out frequency), C9 (corpus
   rotation), and SDR-G2. Choosing and collecting that corpus (a public
@@ -514,9 +527,10 @@ rectangles exact.
 Mode switch/workspace; tuning widget; mode-aware controls; script/MCP parity; SDR
 vocabulary in `docs/ui-anatomy.md`.
 
-**Done when:** `cargo test -p neowon-app --test sdr_integration` — every UI
-control and catalog op has a script action, and a scripted sim run drives tune →
-detect → analyse → classify → decode → catalog → export. Class fixed-order.
+**Done when:** `cargo test -p neowon-app --test sdr_integration -- --ignored` —
+every UI control and catalog op has a script action, and a scripted sim run
+drives tune → detect → analyse → classify → decode → catalog → export. Class
+fixed-order. (The test opens a window, hence `-- --ignored`; sim only.)
 
 ### 10.10 — Demodulation & audio
 
@@ -628,6 +642,13 @@ failpoints, never timing.
   `cargo run -p neowon-cli -- sdr smoke --freq <hz> --json-out audit/rtlsdr-smoke.json
   --doc docs/protocol-rtlsdr.md` writes JSON
   `{dongle_serial, tune_hz, peak_hz, peak_tol_hz, class, confidence, decode, snr_db}`.
+  *Definitions (operator-accepted 2026-09-23, M9):* `peak_hz` is the centre of
+  the detected signal's 99 % occupied band (an FM signal's strongest bin is a
+  sideband, not its carrier); `decode` is the demodulated audio for AM/NFM/WFM or
+  the recovered symbol labels for a digital signal, because 10.6's protocol
+  decoders do not exist yet. The readout also carries `source` (`sim|rtl`),
+  `centre_hz`, `pass` and `failures`, so a sim readout can never pass for the
+  hardware one.
   FAIL if no peak within ±2 RBW, class `unknown`, confidence < 0.70, or empty
   decode.
 
@@ -635,9 +656,10 @@ failpoints, never timing.
 
 - All sub-phases' criteria met; SDR-G1 and SDR-G2 passed and recorded.
 - `cargo fmt --all`, `cargo clippy --workspace --all-targets`, `cargo test`,
-  `shaders`, `ui_pixels --ignored` clean; `cargo test --workspace --features
-  neowon-ml/ort` passes in the feature-on CI job, and the default-off build works
-  without `ort`.
+  `shaders`, `ui_pixels --ignored`, and the Phase 10 gate lines in `harness.md`
+  clean. (`cargo test --workspace --features neowon-ml/ort` was struck
+  2026-09-22: `neowon-ml` is not a workspace member yet, so the command errored
+  rather than testing anything; it returns with 10.7/10.8.)
 - A JSON hardware-smoke readout committed to `docs/protocol-rtlsdr.md`.
 - `PLAN.md` §4 status updated; deferrals in `## Backlog`; deviations here.
 
@@ -658,7 +680,7 @@ failpoints, never timing.
 ## Review fixes
 
 Applied rounds 1–3; the round-by-round merge/fix record is the gitignored scratch
-under `.critic/phase10-sdr-plan/` (not a committed link). Findings were fixed as
+(not a committed link). Findings were fixed as
 classes: one id namespace (`DM*` features vs `D0–D9` decisions vs `SDR-G1/G2`
 gates), one field-name home (`IqCal`), one complex-layout schema, one command per
 criterion.
@@ -666,46 +688,410 @@ criterion.
 ### Implementation round 1 (`phase10-implementation`, 2026-09-20)
 
 One round over the Phase 10 build (6 seats, mean 6.85, 15 errors; scratch
-`.critic/phase10-implementation/round-1/` — `panel.md`/`triage.md`, not a
-committed link). Checklist names the merged finding ids (M-numbers):
+`panel.md`/`triage.md`, not a committed link). Checklist names the merged finding ids (M-numbers).
 
-- [ ] Catalog durability: a non-current headerless WAL segment must not brick
+**How to read it.** State is **per id**: every `M`-id has its own box under the
+bullet that names it, ticked only when that id is wholly true in the tree, with
+the date it was last checked and one clause of evidence (a command or a
+file:line). A parent bullet is ticked only when every id beneath it is — so an
+unticked parent over ticked children means *partly landed*, not *nothing done*.
+An id whose box is unticked is open: either not fixed, or fixed only in part and
+said so. Last full per-id pass against the tree: **2026-09-22**.
+Landed so far: M1, M2, M3, M4, M5, M6, M7, M8, M10, M11, M12, M13, M14, M15, M16,
+M17, M18, M19, M20, M21, M22, M23, M24, M26, M27, M28, M29, M30, M31, M32, M33, M34,
+M35 (33 of 35; M25 is deferred by decision, not open). The
+Evidence-honesty, Seams, Performance, port-race, Parity, Test-surface and Budgets
+bullets are closed.
+
+- [x] Catalog durability: a non-current headerless WAL segment must not brick
   `open` (+ `segment-create` failpoint); a CRC-bad mid-WAL frame is corruption,
   not a torn tail (M1, M2).
-- [ ] Cascade `delete` is not undoable — `undoable()` must say so, or the inverse
+  - [x] **M1** — fixed 2026-09-23. A segment whose header is torn
+    holds no record: `wal::read` returns `Ok(None)` and `Catalog::open` sets it
+    aside (not current) or recreates it (current); checkpoint numbers past every
+    segment on disk instead of deleting a leftover before the manifest swap, and
+    its sweep deletes only its own names. New failpoint `segment-create`,
+    exercised in a checkpoint and before a fresh `open`. Evidence:
+    `cargo test -p neowon-catalog --test crash -- --nocapture` → 5 cases
+    `"recovered":true`; before the fix both `segment-create` cases failed
+    `no valid header`.
+  - [x] **M2** — fixed 2026-09-23. Only a stretch with no valid
+    frame after it is a torn tail; a damaged frame (bad CRC or bad length)
+    with a valid frame behind it is `Corrupt` and nothing is truncated.
+    Evidence: `cargo test -p neowon-catalog --test recovery` → 6 passed; before
+    the fix probe E opened with 2 of 5 signals.
+- [x] Cascade `delete` is not undoable — `undoable()` must say so, or the inverse
   lands; the unrelated-edit rewind probe gets a test (M3).
-- [ ] The gate: `sdr_integration` gets `-- --ignored` in `harness.md` and 10.9's
+  - [x] **M3** — fixed 2026-09-23. `undoable()` is false for
+    `Delete{cascade:true}`; an op with no exact inverse (also a pinned insert and
+    a merge-target delete) clears the undo stack instead of skipping the entry.
+    Evidence: `cargo test -p neowon-catalog --test undo_exact -- --nocapture`
+    → 3 passed (probes B, B3, and every op kind); before the fix B failed
+    `NotFound(#2)` and B3 rewound `"keep me"`.
+- [x] The gate: `sdr_integration` gets `-- --ignored` in `harness.md` and 10.9's
   Done-when; the `neowon-ml/ort` line is removed or marked "member absent" (M4).
-- [ ] Indexed history `(signal_id,time,seq)` and bounded refdb queries; no
+  - [x] **M4** — landed 2026-09-22, re-verified 2026-09-22:
+    `harness.md`'s Phase 10 block runs
+    `cargo test -p neowon-app --test sdr_integration -- --ignored`, 10.9's
+    Done-when carries the same flag, and the `neowon-ml/ort` line is struck with
+    a dated note (member absent until 10.7/10.8) in both `harness.md` and this
+    spec's phase Done-when. Evidence:
+    `rg -n "sdr_integration|neowon-ml/ort" harness.md docs/tasks/phase10-sdr-spec.md`.
+- [x] Indexed history `(signal_id,time,seq)` and bounded refdb queries; no
   per-frame full scans in the catalog/Stations windows (M5).
-- [ ] Evidence honesty: C42 −1.9992 recorded as measured; PRS false-lock asserted
+  - [x] **M5** — fixed 2026-09-23 (catalog/refdb half, then Stations
+    half). `State::history` is a range over a derived `(signal, t_start,
+    observation id)` index (not stored); refdb `Index::query` visits only
+    `within(lo,hi)`; the Catalog window's listing, counts and integrity are
+    rebuilt once per commit and it draws a 500-row page. The Stations window keeps
+    its rows as positions into the index keyed on `(Index::generation(), filters)`
+    (`crates/neowon-app/src/refmap/rows.rs`), so `all`/`near` no longer query the
+    set per frame. Evidence:
+    `cargo test -p neowon-app --bin neowon-app refmap::rows` — 60 frames × 1 000 /
+    10 000 / 100 000 stations, one build per change, 500 stations read per frame;
+    with the cache disabled `All 100000: frame 1 read 100500 stations`.
+- [x] Evidence honesty: C42 −1.9992 recorded as measured; PRS false-lock asserted
   on attempts; bare-tone case reaches an attempt; the classifier asserts its 10 dB
   row and reports recall/unknown beside precision; EVM/Rs tolerances tightened;
   FIB CRC known-answer vector; golden JSON readouts filed; IQ-fixture limits
   stated (M6, M19, M20, M21, M32, M33).
-- [ ] `state_persist`'s control-port race classed (reserved port or echoed nonce)
+  - [x] **M6** — fixed 2026-09-22. The record carries the measured
+    C42 (−1.9992 BPSK, −1.0000 QPSK) beside the command that prints it, and
+    labels −2.0000/−1.0000 as the ideal constants: this spec's §10.3 status and
+    `PLAN.md:482`. Evidence:
+    `cargo test -p neowon-dsp --test mod_estimators -- --nocapture` prints
+    `"c42":-1.9992` for BPSK.
+  - [x] **M19** — fixed 2026-09-23. The false-lock half landed
+    earlier; the bare-tone case now reaches an attempt and asserts it.
+    `the_reference_scene_is_a_tone_not_an_ensemble` feeds
+    `2 · (FRAME_SAMPLES + T_NULL)` — one attempt is guaranteed only there,
+    because the null search ranges over the first `FRAME_SAMPLES` and a start
+    it picks must still have a whole frame behind it — then asserts
+    `frames_rejected == 1` and `last_attempt_metric() < PRS_METRIC_MIN`
+    (measured 0.0282 against the 0.35 gate)
+    (`crates/neowon-dsp/tests/dab_fic.rs:366-411`). Evidence:
+    `cargo test -p neowon-dsp --test dab_fic -- --nocapture` → 8 passed; with
+    the pre-fix `FRAME_SAMPLES` feed the same assert fails
+    (`left: 0, right: 1`).
+  - [x] **M20** — fixed 2026-09-23. The `if snr >= 20.0` guard is
+    gone: both rows assert macro precision ≥ 0.99, macro recall ≥ 0.94,
+    unknown rate ≤ 0.06 and, per class, precision ≥ 0.98 / recall ≥ 0.70
+    (`crates/neowon-dsp/tests/classify_golden.rs:100-232`). Each bound is read
+    off the run, not recorded — measured 0.9995/0.9567/4.29 % at 10 dB and
+    0.9994/0.9580/4.16 % at 20 dB — and the record now carries recall and
+    unknown beside precision (`PLAN.md:495-501`). Evidence:
+    `cargo test -p neowon-dsp --test classify_golden -- --nocapture` →
+    2 passed; a per-class recall floor of 0.80 (past the measured 0.776) fails
+    **on the 10 dB row** — `64qam recall 0.7760 at 10 dB (floor 0.8)`.
+  - [x] **M21** — fixed 2026-09-22. EVM/Rs bounds tightened to
+    ±0.05 pp / 0.01 % (`crates/neowon-dsp/tests/mod_estimators.rs:76-100`); the
+    measured agreement is 0.006 pp / +0.0019 %, the tightened run is green, and
+    a deliberately tighter 0.001 pp / 1e-6 bound fails
+    (`EVM 3.156252221849834 vs 3.162277660168379`). The id's other half, the
+    FIB CRC known-answer vector for tier-1 row 5, is in the tree:
+    `crc16(b"123456789") == 0xD64E` plus a single-bit-flip probe
+    (`crates/neowon-dsp/src/dab/fec/mod.rs:448-452`). Evidence:
+    `cargo test -p neowon-dsp --test mod_estimators` and
+    `cargo test -p neowon-dsp --lib dab::fec`.
+  - [x] **M32** — fixed 2026-09-23. Every golden run in
+    `crates/neowon-dsp/tests/` files its readout as JSON through
+    `common::file_readout` (`tests/common/mod.rs`), under
+    `target/tmp/readouts/`, and prints the path as `readout: <path>`:
+    `classify.json`, `detect-*.json` (6), `demod-*.json` (3),
+    `modest-*.json` (4), `iq-*.json` (2). The filing is itself checked — the
+    helper rejects an unbalanced document and re-reads what it wrote — so a
+    readout that does not reach the disk fails its run. Evidence:
+    `cargo test -p neowon-dsp --test classify_golden --test detect_golden
+    --test demod_golden --test mod_estimators --test iq_fixture --
+    --nocapture`, then `ls target/tmp/readouts/` → 16 files; a one-byte
+    truncated write fails with `did not survive the round trip`.
+  - [x] **M33** — fixed 2026-09-23.
+    `crates/neowon-dsp/tests/iq_fixture.rs` states the D8 tone fixture's three
+    limits (it proves determinism and portability, not correctness; it touches
+    no byte of the `Digital`/RRC path the goldens run on; 1024 pairs supports
+    no statistical claim) and closes the first two for that path with a
+    closed-form property — the matched filter returns `amplitude ·` the
+    transmitted symbol, worst error 0.00157 at amplitude 0.5 against a 0.002
+    bound — and a cross-platform byte pin (FNV-1a 64 `0x2969C92EA83F481B`
+    over 8 192 bytes plus the first pair's exact `f32` bits). Evidence:
+    `cargo test -p neowon-dsp --test iq_fixture -- --nocapture` → 3 passed;
+    roll-off 0.35 → 0.36 moves the pinned bytes and a symbol grid off by one
+    takes the worst error to 1.00158. **Placed out of its natural
+    home:** it belongs beside `crates/neowon-sim/tests/iq_determinism.rs`,
+    which was outside that work item's scope fence; that file still carries no pointer
+    to these limits.
+- [x] `state_persist`'s control-port race classed (reserved port or echoed nonce)
   — M7.
-- [ ] Parity: sample `Dab` and assert one count in `sdr/actions.rs`; a count
+  - [x] **M7** — fixed 2026-09-23. The token was *not* already the
+    nonce: `launch` derived it from the port (`test-token-<port>`), so two
+    launches on one port computed the same token and the second authenticated
+    against the first's app. It is now unique per launch (pid + counter,
+    `crates/neowon-app/tests/common/sandbox.rs::unique`), and `launch_on`
+    proves the listener is its own by authenticating a probe connection
+    before it hands back any connection — `launch_raw`'s unauthenticated one
+    included, so reads are covered too; a stranger answers anything but
+    `"authed":true` and the launch retries on a new port (3 attempts). The
+    six suites that had their own `free_port` + connect loop (`accuracy`,
+    `deep_view`, `ui_geometry`, `view_controls`, `decode_flow`, `sdr_mode`)
+    now use `common::launch`, and `mcp_e2e` gives the MCP server and its app
+    a shared per-run token. Evidence:
+    `cargo test -p neowon-app --test isolation -- --ignored` → 2 passed; with
+    the port-derived token restored,
+    `a_launch_never_talks_to_an_app_it_did_not_start` fails with `a launch
+    accepted port … held by another app`.
+- [x] Parity: sample `Dab` and assert one count in `sdr/actions.rs`; a count
   guard in the refmap parity check (M8, M35).
+  - [x] **M8** — fixed 2026-09-22, re-verified 2026-09-22: every
+    `Dab` verb has a round-trip sample and the variant count is asserted
+    (`assert_eq!(seen.len(), 28, …)`,
+    `crates/neowon-app/src/sdr/actions.rs:607-622,638`); the spec's "fails to
+    compile" claim is corrected in the 10.9 deviation below. Evidence:
+    `cargo test -p neowon-app --bin neowon-app sdr::actions`.
+  - [x] **M35** — fixed 2026-09-23. 10.9's decode deviation is
+    recorded in the 10.9 entry below ("**Decode is missing**: it is 10.6 …"),
+    and the refmap round-trip now has M8's guard: an exhaustive `variant()`
+    match and `assert_eq!(seen.len(), 21, …)` over the samples
+    (`crates/neowon-app/src/refmap/actions.rs`, `every_action_round_trips`).
+    Evidence: `cargo test -p neowon-app --bin neowon-app refmap::actions` →
+    2 passed; with the `CatalogStation` sample removed it fails `left: 20,
+    right: 21`.
 - [ ] Closure: `neowon-cli sdr smoke --json-out/--doc` exists and files the
   readout, or triage #22 is un-recorded and closure re-planned (M9).
-- [ ] Tracker and record: PLAN records DAB-G1 passed (11C, 2026-09-20), re-dates
-  the block, moves 10.15.2/.3; wrong counts/commands re-derived; the
-  Instrument-menu / librtlsdr / next-action / deviation-numbering defects fixed;
-  phase-close criteria include 10.14 and the DAB gates (M10, M11, M34).
-- [ ] Seams: supervisor clamp from `Capabilities`; layout×acq private fields +
+  - [ ] **M9** — built 2026-09-23. **Hardware run done 2026-09-23 at
+    99.4 MHz WFM: FAIL on all four rules** (peak 14.76 kHz off, `unknown` 0.066,
+    no decode; filed in `docs/protocol-rtlsdr.md` with the analysis). **Open:**
+    a passing readout needs a station the contract can pass on (AM, or a narrow
+    digital carrier) or an operator decision on the contract for WFM. `neowon sdr smoke` (`crates/neowon-cli/src/sdr/`) tunes
+    `--freq` − `--lo-offset` (default 250 kHz, off the DC spike), captures
+    256 K pairs, detects (4096-bin RBW, so ±2 RBW = ±1 kHz at 2.048 MS/s),
+    classifies and decodes through one pipeline fed by the RTL dongle or, with
+    `--sim <scene>`, by `neowon-sim`; it writes the JSON atomically, appends a
+    dated `## SDR smoke readout` section with a fenced JSON block to `--doc`,
+    and exits non-zero naming each tripped rule. Sim evidence:
+    `cargo test -p neowon-cli` → 14 + 3 passed (rf-am, rf-digital and a
+    ±75 kHz FM pass; `no-peak`, `class-unknown`, `low-confidence` and
+    `empty-decode` each trip on their own scene, and each rule's test fails
+    with that rule disabled).
+    Deviations from the contract: the JSON adds `source` (`sim`|`rtl`, so a
+    sim readout is never the hardware one), `centre_hz`, `pass` and
+    `failures`; `peak_hz` is the middle of the detected signal's 99 %
+    occupied band (an FM signal's strongest bin and its power centroid both
+    sit kHz off its carrier); `decode` is the demodulated audio (AM, NFM,
+    WFM) or the recovered symbol labels (digital), since 10.6's protocol
+    decoders do not exist, so a bare carrier (`cw`) FAILs `empty-decode`.
+    To close it, with the dongle attached, on a station that is AM, FM or
+    digital: `cargo run -p neowon-cli -- sdr smoke --freq <hz> --json-out
+    audit/rtlsdr-smoke.json --doc docs/protocol-rtlsdr.md`.
+- [x] Tracker and record: PLAN's Phase 10 block, the DAB budget figures and the
+  README/ui-anatomy/spec claims all resolve to the tree (M10, M11, M34).
+  - [x] **M10** — fixed 2026-09-22, re-verified 2026-09-22: PLAN
+    records DAB-G1 passed (11C, 2026-09-20, `PLAN.md:568`) and the tiers 2–3
+    landing (`PLAN.md:565-589`); the status block is re-dated 2026-09-22
+    (`PLAN.md:428`). Evidence: `rg -n "DAB-G1|Status 2026-09-22" PLAN.md`.
+  - [x] **M11** — fixed 2026-09-22, re-verified 2026-09-22: the
+    tier-1 budget figures are re-derived (2 726 total / 765 inline test / 1 961
+    code) and the no-op `git diff --stat` command is replaced by one that runs,
+    in `docs/tasks/phase10-dab-spec.md`'s budget review. The panel's "refdb 40
+    tests" did not reproduce — the tree has 45, so the record was left as is.
+    Evidence: `for f in encoder fec fib fic fig mod ofdm receiver tables; do git
+    show 3842782:crates/neowon-dsp/src/dab/$f.rs; done | wc -l` → `2726`;
+    `cargo test -p neowon-refdb` → 45 passed.
+  - [x] **M34** — fixed 2026-09-22, re-verified 2026-09-22: the
+    Instrument-menu claims are the **SCOPE | SDR** switch (`README.md:215-219`,
+    `docs/ui-anatomy.md:30-33`, and the 10.9 deviation below); the librtlsdr
+    claims are the in-tree driver (`PLAN.md:28,87,598`); the next action has one
+    home (§10.15 states what remains, `PLAN.md:590-592`; the bottom line is the
+    single next-action statement, `PLAN.md:688`); the phase-close criteria
+    include 10.14 and DAB-G1/G2 (`PLAN.md:612-618`); the DAB spec's deviations
+    are renumbered 1–19 with no number used twice. Evidence:
+    `rg -n "Instrument menu" README.md docs/ PLAN.md` (only `PLAN.md:538`, which
+    is history) and `rg -n "librtlsdr bindings" PLAN.md README.md` (no matches).
+- [x] Seams: supervisor clamp from `Capabilities`; layout×acq private fields +
   `new`; `sdr_config`; one `Option<Capabilities>`; `survey` out of the driver
   crate; ladders in one home; sim `Emitter` kind enum (M13, M14, M28, M29, M30).
-- [ ] Budgets: split `sdr/actions.rs` (the parser is the second job) — M12.
-- [ ] Import/export: absent-ref refusal, atomic export, `format` validation,
+  - [x] **M13** — fixed 2026-09-23. The sample grid comes from the
+    instrument: `Capabilities::count_range()`
+    (`crates/neowon-core/src/instrument.rs:140-153`) answers `Some((-128,127))`
+    for a scope's i8 counts and `None` for a streaming SDR's full-scale f32,
+    and the supervisor's `Averager` takes it at connect and rounds/clamps only
+    when there is a grid
+    (`crates/neowon-backend/src/supervisor.rs:108-155,195`). Evidence:
+    `cargo test -p neowon-backend supervisor` →
+    `averaged_samples_follow_the_instrument_range` (full-scale 0.4/0.9 survive;
+    scope values round and hold at ±128/127) and `complex_frames_are_not_averaged`.
+  - [x] **M14** — fixed 2026-09-23. `acq` and `layout` are private
+    with `acq()`/`layout()` readers, so `CaptureFrame::new` is the only door
+    (`crates/neowon-core/src/frame.rs:90-97,102-163`); the one mutation the
+    supervisor needs goes through `with_acq`, which re-checks the matrix. All
+    nine producers and the `.nwc` loader now construct through `new` — a file
+    claiming `Complex × Average` is `InvalidData`, not a frame
+    (`crates/neowon-core/src/nwc.rs:212-231`). Evidence:
+    `rg -n "pub acq|pub layout" crates/neowon-core/src/frame.rs` (no matches)
+    and `cargo test -p neowon-core` → 17 passed, including
+    `frame::tests::with_acq_keeps_the_matrix`.
+  - [x] **M28** — fixed 2026-09-23. `survey` is `neowon-dsp`'s
+    (`crates/neowon-dsp/src/survey.rs`), the coverage record has an engine-free
+    home in core (`neowon_core::BandCoverage`) with the catalog wrapping it as
+    `CoverageRecord` exactly as it wraps `SignalObservation`, and
+    `neowon-catalog`/`neowon-dsp` are gone from the driver crate's
+    `[dependencies]`. `feed` guards `channels.first()` instead of indexing.
+    Evidence: `sed -n '/^\[dependencies\]/,/^\[dev/p' crates/neowon-sdr/Cargo.toml`
+    (core + backend + nusb only) and `cargo test -p neowon-dsp --test survey_diff`
+    → 1 passed, plus `survey::tests::a_channel_less_frame_is_ignored_not_a_panic`.
+    Note for 10.4's Done-when: that suite is now
+    `cargo test -p neowon-dsp --test survey_diff` (the `-p neowon-sdr` spelling
+    at §10.4 and `PLAN.md:486`'s `neowon_sdr::survey` are stale — left for the
+    doc lane, not edited here).
+  - [x] **M29** — fixed 2026-09-23. The app carries one
+    `Option<Capabilities>` — `Link.caps`
+    (`crates/neowon-app/src/main.rs:66-70`), read as its two halves by
+    `Link::scope_caps()`/`sdr_caps()`
+    (`crates/neowon-app/src/sdr/instrument.rs:12-28`); `SdrState.caps` is gone
+    and its readers take `Option<&SdrCaps>` from the link, so no pair of fields
+    has to be kept exclusive by hand. `neowon_backend::sdr_config` sits beside
+    `scope_config` and both SDR backends use it
+    (`crates/neowon-backend/src/lib.rs:45-52`). The stale "the app has no SDR
+    mode yet" line is gone. Evidence:
+    `rg -n "caps: Option<(Scope|Sdr)Caps>|no SDR mode yet" crates/neowon-app/src`
+    (no matches) and `cargo test -p neowon-backend` → 5 passed, including
+    `sdr_backends_refuse_scope_config`.
+  - [x] **M30** — fixed 2026-09-23. Every advertised ladder has one
+    home in `crates/neowon-core/src/ladders.rs` — the scope's rate and
+    volts/div ladders and the RTL rate and R82xx gain ladders — read by the
+    driver crates, both sims, the `.cap` importer and the UI fallbacks; the
+    VDS1022's register tables stay in its own crate with a test tying them to
+    the ladder (`crates/neowon-vds1022/src/consts.rs`,
+    `voltbase_registers_match_the_shared_ladder`). The sim `Emitter` is one
+    `EmitterKind` enum, so no emitter can be digital *and* analogue with
+    `baseband()` silently preferring one (`crates/neowon-sim/src/sdr.rs:28-99`).
+    Evidence:
+    `rg -n "250e3, 1.024e6|2.5, 5.0, 12.5|0.005, 0.01, 0.02|0, 9, 14, 27" crates/ -g '*.rs'`
+    → only `ladders.rs` (plus one unrelated test list in `instrument.rs`), and
+    `cargo test -p neowon-core ladders` → 2 passed.
+- [x] Budgets: split `sdr/actions.rs` (the parser is the second job) — M12.
+  - [x] **M12** — fixed 2026-09-23 (parser split 2026-09-22).
+    `sdr/parse.rs` holds the SDR parser (`actions.rs` 714 → 637). `main.rs`
+    (952 → 233) keeps only the app wiring: the instrument link is `link.rs`,
+    the plot texture/phosphor hand-off `plot.rs`, the window fit/layout/title
+    `window.rs`, the gizmo overlays `overlays.rs`. `script/mod.rs`
+    (741 → 142) keeps the queue and the `NEOWON_SCRIPT` loader: the `Action`
+    vocabulary is `script/action.rs`, execution `script/run.rs`. Evidence:
+    `wc -l crates/neowon-app/src/{main,link,plot,window,overlays}.rs crates/neowon-app/src/script/*.rs crates/neowon-app/src/sdr/{actions,parse}.rs`
+    → every file under 700 (`actions.rs` 637; the rest under 500).
+- [x] Import/export: absent-ref refusal, atomic export, `format` validation,
   refdb pair-write (M15, M26, M27).
-- [ ] Performance: `--example frame_cost` (headless sim) priced against the 32 ms
+  - [x] **M15** — fixed 2026-09-23. `exchange::problems` is the
+    document's own integrity (repeated id, a reference absent from the document
+    or of the wrong kind); `import` refuses by name before allocating an id, and
+    the `unwrap_or(id)` local fallback is gone. Evidence:
+    `cargo test -p neowon-catalog --test import_refs` → 5 passed; before, an
+    import missing its signal bound the observation to local entities with
+    `integrity []`.
+  - [x] **M26** — fixed 2026-09-23.
+    `import` refuses a `format` other than `neowon-catalog-export`; refdb
+    `Store::load` loads each source on its own and names a corrupt one, and
+    `meta.json` entries carry a digest of their snapshot (optional field; older
+    files still load) so metadata of another fetch is reported, not shown; a
+    refdb document every row of which is rejected no longer replaces the
+    snapshot. Evidence: `cargo test -p neowon-refdb --lib store` → 7 passed;
+    before, all four pair-write crash cases loaded stale metadata. The digest field was
+    ratified by the operator 2026-09-23 (`PLAN.md` D32).
+  - [x] **M27** — fixed 2026-09-23 by dropping the claim:
+    `crates/neowon-catalog/src/model.rs` `Provenance` now says `input_ref` is
+    opaque and never resolved (no producer writes a catalog id into it; the
+    `import:#N` id belongs to another catalog's document, so resolving it would
+    cross-wire). Evidence: `rg -n "never resolves" crates/neowon-catalog/src/model.rs`.
+- [x] Performance: `--example frame_cost` (headless sim) priced against the 32 ms
   period; non-blocking audio spawn; overflows surfaced in `get sdr`; batch WAL
   sync; the straddling post-retune frame dropped (M16, M17, M22, M23, M24).
-- [ ] Test surface: automated DAB control tests; `ui_pixels` sets its own
-  catalog (M18, M31); 10.9's decode deviation recorded (M35).
+  - [x] **M16** — fixed 2026-09-23:
+    `crates/neowon-dsp/examples/frame_cost.rs` prices the engine-free per-frame
+    stages (`iq_spectrum`, `detect`+tracker, `survey::feed`, demod
+    `Receiver::process`, DAB `push_iq`, plus the `FftPlanner` M25 names) on a
+    deterministic sim scene, headless, against both the frame's own period and
+    the 32 ms reference. Measured release, 102 400 pairs at 2.048 MS/s: 0.76 /
+    1.39 / 0.87 / 1.08 / 0.71 ms, 3.02 ms display path, 4.81 ms with every
+    consumer on — 6.6x inside 32 ms. Evidence:
+    `cargo run --release -p neowon-dsp --example frame_cost`. Not priced (stated
+    in the example's own header): the app's `mask_dc`/`columns`/waterfall map and
+    texture upload, because `neowon-app` is a binary crate with no library
+    target for an example to link against.
+  - [x] **M17** — fixed 2026-09-22, re-verified 2026-09-22:
+    `AudioOut::spawn` opens the device on its own thread and returns at once,
+    and the opening thread's report is polled non-blockingly from every accessor
+    (`crates/neowon-audio/src/sink.rs:107-187`, `poll()` at `:191-209`); it is
+    used per frame with no wait (`crates/neowon-app/src/sdr/audio.rs:118`; the
+    device now has one owner) and
+    no `recv_timeout` remains on the audio/frame path. Evidence:
+    `rg -n "recv_timeout" crates/neowon-audio crates/neowon-app/src/sdr` → no
+    matches (the one left in the app is the control socket's command reply,
+    `crates/neowon-app/src/control/mod.rs:115`, not the frame loop).
+  - [x] **M22** — fixed 2026-09-23: the drop travels on the frame.
+    `CaptureFrame::dropped_before()` (private, set through
+    `with_dropped_before`) carries the units a producer knows it lost;
+    `RtlBackend::poll_frame` fills it from `Stream::overflows()`, the
+    `Supervisor` adds a frame it could not hand over (`carry_loss`), and
+    `SdrState::note_frame` accumulates it into `dropped_pairs` /
+    `drop_events`, which `get sdr` reports and the SDR dock shows as its
+    *Drops* row. `sdr::dab::feed` splices on that count, with the coarse
+    timestamp check kept only as the net for what a counter cannot see (DAB
+    spec deviation 19, now closed). Evidence:
+    `cargo test -p neowon-app --bin neowon-app sdr::dab::tests::a_reported_drop`
+    → 1 passed; it fails both ways under mutation (splice ignoring the count:
+    `left: 24576 right: 8192`; `get sdr` without the fields: "get sdr must
+    report the gap").
+  - [x] **M23** — fixed 2026-09-23: `wal::Writer::append_all` writes
+    the batch's frames and fsyncs **once**; `Catalog::commit_many` is the batch
+    path (`commit` is now one op through it), used by `catalog bulk …`
+    (`crates/neowon-app/src/catalog/mod.rs`) and
+    `exchange::import`. `Catalog::wal_syncs()` reports the fsync count, so the
+    saving is measured rather than asserted in prose. Evidence:
+    `cargo test -p neowon-catalog --test batch_commit` → 2 passed (three ops in
+    one batch cost 1 fsync, the same three through `commit` cost 3; a refused op
+    still leaves the prefix durable in one sync).
+  - [x] **M24** — fixed 2026-09-23: `RtlBackend::apply` marks
+    `straddling` when a centre/gain/AGC/ppm change lands under a running
+    stream, and `plan_chunk` discards that chunk in `poll_frame` — counting its
+    pairs into the next frame's `dropped_before`, so a discarded chunk is a
+    reported hole rather than a silent one. Evidence (pure policy, no dongle):
+    `cargo test -p neowon-sdr backend::tests` → 7 passed, including
+    `the_straddling_chunk_after_a_setting_change_is_dropped_and_counted` and
+    `a_usb_overflow_and_a_discard_add_up_in_one_report`.
+- [x] Test surface: automated DAB control tests; `ui_pixels` sets its own
+  catalog (M18, M31); 10.9's decode deviation recorded (M35, above).
+  - [x] **M18** — fixed 2026-09-22, re-verified 2026-09-22:
+    `crates/neowon-app/tests/sdr_dab.rs` drives the scene, `get dab`, the
+    service/channel verbs and the DLS line over the control socket, negative
+    paths included (4 tests, run by the gate), and `sdr_dab_audio` covers the
+    unplayable-service error. Evidence:
+    `cargo test -p neowon-app --test sdr_dab -- --ignored` → 4 passed.
+  - [x] **M31** — fixed 2026-09-23, as its class rather than the
+    catalog alone: every app a test spawns goes through
+    `common::Sandbox::command` (`crates/neowon-app/tests/common/sandbox.rs`),
+    which gives it a private `HOME` — so the catalog, `state.nws`, refdb,
+    `location.json`, bandplans, the control token file and
+    `~/neowon-captures` are all the sandbox's — drops every inherited
+    `NEOWON_*`, and turns the control socket and saved state off unless the
+    test sets them. `launch` and all eleven scripted/own-launcher suites use
+    it; the two unit tests that called `RefMap::load()` (and created
+    `~/.neowon/refdb`) use `RefMap::shipped_only()`. Evidence: with
+    `HOME` pointed at a stand-in directory, `ui_pixels` at HEAD logs
+    `catalog: <stand-in>/.neowon/catalog`, three of its four apps find it
+    `open in another process`, and it writes `control/7777.token` there; after the fix the same run
+    logs four private `neowon-home-ui-pixels-*` catalogs and leaves the
+    stand-in empty (`m31-after.log`); `cargo test -p neowon-app --test
+    isolation` checks the rule itself.
+  - [x] **M35** — see the Parity bullet above (fixed 2026-09-23).
 - [ ] Deferred: per-frame DSP churn (M25) — `PLAN.md` `## Backlog`, behind the
   `frame_cost` rig.
+  - [ ] **M25** — **deferred** by operator decision (2026-09-20 triage), not
+    open work: recorded in `PLAN.md` `## Backlog`. **Re-deferred with the
+    measurement 2026-09-23**, now that M16's rig exists: the
+    `FftPlanner` half is *closed* — measured 0.017 ms, 2.2% of the
+    `iq_spectrum` call and 0.03% of the frame period, so caching the plan buys
+    nothing — and what stays deferred is the waterfall texture re-upload
+    (~25 MiB/s, D25's fix), whose GPU half is not measurable headless. The
+    numbers and their command are in `PLAN.md` `## Backlog`.
 
 ## Deviations (recorded per AGENTS.md)
 
@@ -821,15 +1207,18 @@ committed link). Checklist names the merged finding ids (M-numbers):
     waits on IQ playback in the app, since there is no IQ recording yet.
 - **10.9 UX parity (2026-09-19), partial.**
   - *Instrument switch:* `instrument scope|sdr` (also the app bar's
-    Instrument menu and MCP `instrument`). `mode` was already the trace
+    **SCOPE | SDR** toggle, `ui::menubar::mode_toggle`, and MCP
+    `instrument`). `mode` was already the trace
     mode (a stable verb), so the switch has its own verb. It works within
     the launch's family: sim ↔ sim-SDR, VDS1022 ↔ RTL-SDR, audio → sim-SDR.
     The old supervisor is shut down and joined before the new one claims
     a device.
   - *Parity by construction:* `SdrAction` and `CatalogAction` implement
     `Display` as their script line. The `every_action_round_trips` unit
-    tests parse every variant back, and an exhaustive `variant()` match
-    fails to compile until a new variant has a sample. The UI injects only
+    tests parse every variant back; an exhaustive `variant()` match fails to
+    compile until a new variant has an arm, and the `seen.len()` count
+    assertion (`28` in `sdr/actions.rs`, `18` in `catalog/grammar.rs`) fails
+    until it has a sample. The UI injects only
     these actions, so this is the "every UI control and catalog op"
     criterion.
   - *The chain test* (`--test sdr_integration`) runs scope → `instrument

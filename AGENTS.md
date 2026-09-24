@@ -53,8 +53,11 @@ Key locations:
 A real instrument is attached. Treat it with respect:
 
 - **Never touch USB unless the user explicitly asked for hardware work.**
-  No `neowon-cli`, no `neowon-app` without `--sim`, no examples from
-  `neowon-vds1022`. Automated/delegated runs use `--sim` only.
+  No `neowon-cli` and no `neowon-app` without `--sim` (`neowon sim`, which
+  never opens a device, is fine), no examples from `neowon-vds1022`.
+  Automated/delegated runs use `--sim` only. (Operator decision 2026-09-23:
+  `cargo test -p neowon-cli` runs the binary, always with `--sim` — asserted by
+  its test helper — and `open()` refuses the RTL path in unit tests.)
 - Only one process can claim the device; the vendor Java app and neowon are
   mutually exclusive. If a claim fails, something else holds it — ask, don't
   retry-loop.
@@ -82,16 +85,31 @@ declares off limits.
 The running app serves a general-purpose control API — use it instead of
 restart-with-script loops when iterating on behavior or diagnosing state:
 
-- Launch once: `NEOWON_CONTROL=7777 cargo run -p neowon-app -- --sim`
-  (sim only, as always). Then drive it: any script-grammar line over
-  `nc 127.0.0.1 7777` gets a JSON ack; `get status` / `get config` /
-  `get measure` return structured JSON; `shot /tmp/x.png` grabs the live
-  display. One connection, many commands — state persists between them.
+- Launch once: `cargo run -p neowon-app -- --sim` (sim only, as always).
+  **The socket is on by default** on 127.0.0.1:7777 (D29);
+  `NEOWON_CONTROL=<port>` moves it, `NEOWON_CONTROL=off` turns it off.
+  Then drive it: any script-grammar line over `nc 127.0.0.1 7777` gets a
+  JSON ack; `get status` / `get config` / `get measure` return structured
+  JSON. One connection, many commands — state persists between them.
+- **Write verbs need the token** (D29). Driving the instrument and every
+  `get …` query are open; anything that writes a file, reads one you
+  named, reaches the network or ends the process (`shot`, `shotplot`,
+  `export`, `capsave`/`capload`, `uitree <path>`, `layout`,
+  `sessionsave`/`sessionload`, `sdr iqdump <path>`, `refdb fetch|import`,
+  `location`, `catalog` edits, `quit`) is refused until the connection
+  sends `auth <token>`. The app writes the token to
+  `~/.neowon/control/<port>.token` (mode 0600) and a bare `auth` replies
+  with that path, so the loop is:
+  `{ echo "auth $(cat ~/.neowon/control/7777.token)"; cat; } | nc 127.0.0.1 7777`
+  — then `shot /tmp/x.png` grabs the live display as before. A new verb is
+  classified in `crates/neowon-app/src/control/privilege.rs`, whose
+  exhaustive match will not compile until you place it.
 - The same API backs `neowon-mcp` (`--connect 127.0.0.1:7777` or
   `--spawn-sim`): when this session has the neowon MCP server connected,
   prefer its tools (`measurements`, `screenshot`, `exec_script`) over
   shelling out — the screenshot tool returns an image you can actually
-  look at.
+  look at. It does the `auth` handshake itself (token file, or
+  `NEOWON_CONTROL_TOKEN` when both processes share one).
 - `get uitree` (MCP `ui_tree`, filterable) returns the UI element tree —
   every widget and custom-painted element with role, label, state and rect,
   like a browser DOM inspector. Use it to audit layout and to assert UI in
@@ -99,7 +117,19 @@ restart-with-script loops when iterating on behavior or diagnosing state:
 - Anything you can't reach this way is a missing script action — fix
   that first (script-parity rule), don't work around it.
 - Scripted end-to-end runs (`NEOWON_SCRIPT` + `quit`) remain the way to
-  write regression tests; the socket is for interactive iteration.
+  write regression tests; the socket is for interactive iteration. A
+  `NEOWON_SCRIPT` file is the operator's own process doing what the
+  operator asked, so it is never token-gated; a socket test uses
+  `tests/common/mod.rs::launch`, which picks the token with
+  `NEOWON_CONTROL_TOKEN` and authenticates for you.
+- Tooling that spawns the app sets `NEOWON_ORPHAN_EXIT=<seconds>` so a
+  killed harness cannot leave a window on the operator's screen (D30).
+  Beside it, `NEOWON_NO_INPUT=1` makes the app ignore host keyboard, mouse
+  and wheel input and open without taking focus, and on macOS hand
+  activation back to the app that was in front (D31), so the operator's
+  typing and scrolling cannot steer the run; scripts and the socket still
+  drive everything. `tests/common/sandbox.rs` sets it for every test launch;
+  set it on any launch you make while the operator may be at the machine.
 
 ## Verification
 
@@ -139,6 +169,13 @@ restart-with-script loops when iterating on behavior or diagnosing state:
   shrink, never grow.)
 - No new dependencies without user approval; check PLAN.md §1 ecosystem
   notes first.
+- **Comments and docs only where the code is not self-evident.** A comment
+  says *why* (a standard's clause, a hardware quirk, a non-obvious invariant),
+  never *what* the next line does. No process history in code or docs: no
+  review ids (`M26`, `D16`), no work-item names (`item-12`), no dates of who
+  fixed what, no paths into `.critic/` or other scratch. That belongs in the
+  commit message. A spec records the contract and decisions, not a narrative of
+  how they were reached. When in doubt, delete the comment.
 
 ## Testing culture
 

@@ -107,7 +107,7 @@ confirms. Nothing in 10.15.1 depends on D23's tier-3 half or on D25's exact nami
   ensemble/service is a `neowon-catalog` entity of the same shape as a detected
   signal.
 - **Consumers that already exist:** the SDR workspace routes complex frames to
-  `neowon-app/src/sdr/` (`sdr/mod.rs:340`: `frame.layout != SampleLayout::Complex`
+  `neowon-app/src/sdr/` (`sdr/mod.rs:376`: `frame.layout() != SampleLayout::Complex`
   is the guard); the audio output sink is real since 10.10
   (`crates/neowon-audio/src/sink.rs`); the control socket, script grammar and MCP
   tool surface exist (10.9: parity by construction).
@@ -203,8 +203,10 @@ Work items, in order (each lands with its test):
 | 6. Encoder (oracle) | **done** — FIC bits *and* Mode I IQ (null symbol, PRS, FIC symbols, pseudo-random MSC), in `neowon-dsp::dab::encoder` rather than `neowon-sim` (deviation 1). |
 | 7. `dab::receiver` | **done** — `DabReceiver`: null-symbol search, PRS correlation gate, cyclic-prefix frequency offset removed on a continuous time base, three FIC symbols demapped per frame, streaming sample buffer. |
 
-Criteria rows 1–6 all pass: `cargo test -p neowon-dsp --lib dab` (34 tests) and
-`cargo test -p neowon-dsp --test dab_fic` (6 tests, ~1.4 s).
+Criteria rows 1–6 all pass: `cargo test -p neowon-dsp --lib dab` (74 tests) and
+`cargo test -p neowon-dsp --test dab_fic` (8 tests, ~4 s).
+*(Counts re-derived 2026-09-22; the earlier 34/6 predated the tier-2/3 tests
+and the capture-fix cases.)*
 
 **Row 7 passed on air, 2026-09-20** (11C, 220.352 MHz, RTL-SDR V3, 2.048 MS/s):
 `locked`, EId `0x8008`, **14 services with labels** (SLAM!, YOURSAFE, BNR
@@ -287,8 +289,9 @@ the EEP/UEP tables and the terminated Viterbi (`fec/` split for budget),
 `dab::msc` the clause-12 interleaver and per-sub-channel decoders, `dab::pad`
 the PAD/DLS parser and `dab::charset` table 47. Rows 8–12 are green
 (`--test dab_msc`, 200 frames at 15 dB, EEP 3-A + UEP 3 bit-exact; multi-frame
-DLS). The app's `rf-dab` scene carries the ensemble (three services, EEP+UEP,
-DLS); `--test sdr_dab` proves FIC → MSC → DLS through the control socket.
+DLS). The app's `rf-dab` scene carries the ensemble (five services, EEP+UEP,
+DLS — `crates/neowon-app/src/sdr/dab_scene.rs`); `--test sdr_dab` proves
+FIC → MSC → DLS through the control socket.
 
 ### 10.15.3 — Audio (DAB-G2 decided 2026-09-20: oxideav-aac, fdk-aac fallback)
 
@@ -337,7 +340,8 @@ Work items, in order:
 primary failed its real use case (deviation 10), so the fallback is the
 playback backend: `AacDecoder::BACKEND` reports which is compiled in. The
 transport, MP2 and the HE-AAC v2 fixture suites pass (`neowon-codec`, rows
-13–15); the app plays both codings from the sim scene (`--test sdr_dab_audio`,
+13–15 and 14b under the `fdk-aac` feature); the app plays both codings from the
+sim scene (`--test sdr_dab_audio`,
 `get dab.audio` with backend/rate/channels/peak). Row 17 (on-air listening) is
 the operator's and is the only available proof for real 960/SBR AUs.
 
@@ -415,23 +419,26 @@ is the only thing that passes DAB-G1.
 **Budget (reviewed, not silently exceeded):** Tier 1 ≤ 12 files and ≤ 2 500 net
 lines across `neowon-dsp`, `neowon-sim` and the docs; overrun is a dated review
 against the reference size (welle.io's ~10k-line backend for the *whole* receiver).
-Command: `git diff --stat $(git merge-base HEAD main)..HEAD -- crates/neowon-dsp
-crates/neowon-sim docs/protocol-dab.md`.
+Command (the landing tree, rev `3842782`): `for f in encoder fec fib fic fig mod
+ofdm receiver tables; do git show 3842782:crates/neowon-dsp/src/dab/$f.rs; done
+| wc -l` — 2 726.
 
-*Budget review, 2026-09-20:* tier 1 landed at 9 module files totalling 2 596
-lines plus 298 lines of end-to-end test — over the 2 500 figure. The reason is
-that the budget did not separate code from tests: 34 of those tests are inline
-(1 150 lines), and the code alone is ~1 450. No file approaches the workspace's
-700-line hard budget (largest: `fec.rs` 382). Judged in range against the
-reference and kept as is; the lesson recorded is that the next budget should
-count tests separately, since a spec that demands a published-value test per
-table cannot also be tight on lines.
+*Budget review, 2026-09-20 (figures re-derived 2026-09-22):* tier 1 landed at 9
+module files totalling **2 726** lines plus 298 lines of end-to-end test — over
+the 2 500 figure. The reason is that the budget did not separate code from
+tests: **765** of those lines are inline tests (counted from the first
+`#[cfg(test)]` to EOF) and the code alone is **1 961**. No file approaches the
+workspace's 700-line hard budget (largest: `fec.rs` 382 at that rev). Judged in
+range against the reference and kept as is; the lesson recorded is that the next
+budget should count tests separately, since a spec that demands a published-value
+test per table cannot also be tight on lines.
 
 ### Verification contract (tiers 2–3)
 
 Every row is quantity · unit · criterion · class · command, with the same rule
-as tier 1: a row with no command is not met. Rows 8–15 are sim/CI; row 16 is a
-windowed app test (`-- --ignored`, sim only); row 17 is manual.
+as tier 1: a row with no command is not met. Rows 8–15 (14b included) are
+sim/CI; row 16 is a windowed app test (`-- --ignored`, sim only); row 17 is
+manual.
 
 | # | Quantity · unit | Criterion | Class | Command |
 |---|---|---|---|---|
@@ -440,10 +447,11 @@ windowed app test (`-- --ignored`, sim only); row 17 is manual.
 | 10 | time de-interleaver | the clause-12 CU permutation reproduced for a known input vector | exact | `cargo test -p neowon-dsp --lib dab` |
 | 11 | UEP table 8 | every profile's usable bit rate and CU size match clause 11.3.1 | exact | same |
 | 12 | DLS text | exact round-trip of a multi-segment string, including one spanning two frames | exact | `cargo test -p neowon-dsp --test dab_msc` |
-| 13 | DAB+ superframe | RS(120,110) parity and CRC match TS 102 563 vectors; 5 AUs per superframe; a damaged superframe is recovered by erasure correction | exact | `cargo test -p neowon-codec --test dabplus` |
+| 13 | DAB+ superframe | RS(120,110) parity and CRC match TS 102 563 vectors; 2/3/4/6 AUs per superframe (table 2 — five is the number of DAB logical frames, deviation 11); a damaged superframe is recovered by erasure correction | exact | `cargo test -p neowon-codec --test dabplus` |
 | 14 | HE-AAC v2 fixture | committed DAB+ fixture decodes to PCM within the stated tolerance of independently generated reference PCM | tolerance | `cargo test -p neowon-codec --test aac_fixture` |
+| 14b | DAB+ HE-AAC v2 super frame fixture | the committed `dabplus_heaacv2.sf` decodes to PCM within the stated tolerance of its source-tone reference, with correlation / lag / relative RMS printed under `--nocapture`; compiles only under `--features fdk-aac` | tolerance | `cargo test -p neowon-codec --features fdk-aac --test aac_960_sbr -- --nocapture` |
 | 15 | MP2 fixture | committed MP2 frame decodes to PCM within the stated tolerance | tolerance | `cargo test -p neowon-codec --test mp2_fixture` |
-| 16 | end-to-end tone | a sim-encoded DAB+ tone survives IQ → FIC → MSC → DAB+ → codec with its dominant bin correct and a stated SNR floor | fixed-order | `cargo test -p neowon-app --test sdr_dab_audio -- --ignored` |
+| 16 | playback state · sim scene | the `rf-dab` DAB+ and MP2 programmes decode and play over the control socket (state `playing`, 48 kHz, 2 channels, a non-zero moving peak, the compiled backend reported); stop returns to `off` with no peak; a sub-channel that is not a codec stream surfaces a typed `error`, never silence | fixed-order | `cargo test -p neowon-app --test sdr_dab_audio -- --ignored` |
 | 17 | hardware listening | the operator hears a named 11C service and the DLS line tracks it — filed in `docs/protocol-dab.md` | manual | app, `--rtl`, never CI |
 
 **Budget (tiers 2–3):** ≤ 14 new files and ≤ 5 000 net lines across
@@ -451,6 +459,41 @@ windowed app test (`-- --ignored`, sim only); row 17 is manual.
 separately (the tier-1 lesson). Overrun is a dated review against the
 references (`dabradio`'s MSC+PAD is ~2 400 lines; welle.io's whole backend
 ~10k).
+
+*Budget review, 2026-09-22; re-counted 2026-09-23 (round-1 fix pass).* Counted
+from the tree, the DAB files added after tier 1 total **7 499** lines by the
+command below, now **25 files / 7 881** lines once `sdr/dab_state.rs` (382, the
+one-owner DAB state) is included — it is DAB code and belongs in
+this count, but is left out of the quoted command so the command and its printed
+number stay in step. The 2026-09-22 figure was **7 353**; the growth is the
+round-1 fix pass (`sdr/dab_state.rs`, and `dab_audio/decode.rs` gaining the
+`SinkFeed` pre-buffer). `sdr/audio.rs` is deliberately **not** counted: it owns
+the audio device for every instrument, not DAB. The original count said 24 files
+total **7 353** lines — 23 inside the budget's four crates: 8 in
+`neowon-dsp` (`charset`, `msc`, `pad`, `encoder/msc`,
+`fec/{eep,fic,uep,uep_table}`), 9 in `neowon-codec` (`lib`, `error`, `mp2`,
+`aac/*`, `dabplus/*`), 6 in the app (`sdr/dab.rs`, `sdr/dab_scene.rs`,
+`sdr/dab_audio/{mod,decode,transport}.rs`, `ui/dab_dock.rs`) — plus the Band III
+catalogue (`neowon-refdb/src/dab.rs`, outside the four). Code alone is **5 996**
+lines — over the 5 000 cap by ~1 000, and 24 files against 14. The inline tests
+in those files (first `#[cfg(test)]` to EOF) are 1 357 lines and the `tests/`
+and `tests.rs` suites 3 087 more. **Judged justified and kept as is:** the cap
+was written before tier 3's shape was known — a new engine-free crate for the
+DAB+ transport (superframe, RS(120,110), Fire code, AU assembly) and the two
+codec adapters, the app's audio/transport/scene path, and the MSC
+de-interleave → descramble → depuncture → Viterbi chain — and the result is
+still inside the references (`dabradio`'s MSC+PAD ~2 400 lines; welle.io's whole
+backend ~10k). The limit itself is not changed; if the codec and app tiers are
+meant to fit under the same cap, that is a plan-level re-scope.
+Command (repo root): `wc -l crates/neowon-dsp/src/dab/{charset,msc,pad}.rs
+crates/neowon-dsp/src/dab/encoder/msc.rs
+crates/neowon-dsp/src/dab/fec/{eep,fic,uep,uep_table}.rs
+crates/neowon-codec/src/{lib,error,mp2}.rs crates/neowon-codec/src/aac/*.rs
+crates/neowon-codec/src/dabplus/{mod,crc,rs}.rs crates/neowon-app/src/sdr/dab.rs
+crates/neowon-app/src/sdr/dab_scene.rs
+crates/neowon-app/src/sdr/dab_audio/{mod,decode,transport}.rs
+crates/neowon-app/src/ui/dab_dock.rs crates/neowon-refdb/src/dab.rs | tail -1`
+→ `7499 total` (2026-09-23; `7353` on 2026-09-22).
 
 ## Testing strategy
 
@@ -466,6 +509,11 @@ references (`dabradio`'s MSC+PAD is ~2 400 lines; welle.io's whole backend
   Do not close 10.15.1 on sim results.
 - Impairments the fixture must cover: AWGN at 15 dB, dropped input frames (row 3),
   a carrier offset within ±50 ppm, and a non-DAB input (row 4).
+- The receiver→transport→codec path runs headless too (D20, D21):
+  `dab_scene::tests::the_rf_dab_scene_decodes_to_the_known_tone` drives the
+  `rf-dab` scene IQ to decoded PCM and asserts the fixture tone's spectrum, and
+  `dab_scene::tests::the_embedded_audio_fixtures_match_the_codec_originals`
+  fails on any drift of the app's fixture copies.
 - The hardware run is a manual, operator-authorised step; it records what it saw in
   `docs/protocol-dab.md` whether it passes or fails.
 
@@ -498,29 +546,107 @@ references (`dabradio`'s MSC+PAD is ~2 400 lines; welle.io's whole backend
    the SDR program; 10.15 work must not preempt Phase 8/9 work, and this spec does
    not amend that ordering.
 
+## Review fixes
+
+### Implementation round 1 (`phase10-dab-implementation`, 2026-09-22)
+
+One round over the uncommitted DAB tiers 2–3 session (6 seats, mean 6.2, 23
+errors; scratch `panel.md` / `triage.md` / `panel-plan.md`, not a committed
+link). Operator decision
+(2026-09-22): fix everything — every error and finding — and sweep the still-open
+`M`-items in `phase10-sdr-spec.md` `## Review fixes` in the same pass. Checklist
+names the round's merged ids (`D`-numbers):
+
+- [x] **Evidence regenerates.** Re-record the 11C capture as 525/1280/1100 and
+  1110/0 with path, rev, date and SHA-256; the recorded command is root-relative
+  and panics on a missing file; `dab_air_capture` asserts capture-derived floors;
+  the "prediction off" counterfactual becomes a switch or is deleted (D1).
+- [x] **Every criterion can fail.** `harness.md` and the Done-when rows get an
+  `-- --ignored` app sweep (`sdr_dab`, `sdr_dab_audio`, `sdr_integration`);
+  `neowon-ml/ort` removed or annotated; `fdk-aac` added to the gate and CI; row 13
+  → 2/3/4/6 AUs; row 16 gains its spectral assertion or is restated; continuity
+  counters asserted; M19's vacuous assert replaced; a headless receiver→codec
+  test; a bounded-tracker test; a fixture-drift test; the expiry test's guard no
+  longer scales with its constant (D2, D3, D5, D16, D19, D20, D21, D24).
+- [x] **The record against the tree.** `protocol-dab.md` refreshed
+  (`PRS_METRIC_MIN` 0.35, superseded statements, "not yet transcribed" tables,
+  duplicate `D26`); numbers re-derived (73/8, one MP2 value, 249 KB, C42,
+  EVM/Rs); codec correlation output by a named `--features fdk-aac` command;
+  `aac_fixture.rs` contradiction fixed; M34 finished (librtlsdr, README /
+  ui-anatomy / spec Instrument-menu claims, phase-close criteria, one
+  next-action); "three services"
+  → five; deviations renumbered; the tiers-2–3 budget review filed; the
+  `M`-checklist ticked (M8, M10, M11, M17, M20, M29) and the half-landed
+  annotated (M12, M19, M21, M34) (D4, D5, D6, D7, D26, D27).
+  *Closed 2026-09-23. Every clause re-verified
+  against the tree by its own command; the count is **74/8**, not the
+  73/8 written above, because tier-2/3 tests landed after this bullet was
+  written (`cargo test -p neowon-dsp --lib dab`). M20 and M29 were **false when
+  the triage assumed them green** — M20's 10 dB row was guarded away by
+  `if snr >= 20.0` and M29's two `Option<...Caps>` were still split — and were
+  fixed rather than ticked. Gate green on all 11 lines.*
+- [x] **One owner per state.** `DabState` with `reset()`/`no_input()`; one owner
+  of the audio device; the default-on socket and `NEOWON_ORPHAN_EXIT` recorded in
+  PLAN with a date, write verbs token-gated, `AGENTS.md:85` / `PLAN.md:167`
+  corrected (D8, D9, D10).
+  *Closed 2026-09-23. D8's sweep found a site the finding did not
+  name — a hand-rolled clear in `sdr/dab.rs::channel()` cleared 5 of 7 fields,
+  leaving a stale splice grid after a block change; the clears are now written
+  `*self = Self { rx, ..Self::default() }` so a later field is cleared by
+  construction. D10's verb classification is structural
+  (`control/privilege.rs`, exhaustive match — a new verb will not compile until
+  it is classified) rather than a hand-kept list. **Gate debt:** 10 of 11 lines
+  green (`cargo test` 519/0/40); `ui_capture` is **undecided** — the operator's
+  screen re-locked, the environmental failure `harness.md` documents. The token
+  gate is not implicated: both `ui_capture` logs fail inside `script::shot`'s
+  own `got only blank frames` path with zero auth-refusal text, i.e. `shot` was
+  authorised and ran. **Debt cleared 2026-09-23:** `ui_capture` passed 2/2 on an
+  unlocked screen, exercising the newly gated `shot` verb end to
+  end.*
+- [x] **Budgets.** Split `main.rs`, `receiver.rs`, `control/mod.rs`,
+  `dab_scene.rs`, `dab_audio/mod.rs`; `ui.rs` shrinks again; partial waterfall row
+  upload or the byte rate recorded (D11, D25).
+  *Closed 2026-09-23.* Every file named here is under 500 lines; the waterfall
+  byte rate (~25 MiB/s) is recorded in `PLAN.md`'s Backlog. The one file still
+  over 700 is `neowon-vds1022/src/device.rs` (884), left alone because a split
+  of driver code cannot be verified without the scope attached.
+- [x] **The interface a user meets.** DAB readout fits the rail; expired
+  diagnostic visible; an unplayable service is not offered; DAB entry point and
+  gesture hint; expiry age, cumulative-CRC label, SDR error home, notch label
+  (D12, D13, D17, D18).
+  *Closed 2026-09-23. Every geometry/visibility fix is pinned by a
+  `get uitree` test with revert-and-fail evidence, not by a screenshot. The
+  locked section went from 668.9 px wide in a 456 px rail, with Play and DLS
+  below the rail's bottom, to 456 × 620.5 with both on screen; the rail test
+  asserts no element crosses the rail edge in eight states. An unplayable
+  service is judged by the same `sdr::dab_audio::service_spec` that refuses
+  `sdr dab play`, so the dock, `get dab` (`playable`/`why_not`) and the verb
+  cannot disagree. The View entry reuses `sdr dab on|off` (script parity with
+  no new verb). **Left open, recorded:** the SDR dock's collapsible sections
+  have no script action — the `dock` verb reaches only the scope's — which is
+  a script-parity gap for the carry-over sweep. Gate green on all 11 lines,
+  `cargo test` 531/0/42, `sdr_dab` 6.*
+- [x] **Drops and pricing.** M22 dropped-pairs surfaced and used by splice
+  detection; M16 `--example frame_cost` landed; M25 re-deferred with the measured
+  number (D14, D15).
+  *Closed 2026-09-23, with M23 and M24 swept in from the sdr-spec's
+  Performance bullet. The drop now travels **on the frame**
+  (`CaptureFrame::dropped_before()`, filled from `Stream::overflows()` and
+  carried forward by the supervisor when it cannot hand a frame over), so
+  `sdr::dab::feed` splices on a counted drop and the timestamp check survives
+  only as the net for what a counter cannot see — which closes **deviation 19**
+  and the matching paragraph in `docs/protocol-dab.md`. `frame_cost` prices the
+  loop at 3.116 ms display path / 5.036 ms all consumers against the 32 ms
+  reference (6.4x margin), which retired M25's stale `FftPlanner` reason
+  (0.018 ms, 0.04 % of the period); what stays deferred is the waterfall
+  re-upload at ~25 MiB/s, now written down. Gate green on all 11 lines,
+  `cargo test` 529/0/40.*
+- [ ] **Carry-over sweep.** Every open `M`-item in `phase10-sdr-spec.md`
+  `## Review fixes` (M1–M3, M5, M6, M13–M15, M21, M23, M24, M26–M28, M30, M33,
+  M35, plus the open halves listed above) is fixed in this pass (operator,
+  2026-09-22).
+
 ## Deviations (recorded per AGENTS.md)
-
-0. **Two defects found on air, both ours, both fixed** (details and evidence in
-   `docs/protocol-dab.md`): the receiver was fed from the display path, which is
-   latest-wins, so it saw a holed stream — the carrier estimate read −223 Hz
-   instead of −12 Hz and labels took 40 s instead of 12; and `prs_metric`
-   reported the last *attempt* rather than the accepted frame, reading ~0.03 on a
-   receiver decoding 98.9% of its FIBs. Both were invisible in sim: the sim feeds
-   whole contiguous frames at exactly 2.048 MS/s and never splices them.
-   **The lesson for the remaining tiers: a criterion that only holds because the
-   sim's frame stream is ideal is not a criterion.** The in-app path is where
-   that assumption gets tested, and it took a hardware session to expose it.
-1. **Sync yield on air is ~13% of attempts** (38 accepted against 262 rejected in
-   the measured run), with rejected attempts scoring ~0.04 PRS — genuinely
-   misaligned rather than marginal. Most likely splices from USB drops, since the
-   null symbol then stops being the unique power dip. It locks and holds, so this
-   is a yield question and not a correctness one, but it is the first item of
-   10.15.1 follow-up work.
-2. **Splice detection cannot be exact yet** — `CaptureFrame::t_start` is
-   arrival-time derived, so a tight gap check fires on jitter (it cost ~87% of
-   one session's attempts before being loosened to a coarse safety net). The fix
-   is a dropped-sample counter in the frame, from the backend.
-
 
 1. **The oracle encoder lives in `neowon-dsp`, not `neowon-sim`** (amends D25's
    wording). `neowon-sim` does not depend on `neowon-dsp` — the dependency runs
@@ -618,19 +744,25 @@ references (`dabradio`'s MSC+PAD is ~2 400 lines; welle.io's whole backend
     frame start was re-derived from the null-symbol power dip every frame, and
     on air most attempts fell below the PRS gate; each rejection discarded the
     clause-12 delay line, so no sub-channel ever held 16 logical frames. The
-    fix predicts the grid from the last accepted frame, treats a weak frame at
-    the predicted start as a fade, and gives the super-frame search a
-    20-super-frame shape budget (a stream that ever aligned can never be
-    declared not-DAB+). Pinned on the archived 11C capture by disabling only
-    the prediction: FIC 180/180 CRCs and EId 0x8008 with **0** Fire-clean
-    super frames, against 346/754 AU CRCs through the fixed receiver and 707
-    through the app transport. Two bounds defects in the same search path
-    (refinement moving the start past the buffered frame; a scan guard missing
-    `T_G`) are fixed with tests. Regression tests:
-    `multipath_echo_keeps_the_clause_12_chain_contiguous` and
-    `frame_sized_feeds_never_overrun_the_sample_buffer` in
-    `crates/neowon-dsp/tests/dab_msc.rs`. Full evidence in
-    `docs/protocol-dab.md`.
+     fix predicts the grid from the last accepted frame, treats a weak frame at
+     the predicted start as a fade, and gives the super-frame search a
+     20-super-frame shape budget (a stream that ever aligned can never be
+     declared not-DAB+). Pinned on the archived 11C capture by the test-only
+     switch `NEOWON_DAB_NO_PREDICTION=1` (`dab::receiver`): FIC 180/180 CRCs
+     and EId 0x8008 with **0** Fire-clean super frames and 0 AU CRCs.
+     Re-measured 2026-09-22 at rev `4579cfb` on the capture (sha256
+     `93293363ba09a35e4737fb72d0e7bd3e20dcd233ef9c4f70642cc37421d462a8`), with
+     the prediction enabled: 525 Fire-clean super
+     frames / 1280 AUs / 1100 AU CRCs through `dab_air_capture`, and 1110 AU
+     CRCs / 0 shape mismatches through the app transport. The deviation's
+     earlier figures (346/843/754 and 707) were recorded on an older tree of
+     the 2026-09-21 session and no longer regenerate. Two bounds defects in the
+     same search path (refinement moving the start past the buffered frame; a
+     scan guard missing `T_G`) are fixed with tests. Regression tests:
+     `multipath_echo_keeps_the_clause_12_chain_contiguous` and
+     `frame_sized_feeds_never_overrun_the_sample_buffer` in
+     `crates/neowon-dsp/tests/dab_msc.rs`. Full evidence, paths and commands in
+     `docs/protocol-dab.md`.
 
 16. **The Band III block catalogue is a table, not a formula (2026-09-21).**
     The channel selector was briefed to "use the refdb band-plan data — do
@@ -647,3 +779,33 @@ references (`dabradio`'s MSC+PAD is ~2 400 lines; welle.io's whole backend
     `general`) yields an empty list — the dock and `get dab` say so instead
     of inventing per-country frequencies. The earlier protocol-doc sentence
     claiming a uniform raster formula is corrected in `docs/protocol-dab.md`.
+
+17. **Two defects found on air, both ours, both fixed** (details and evidence in
+    `docs/protocol-dab.md`): the receiver was fed from the display path, which is
+    latest-wins, so it saw a holed stream — the carrier estimate read −223 Hz
+    instead of −12 Hz and labels took 40 s instead of 12; and `prs_metric`
+    reported the last *attempt* rather than the accepted frame, reading ~0.03 on a
+    receiver decoding 98.9% of its FIBs. Both were invisible in sim: the sim feeds
+    whole contiguous frames at exactly 2.048 MS/s and never splices them.
+    **The lesson for the remaining tiers: a criterion that only holds because the
+    sim's frame stream is ideal is not a criterion.** The in-app path is where
+    that assumption gets tested, and it took a hardware session to expose it.
+18. **Sync yield on air is ~13% of attempts** (38 accepted against 262 rejected in
+    the measured run), with rejected attempts scoring ~0.04 PRS — genuinely
+    misaligned rather than marginal. Most likely splices from USB drops, since the
+    null symbol then stops being the unique power dip. It locks and holds, so this
+    is a yield question and not a correctness one, but it is the first item of
+    10.15.1 follow-up work.
+19. **Splice detection was inexact; closed 2026-09-23 (D14/M22).** `CaptureFrame::t_start`
+    is arrival-time derived, so a tight gap check fires on jitter (it cost ~87% of
+    one session's attempts before being loosened to a coarse safety net). The fix
+    named here — a dropped-sample counter in the frame, from the backend — has
+    landed: `CaptureFrame::dropped_before()` carries the pairs the producer knows
+    were lost (`neowon-sdr` reports USB overflows and the chunk it discards after
+    a retune; `neowon-audio` reports its ring overruns), and `sdr::dab::feed`
+    splices on that count. The coarse timestamp check is kept as the safety net
+    for what a counter cannot see — a producer that does not count, a stopped and
+    restarted stream, an instrument swap. The count is also reported by `get sdr`
+    (`dropped_pairs`, `drop_events`) and the SDR dock's *Drops* row, so the
+    live-continuity claim is falsifiable. Test:
+    `cargo test -p neowon-app --bin neowon-app sdr::dab::tests::a_reported_drop`.

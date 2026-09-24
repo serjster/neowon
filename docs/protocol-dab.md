@@ -43,8 +43,8 @@ numbers, that is noted: the common `dabradio`/`dab-cmdline` lineage cites the
 | QPSK symbol mapper (first `K` bits = I, next `K` = Q) | clause 14.5 |
 | Frequency interleaving (`Pi(i) = 13*Pi(i-1) + 511 mod 2048`) | clause 14.6.1 |
 | Differential modulation: symbol to symbol on each carrier | clause 14.7 |
-| UEP sub-channel sizes by index (table 8) | clause 11.3.1 — **not yet transcribed** |
-| Character set mapping (complete EBU Latin) | table 47 — **not yet transcribed** |
+| UEP sub-channel sizes by index (table 8) | clause 11.3.1 — transcribed in `dab/fec/uep_table.rs` |
+| Character set mapping (complete EBU Latin) | table 47 — transcribed in `dab/charset.rs` |
 
 ## Mode I parameters
 
@@ -134,7 +134,7 @@ there is a test whose only job is to fail if the convention inverts.
 2. **PRS gate.** The phase reference symbol must follow the null. The
    normalized correlation between the received spectrum and the known 1536-carrier
    reference scores ≈ 1 for DAB and ≈ `1/sqrt(1536)` ≈ 0.026 for noise;
-   `PRS_METRIC_MIN` = 0.5 sits between them. A rejected frame decodes *nothing* —
+   `PRS_METRIC_MIN` = 0.35 sits between them. A rejected frame decodes *nothing* —
    this is what stops the receiver naming an ensemble that is not on the air.
 3. **Carrier offset.** The cyclic prefix of the PRS measures the offset from the
    phase between the guard and its copy one useful period later:
@@ -187,19 +187,6 @@ The tables are generated, not typed: a one-off script reads the standard's text
 extraction and emits `crates/neowon-dsp/src/dab/tables.rs`, asserting the
 invariants above before emitting. Table values were cross-checked against the
 MIT reference `dabradio` 0.5.0 and agree value-for-value.
-
-## Licensing / provenance (decision D26)
-
-- Porting reference: **`dabradio` 0.5.0** (`xoolive/desperado`), **MIT**,
-  8 393 Rust LOC, published as a binary (`has_lib: false`), so it is read and
-  ported from, not depended on. Its MIT notice is honoured by this record:
-  copyright © Xavier Olive and contributors, MIT licence.
-- Read-only reference (GPL, **never copied into this workspace**):
-  `JvanKatwijk/dab-cmdline`, `JvanKatwijk/qt-dab`, `welle.io` — including the
-  copy vendored under `tmp-inspiration/SDRPlusPlus/decoder_modules/dab_decoder/`.
-- Standard-derived constants (mode parameters, tables 12/13/23/24, CRC
-  polynomial, tail vector) are cited to the clause that defines them, in the
-  code that uses them.
 
 ## Verified on hardware
 
@@ -267,16 +254,56 @@ grid, refine it to the PRS peak, treat a weak frame at the predicted start as
 a fade (keep demapping, keep the delay line), and give the super-frame search
 a 20-super-frame shape budget that a stream which ever aligned can never trip.
 
-Evidence on `tmp-inspiration/dab-11c.f32` (15 s, 2.048 MS/s, Band III 11C),
-`cargo test -p neowon-app --release --test dab_air_capture -- --ignored`:
-**346 Fire-clean super frames, 843 AUs, 754 AU CRCs ok across all 14 services**
-(indexes 8–12, dac 32/48 kHz, SBR true, one PS mono service — all plausible).
-The same capture through the app's real transport (`air_capture_through_the_real_transport`):
-**707 AU CRCs ok, 0 shape mismatches**. Two bounds defects in the same search
-path were found and fixed while reproducing this: the refinement could move
-the start past the buffered frame (index out of bounds), and its scan guard
-omitted `T_G`. Regression tests: `multipath_echo_keeps_the_clause_12_chain_contiguous`
-and `frame_sized_feeds_never_overrun_the_sample_buffer` in
+**Re-measured 2026-09-22 at rev `4579cfb3d9d5beca49b4591d13ed486b4c645fdb`.**
+Capture: `tmp-inspiration/dab-11c.f32`, 30 720 000 complex samples (15.00 s),
+2.048 MS/s, Band III 11C, recorded 2026-09-21 (file mtime), SHA-256
+`93293363ba09a35e4737fb72d0e7bd3e20dcd233ef9c4f70642cc37421d462a8`. Run from
+the repo root (`$PWD` expands before cargo runs the test binary, whose CWD is
+`crates/neowon-app`):
+
+```bash
+NEOWON_IQ_CAPTURE=$PWD/tmp-inspiration/dab-11c.f32 \
+  cargo test -p neowon-app --release --test dab_air_capture -- --ignored --nocapture
+```
+
+**525 Fire-clean super frames, 1280 AUs, 1100 AU CRCs ok across all 14 services**
+(indexes 8–12, dac 32/48 kHz, SBR true, one PS mono service — all plausible),
+62 frames accepted against 119 rejected, FIB CRC 444/444. The same capture
+through the app's real transport:
+
+```bash
+NEOWON_IQ_CAPTURE=$PWD/tmp-inspiration/dab-11c.f32 \
+  cargo test -p neowon-app --release --bin neowon-app -- --ignored air_capture --nocapture
+```
+
+**1110 AU CRCs ok, 0 shape mismatches**, 200 MSC logical frames on every
+sub-channel.
+
+The counterfactual is a switch, not prose: `NEOWON_DAB_NO_PREDICTION=1`
+(`crates/neowon-dsp/src/dab/receiver.rs`; unset on the production path)
+disables only the frame-grid prediction. Either command with it set reproduces
+the root cause: **0 Fire-clean super frames, 0 AU CRCs, 0 shape mismatches —
+while the FIC still locks with 180/180 clean FIBs and EId `0x8008`** (15 frames
+decoded against 132 rejected). Both harnesses accept that mode as their
+expected result, so the claim above is a command, not a sentence. The earlier
+record's **346 super frames / 843 AUs / 754 AU CRCs and 707 AU CRCs** came
+from an older working tree of the 2026-09-21 session, before the fix settled;
+they do not regenerate at this revision and are superseded by the numbers
+above.
+
+The capture is **operator-local scratch**: `tmp-inspiration/` is gitignored
+(`.gitignore`) and the ~234 MB file is not committed, so these numbers are
+regenerable only with it — the SHA-256 above is the check that it is the same
+file. The harnesses panic (clear message, non-zero exit) when
+`NEOWON_IQ_CAPTURE` is unset or the file is absent, and assert capture-derived
+floors (400 super frames / 1000 AUs / 800 AU CRCs; 800 AU CRCs in the transport
+harness), so a collapse cannot pass as a measurement.
+
+Two bounds defects in the same search path were found and fixed while
+reproducing this: the refinement could move the start past the buffered frame
+(index out of bounds), and its scan guard omitted `T_G`. Regression tests:
+`multipath_echo_keeps_the_clause_12_chain_contiguous` and
+`frame_sized_feeds_never_overrun_the_sample_buffer` in
 `crates/neowon-dsp/tests/dab_msc.rs`; the shape-verdict policy tests live in
 `crates/neowon-app/src/sdr/dab_audio/transport.rs`.
 
@@ -292,12 +319,20 @@ and `frame_sized_feeds_never_overrun_the_sample_buffer` in
   with the frame-grid prediction the archived capture's yield rose to 56 of 168
   attempts, and its residual rejections are what the `next_frame` grid is
   tolerant of. Splice detection is still the fix for the dropped-sample case.)*
-- **Splice detection needs a real sequence indicator.** `CaptureFrame::t_start`
-  is derived from *arrival* time ("biased late by up to one poll"), so it cannot
-  distinguish a jitter of one poll from a dropped chunk. The current check is a
-  coarse safety net (four frame durations); a tight bound fired on ordinary
-  jitter during this session and, before it was loosened, cost ~87% of attempts.
-  The fix belongs in the frame: a dropped-sample counter from the backend.
+- **Splice detection needs a real sequence indicator — CLOSED 2026-09-23.**
+  `CaptureFrame::t_start` is derived from *arrival* time ("biased late by up to
+  one poll"), so it cannot distinguish a jitter of one poll from a dropped
+  chunk. The check used to be a coarse safety net (four frame durations); a
+  tight bound fired on ordinary jitter during this session and, before it was
+  loosened, cost ~87% of attempts. The fix was the one named here — a
+  dropped-sample counter from the backend — and it landed: `CaptureFrame`
+  carries `dropped_before()`, filled by `RtlBackend::poll_frame` from
+  `Stream::overflows()` and carried forward by the supervisor when it cannot
+  hand a frame over; `sdr::dab::feed` splices on `dropped > 0`, and the
+  timestamp check survives only as the net for what a counter cannot see (a
+  producer that does not count, a restarted stream, an instrument swap).
+  Reported by `get sdr` as `dropped_pairs` / `drop_events` and shown in the SDR
+  dock's Receiver section. See `docs/tasks/phase10-dab-spec.md` deviation 19.
 - **The ppm conclusion from earlier in this session is void.** The −223 Hz
   reading that suggested ≈ −1 ppm was an artifact of the holed feed, and the
   attempt to "correct" it produced two readings at the same setting that
@@ -357,34 +392,40 @@ Two consequences for the run:
 
 - **FIG type 2** extended labels (UTF-8/UCS-2, segmented) are not parsed.
 - **Data services** (`P/D = 1`, 32-bit SId) are counted, not tabled.
-- **Audio** (tier 3): the DAB+ transport and codec adapters exist
-  (`crates/neowon-codec`, TS 102 563 clause map below); the HE-AAC v2 decoder
-  situation is recorded there. The app's playback surface and the `rf-dab` sim
-  scene are in progress.
-- The **OFDM front end** (null-symbol detection, PRS correlation, fine timing and
-  residual frequency offset) is the next implementation step; its hardware
-  behaviour (locking with an RTL-SDR's clock error) is not yet recorded here.
+- **DAB+ audio** (tier 3) landed: `neowon-codec` carries the DAB+ transport and
+  the codec adapters (clause map and the HE-AAC v2 decoder situation below),
+  and the app plays a DAB+ and an MP2 programme from the `rf-dab` scene
+  (`crates/neowon-app/src/sdr/dab_scene.rs`). The on-air listening run (spec
+  row 17) is still open, and real 960-transform SBR+PS access units are
+  exercised only there.
 
 ## Licensing / provenance (decision D26)
 
-Tier 1 ports from `dabradio` 0.5.0 (MIT, `xoolive/desperado`) — copyright ©
-Xavier Olive and contributors, MIT licence. Tier 2 (MSC, DLS) ports under the
-same notice: the UEP profile table (`dab/fec/uep_table.rs`, from
-`src/fec/uep.rs`), the EEP profile formulas (`dab/fec/eep.rs`), the clause-12
-time-interleaving order and delay map (`dab/msc.rs`, from `src/msc/mod.rs`),
-the DLS segment structure and reassembly rules (`dab/pad.rs`, from
-`src/pad/mod.rs`), and the complete EBU Latin repertoire (`dab/charset.rs`,
-from `src/charsets.rs`), and the Band III channel catalogue
-(`crates/neowon-refdb/src/dab.rs`, from `src/constants.rs`) that the DAB
-dock's channel selector and `sdr dab channel` tune by. Every ported file
-carries the comment
+Porting reference: **`dabradio` 0.5.0** (`xoolive/desperado`), **MIT**,
+8 393 Rust LOC, published as a binary (`has_lib: false`), so it is read and
+ported from, not depended on — copyright © Xavier Olive and contributors, MIT
+licence. Tier 1 ports from it, and tier 2 (MSC, DLS) ports under the same
+notice: the UEP profile table (`dab/fec/uep_table.rs`, from `src/fec/uep.rs`),
+the EEP profile formulas (`dab/fec/eep.rs`), the clause-12 time-interleaving
+order and delay map (`dab/msc.rs`, from `src/msc/mod.rs`), the DLS segment
+structure and reassembly rules (`dab/pad.rs`, from `src/pad/mod.rs`), the
+complete EBU Latin repertoire (`dab/charset.rs`, from `src/charsets.rs`), and
+the Band III channel catalogue (`crates/neowon-refdb/src/dab.rs`, from
+`src/constants.rs`) that the DAB dock's channel selector and `sdr dab channel`
+tune by. Every ported file carries the comment
 `// Ported from dabradio 0.5.0 (MIT); notice in docs/protocol-dab.md`, and the
 tables were re-checked value-for-value against EN 300 401 V2.1.1 (tables 8,
 13, 15, 18, 20); the Band III table has no EN 300 401 source (it is the
 Wiesbaden arrangement) and was checked against the four centres recorded
-above. The GPL implementations (`dab-cmdline`, `qt-dab`,
-`welle.io`) were read for structure only; no code or table was copied from
-them.
+above.
+
+Read-only reference (GPL, **never copied into this workspace**):
+`JvanKatwijk/dab-cmdline`, `JvanKatwijk/qt-dab`, `welle.io` — including the
+copy vendored under `tmp-inspiration/SDRPlusPlus/decoder_modules/dab_decoder/`
+— were read for structure only; no code or table was copied from them.
+Standard-derived constants (mode parameters, tables 12/13/23/24, CRC
+polynomial, tail vector) are cited to the clause that defines them, in the
+code that uses them.
 
 Tier-1 clause-map rows now closed: **table 8** (UEP sizes and profiles) is
 transcribed as one 64-entry table in `dab/fec/uep_table.rs` (clause 11.3.1);
@@ -448,7 +489,8 @@ encoder produces a conformant 960 DAB+ bitstream for CI. The committed
 (AOT 29, 64 kbit/s CBR, 48 kHz), framed by `SuperframeEncoder` into DAB+
 super frames whose header is 48 kHz + SBR + mono core + PS. It proves the
 transport + adapter + SBR + PS chain against the source PCM (correlation
-0.99992, rel. RMS 0.020/0.013); it does **not** prove the 960 transform. That
+0.999915 / 0.999920 L/R, rel. RMS 0.0202/0.0130 — the table below); it does
+**not** prove the 960 transform. That
 stays a hardware item: when the 11C feed reaches the codec, real 960 access
 units are the first thing to decode and file here; CI has no 960 vector until
 one can be obtained.
@@ -481,13 +523,26 @@ declared in `neowon-codec`'s `Cargo.toml` and fetched by Cargo.
 
 ### Acceptance fixtures and measured agreement
 
-`crates/neowon-codec/tests/fixtures/` (~160 KB): synthetic two-tone stereo
+`crates/neowon-codec/tests/fixtures/` (249 KB across the seven fixtures and
+their README): synthetic two-tone stereo
 (440 Hz L / 880 Hz R), ffmpeg 9.0.2 + afconvert 2.0, commands and SHA-256 in
 the fixture README. Metric: best-lag normalised cross-correlation + relative
 RMS error at that lag + Goertzel tone check.
 
-| Fixture | lag | correlation | rel. RMS err | tolerances |
-|---|---:|---|---:|---|
-| `he_aac_v2.latm` (12 AUs) | 4224 | 0.9999998 | 5.0e-4 / 5.5e-4 | ≥0.98, ≤0.05 |
-| `dabplus_heaacv2.sf` (9 AUs, 3 super frames) | 10528 | 0.99992 | 0.020 / 0.013 | ≥0.99, ≤0.05 |
-| `tone.mp2` (17 frames) | 0 | 0.99999999 | 1.4e-4 / 1.5e-4 | ≥0.999, ≤0.01 |
+Each suite prints its measured row as JSON under `-- --nocapture`; these are
+the commands the table's numbers come from (repo root):
+
+1. `cargo test -p neowon-codec --test aac_fixture -- --nocapture`
+2. `cargo test -p neowon-codec --features fdk-aac --test aac_fixture -- --nocapture`
+3. `cargo test -p neowon-codec --features fdk-aac --test aac_960_sbr -- --nocapture`
+4. `cargo test -p neowon-codec --test mp2_fixture -- --nocapture`
+
+Measured 2026-09-22 on this tree (channel L / R); the correlation is the
+best-lag normalised value at the stated lag:
+
+| Fixture (build) | lag | correlation L / R | rel. RMS err L / R | tolerances | command |
+|---|---:|---|---:|---|---|
+| `he_aac_v2.latm` (12 AUs), `oxideav-aac` | 4224 | 0.999999875 / 0.999999847 | 5.0e-4 / 5.5e-4 | ≥0.98, ≤0.05 | 1 |
+| `he_aac_v2.latm` (12 AUs), `fdk-aac` | 6992 | 0.999999957 / 0.999999960 | 3.0e-4 / 2.9e-4 | ≥0.98, ≤0.05 | 2 |
+| `dabplus_heaacv2.sf` (9 AUs, 3 super frames), `fdk-aac` only | 10528 | 0.999914863 / 0.999919757 | 0.0202 / 0.0130 | ≥0.99, ≤0.05 | 3 |
+| `tone.mp2` (17 frames), both builds | 0 | 0.999999990 / 0.999999989 | 1.4e-4 / 1.5e-4 | ≥0.999, ≤0.01 | 4 |

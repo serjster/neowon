@@ -8,4 +8,8 @@
 /docs/*.pdf
 .harness
 .critic/
+/harness.md
+/.agents/
+/.claude/
+/.opencode/
 /tmp-inspiration/

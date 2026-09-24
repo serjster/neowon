@@ -209,3 +209,29 @@ With `sdr analyse on` on the dongle (Phase 10.5, C1):
   receiver spur).
 Open: FM wants the detector to hold a broadcast channel together, or the
 classifier to widen its channel for wideband candidates.
+
+## SDR smoke readout (2026-09-23) — source `rtl`, FAIL
+
+`neowon sdr smoke --freq 99400000` (the `neowon-cli` binary), on the dongle.
+
+```json
+{"source":"rtl","dongle_serial":"00000001","tune_hz":99400000,"centre_hz":99150000,"peak_hz":99385240.40199804,"peak_tol_hz":1000,"class":"unknown","confidence":0.06614495787132248,"decode":"","snr_db":14.294548735375386,"pass":false,"failures":[{"rule":"no-peak","detail":"nearest peak 99385240 Hz is 14760 Hz from 99400000 Hz (tolerance ±1000 Hz)"},{"rule":"class-unknown","detail":"class unknown"},{"rule":"low-confidence","detail":"confidence 0.066 < 0.70"},{"rule":"empty-decode","detail":"no decode for class unknown"}]}
+```
+
+**What this run shows (2026-09-23, recorded the same session).** One run, at the
+operator's request, on the 99.4 MHz broadcast FM station this dongle found in
+10.1; not repeated. *Measured:* the device opened (R820T, serial `00000001`),
+streamed and released cleanly; SNR 14.3 dB; `peak_hz` 99 385 240 Hz, i.e.
+**14.76 kHz** below the tuned frequency; class `unknown` at confidence 0.066;
+nothing decoded. *Not a tuning error:* the P0.1 run above bounds this dongle's
+own error to about ±8 ppm (≈ ±0.8 kHz at 99.4 MHz), an order of magnitude
+smaller. *Inferred, not yet tested:* `peak_hz` is the midpoint of the 99 %
+occupied band (the definition the operator accepted for M9), and a live
+programme-modulated WFM signal with its stereo pilot and RDS subcarriers is not
+symmetric about its carrier, so that midpoint moves by kilohertz with the
+programme — the ±2 RBW (±1 kHz) rule cannot reliably hold on WFM with this
+definition. The classifier's `unknown` on real broadcast FM matches the earlier
+note that it reads broadcast FM as `unknown`; its statistics come from the
+simulator. **M9 stays open:** closing it needs either a station the contract can
+pass on (AM or a narrow digital carrier) or a plan-level change to the contract
+for WFM — the operator's decision.

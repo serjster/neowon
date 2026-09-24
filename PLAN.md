@@ -25,7 +25,7 @@ Conclusion: nothing to salvage as a driver. Its egui plot/side-panel structure i
 - **`~/projects/GoL`** — Bevy **0.19** patterns: compute-shader plugins (physarum: 4 WGSL passes, storage textures, texture→sprite display), custom instanced render pipelines, egui integration on `EguiPrimaryContextPass`, GPU readback screenshots, naga-based WGSL validation tests, and written tutorials in `GoL/docs/bevy/`. Also the dev-profile trick (`opt-level=1` workspace, `opt-level=3` deps + hot crates).
 - **Hardware confirmed present**: the scope enumerates on this Mac as VID `0x5345` / PID `0x1234` (strings "ZHBI2.0"/"ZPRO2.0"). CH1 is on the 1 kHz 5 V test signal — perfect bring-up target.
 - **Hardware confirmed present (SDR)**: an **RTL-SDR V3** dongle is on hand (user, 2026-09-18). It is the input to the Phase 10 P0.1 driver spike and the phase-closing hardware smoke run.
-- **Ecosystem** (verified current, late 2026): Bevy 0.19.1 stable; `bevy_egui` 0.41 (egui 0.34) is the standard tool-UI pairing; `nusb` is the pure-Rust USB stack (no libusb, no drivers needed on macOS); no existing usable VDS1022 crate (one early-stage Windows-only GitHub project, `Atmel2005/ATMELOWON`, useful only as a reference); SDR: pure-Rust `rs-rtl` (nusb-based) or `librtlsdr-rs` bindings over the system `librtlsdr`/libusb (librtlsdr presumed for V3 compatibility; the crate is settled by the Phase 10 P0.1 spike — see `docs/tasks/phase10-sdr-spec.md` D2), `seify` for multi-hardware; Flipper: `flipper-rpc` crate speaks the official protobuf RPC over USB CDC.
+- **Ecosystem** (verified current, late 2026): Bevy 0.19.1 stable; `bevy_egui` 0.41 (egui 0.34) is the standard tool-UI pairing; `nusb` is the pure-Rust USB stack (no libusb, no drivers needed on macOS); no existing usable VDS1022 crate (one early-stage Windows-only GitHub project, `Atmel2005/ATMELOWON`, useful only as a reference); SDR: an in-tree driver (`neowon-sdr::rtl`, RTL2832U + R82xx on `nusb`, ported from `librtlsdr-rs` — D2 of `docs/tasks/phase10-sdr-spec.md`), `seify` for later multi-hardware; Flipper: `flipper-rpc` crate speaks the official protobuf RPC over USB CDC.
 
 ### Device essentials (VDS1022I)
 
@@ -84,7 +84,7 @@ neowon/
     └── ddr/                   # decision records (pattern borrowed from GoL)
 ```
 
-Later: `neowon-sdr/` (rs-rtl or seify source + demodulators), `neowon-flipper/` (flipper-rpc source).
+Later: `neowon-sdr/` (in-tree RTL driver + demodulators — D2; `seify` for later multi-hardware), `neowon-flipper/` (flipper-rpc source).
 
 ### The backend abstraction
 
@@ -164,9 +164,11 @@ Each phase ends with something runnable and testable — most against the real s
 > from the phase text: gapless roll-mode recording (needs backend
 > streaming), references-in-session persistence. **Phase 7.5 DONE**
 > (control plane + MCP, spec: docs/tasks/phase75-mcp-spec.md;
-> user-approved design + deps): `NEOWON_CONTROL=<port>` localhost socket
+> user-approved design + deps): a 127.0.0.1 control socket — **on by
+> default at port 7777**, `NEOWON_CONTROL=<port>` to move it and
+> `NEOWON_CONTROL=off` / `NEOWON_NO_CONTROL=1` to turn it off (D29, below)
 > (script lines in, JSON acks/replies out; `get status|config|measure`
-> queries; `neowon-app/src/control.rs`), and the `neowon-mcp` crate — an
+> queries; `neowon-app/src/control/`), and the `neowon-mcp` crate — an
 > rmcp 3.x stdio MCP server with curated tools (status/config/
 > measurements/configure_channel/configure_trigger/configure_horizontal/
 > run/autoset/set_stimulus/record/exec_script escape hatch) and PNG
@@ -409,8 +411,9 @@ render path lacks a test.
 ### Phase 7.5 — Control plane + MCP (inserted)
 
 One general-purpose remote API, layered: the script grammar is the shared
-semantic layer; every transport translates into it. `NEOWON_CONTROL`
-localhost socket in the app (commands + JSON `get` queries); `neowon-mcp`
+semantic layer; every transport translates into it. A 127.0.0.1 control
+socket in the app, on by default and token-gated for the verbs that leave
+the process (D29; commands + JSON `get` queries); `neowon-mcp`
 (rmcp) exposes a curated task-shaped tool surface to LLM clients —
 including `screenshot` as MCP image content and an `exec_script` escape
 hatch. Spec: `docs/tasks/phase75-mcp-spec.md`.
@@ -425,7 +428,7 @@ Auto-cal port (compensation pass descending ranges @ DC, amplitude pass ascendin
 
 ### Phase 10 — SDR backend & signal intelligence (the 2-in-1 program)
 
-> **Status 2026-09-18:** in progress. **10.0 item 1 (D1b spike) DONE:** core
+> **Status 2026-09-22:** in progress. **10.0 item 1 (D1b spike) DONE:** core
 > frames now carry `f32` + a frame-level `SampleLayout` (`Real`/`Complex`) with
 > per-component `IqCal`; scope backends convert their i8 wire encoding at frame
 > construction; `.nwc` is v3 (writes layout + `IqCal`, still reads v1/v2). 33
@@ -479,10 +482,11 @@ Auto-cal port (compensation pass descending ranges @ DC, amplitude pass ascendin
 > (cumulants C20–C63 via set partitions, cyclic symbol-rate/carrier-offset
 > lines, channel selection, recovery with line-fitted timing and phase-ramp
 > removal, Gray slicer, EVM/MER). `--test mod_estimators`: 16QAM EVM 3.156%
-> vs 3.162% closed form, QPSK Rs within 0.002%, C42 −2.0000/−1.0000. In the
+> vs 3.162% closed form, QPSK Rs +0.0019%, C42 −1.9992 measured (BPSK; −2.0000
+> is the ideal constant) and −1.0000 (QPSK). In the
 > app: `sdr analyse on`, `sdr modulation auto|<m>`, `get modmeas` lab
 > block, recovered constellation; `--test sdr_modlab` auto-identifies QPSK
-> and 16QAM and matches closed-form EVM. **10.4 DONE:** `neowon_sdr::survey`
+> and 16QAM and matches closed-form EVM. **10.4 DONE:** `neowon_dsp::survey`
 > (frame-fed state machine, per-step `BandCoverage` with scanned/truncated/
 > kept-power floor, clipped to the asked range; `diff` → new/gone/
 > stronger/weaker/same/unknown, never gone/new where a survey could not
@@ -491,8 +495,13 @@ Auto-cal port (compensation pass descending ranges @ DC, amplitude pass ascendin
 > (`--test sdr_survey`). **10.5 partial:** the DSP classifier (C1/C3/C7:
 > noise/cw/am/fm/5 constellations, confidence, runner-up, margin, honest
 > `unknown` via absolute cumulant fit + a "none of these" score, trust
-> `unproven`); `--test classify_golden` N=500/class macro precision 1.0 at
-> 10/20 dB on sim; `get classify`, MCP `sdr_classify`. On air, broadcast FM
+> `unproven`); `--test classify_golden` N=500/class on sim, **both rows
+> asserted**, measured 2026-09-23 by `cargo test -p neowon-dsp --test
+> classify_golden -- --nocapture`: macro precision 0.9995 / recall 0.9567 /
+> 4.29 % unknown at 10 dB, 0.9994 / 0.9580 / 4.16 % at 20 dB — the recall
+> and `unknown` figures belong beside the precision, because the classes it
+> misses (16QAM 0.83/0.82, 64QAM 0.78/0.80 recall) it answers `unknown`
+> rather than wrong; `get classify`, MCP `sdr_classify`. On air, broadcast FM
 > reads `unknown` (it once read 64QAM @0.95). **Blocked on the operator:**
 > C2 learned path (`ort`), C5/C6/C9 evaluation, and gate SDR-G2 all need a
 > D9 corpus (over-the-air, held-out-frequency + cross-day); 10.6 needs
@@ -573,25 +582,121 @@ Auto-cal port (compensation pass descending ranges @ DC, amplitude pass ascendin
 > `oxideav-aac` rejects SBR on the 960 transform DAB+ mandates (DAB-G2,
 > operator decision 2026-09-20; the C source is fetched by Cargo, not
 > vendored), plus `oxideav-mp2` for DAB classic. The `rf-dab` sim scene is
-> composed in the app from `dab::encoder` (three services, EEP+UEP, a DLS
-> carrier and two audio programmes); `sdr dab on|off|reset|service <#n|sid>|play|stop|channel <label|next|prev>`,
+> composed in the app from `dab::encoder` (five services over five sub-channels,
+> EEP+UEP, including a DLS carrier and two audio programmes —
+> `crates/neowon-app/src/sdr/dab_scene.rs`);
+> `sdr dab on|off|reset|service <#n|sid>|play|stop|channel <label|next|prev>`,
 > `get dab` (ensemble, MSC counters, service, DLS, audio, and the Band III
 > block under the hardware centre), the DAB dock with a service list, level
 > and the Band III block selector (catalogue from `neowon-refdb::dab`,
 > offered blocks from the active band plan's DAB allocation — no frequency
 > to know by heart), MCP `dab_ensemble`/`dab_control`. Tests: `--test
-> dab_fic`, `--test dab_msc`, the `neowon-codec` fixture suites (HE-AAC v2
-> correlation 0.9999, MP2 0.99999 vs source), `--test sdr_dab`,
+> dab_fic`, `--test dab_msc`, the `neowon-codec` fixture suites (measured
+> correlation/RMS rows in `docs/protocol-dab.md`: HE-AAC v2 0.9999, MP2
+> 0.99999999 vs source), `--test sdr_dab`,
 > `--test sdr_dab_audio`. **Not done:** the on-air listening run (row 17 — the
 > only available proof for real 960/SBR access units, since no open encoder
 > emits them), and §10.15.2's extended labels/MOT.
-> Next: **10.11** scope/SDR workspace split (D12), **10.13**
+> **D29 — the control socket is on by default, and its write verbs need a
+> token (operator-owned, recorded 2026-09-23).** *What:* the app binds
+> 127.0.0.1:7777 on every launch with no environment set
+> (`NEOWON_CONTROL=<port>` moves it, `NEOWON_CONTROL=off` or
+> `NEOWON_NO_CONTROL=1` turns it off). *Why:* an app started from the
+> desktop has no environment to set, and the live-development loop and the
+> MCP server must still reach it — a socket that must be asked for is a
+> socket nobody has when they need it. *Exposure:* localhost is not a
+> trust boundary. Any local process, and any web page that POSTs to
+> `http://127.0.0.1:7777/` (its header and body lines arrive as script
+> lines), could drive the instrument and — before this decision — write a
+> file anywhere the operator can write (`shot`, `export`, `capsave`,
+> `uitree <path>`, `layout`, `sessionsave`, `sdr iqdump`), read one it
+> named (`capload`, `effect`, and `sessionload`, which *executes* it),
+> reach the network (`refdb fetch`, `location ip`), destroy records
+> (`catalog` edits, `refdb clear`) or end the process (`quit`).
+> *Therefore:* every verb that leaves the process needs
+> `auth <token>` on that connection first; queries and live instrument
+> control stay open, so the documented `nc` loop and every `get …` still
+> work with no ceremony. The token is 128 OS-random bits generated per
+> process, handed to legitimate local clients the way a Jupyter token is:
+> `~/.neowon/control/<port>.token`, mode 0600, and a bare `auth` replies
+> with that path so a client can find it (`neowon-mcp` does this
+> automatically). A parent that spawns the app may pick the token instead
+> with `NEOWON_CONTROL_TOKEN` (the test harness and any tooling launch).
+> `NEOWON_SCRIPT` files, session replay and the UI are the operator's own
+> process and are never gated. *Home:* the classification is an exhaustive
+> match in `crates/neowon-app/src/control/privilege.rs` — a new verb does
+> not compile until it is classified — and the handshake is
+> `control/conn.rs`. *Not covered:* a local process running as the
+> operator can read the token file; defending against that would need an
+> OS peer-credential check and a dependency, and is not worth it for an
+> instrument front end.
+>
+> **D30 — `NEOWON_ORPHAN_EXIT=<seconds>` (recorded 2026-09-23).** *What:*
+> when set, the app exits by itself once no control-socket client has been
+> live for that long (`control/orphan.rs`); unset, no watchdog starts and
+> the app behaves exactly as before. *Why:* tests and tooling spawn the app
+> as a child and rely on the harness reaping it; a hard-killed harness
+> (`timeout`, SIGKILL) reparents the app to launchd and leaves its window
+> on the operator's screen forever. The harness holds one connection for
+> its lifetime, so the kill closes it and the watchdog ends the process;
+> the start clock covers the window before the first client connects.
+> *Who sets it:* `tests/common/mod.rs` (15 s), `neowon-mcp --spawn-sim`
+> (30 s). *Exposure:* none beyond the socket itself — it only ever ends
+> this process, and a launch the operator drives by hand never sets it.
+>
+> **D31 — `NEOWON_NO_INPUT` (operator decision, recorded 2026-09-23).**
+> *What:* when set (to anything), the app drops the host's keyboard, IME,
+> mouse-button, pointer-motion, wheel, touch, gesture and file-drop events
+> at the top of `PreUpdate`, before Bevy's `InputSystems` and bevy_egui
+> read them (`crates/neowon-app/src/hostinput.rs`), and it creates its
+> window with `focused: false`. Scripts, `NEOWON_SCRIPT` and the control
+> socket are not host input and drive everything as before. Unset, nothing
+> changes. *Why:* two measured test flakes were the operator's own input
+> landing in a test's window: a wheel over `sdr_integration`'s SDR view
+> zoomed the rate ladder, and a keystroke reached
+> `state_persist`'s SDR window as the scope's `A` (auto-set), whose error
+> overwrote the status line the test was waiting for. *Who sets
+> it:* `tests/common/sandbox.rs`, for every app a test launches. It is
+> **test and automation tooling, not a user feature**: nothing in the UI
+> exposes it. *Focus on macOS:* `focused: false` stops winit making the
+> window key at creation, but winit still activates the application at
+> launch (`activateIgnoringOtherApps`, which bevy_winit 0.19 gives no way
+> to turn off), and a test launch came to the front about a second after
+> it started and stayed there (measured). So the app records the
+> frontmost application before the event loop starts and, when it finds
+> itself active during its first 10 s of frames, activates that
+> application again (`crates/neowon-app/src/hostinput/macos.rs`, item
+> 14b). Measured: the operator's app is back in front within one 0.25 s
+> sample, sometimes with no sample showing the test window in front at all.
+> *Dependency (operator decision 2026-09-23):* `objc2-app-kit` **=0.3.2**,
+> a direct macOS-only dependency of `neowon-app`, with default features off
+> and only `std`, `NSRunningApplication` and `NSWorkspace`. It was
+> approved because it is already in the lock tree (bevy_egui's `arboard`
+> and `webbrowser` use 0.3.2 with those same features; winit carries
+> 0.2.2) and its calls are safe Rust, where the alternative was new
+> `unsafe` FFI through `objc_msgSend`. Pinning 0.3.2 rather than winit's
+> 0.2.2 downloads and compiles nothing new, and in 0.2.2 every call used is
+> `unsafe`. Alongside it, a keyboard
+> shortcut acts only in the workspace whose controls it drives
+> (`crates/neowon-app/src/shortcuts.rs`), and auto-set asked of an SDR is
+> refused by name.
+>
+> **D32 — refdb `meta.json` carries a snapshot `digest` (operator ratification,
+> 2026-09-23).** *What:* each per-source `Meta` entry gains an optional `digest`
+> of its snapshot (M26), so metadata that no longer describes its
+> snapshot — including a same-row-count mismatch left by a crash between the
+> snapshot and meta writes — is reported per source instead of shown. *Format:*
+> an additive, optional field: `meta.json` written before it still loads
+> (tested) and older builds ignore it. *Why:* M26's per-source metadata cannot
+> hold without it; the row count alone cannot tell two fetches apart.
+>
+> **Remaining in Phase 10:** 10.11 scope/SDR workspace split (D12) and 10.13
 > channel-relative visualizations (D15); DAB is sim-complete and waits on the
 > operator for the listening run. neowon becomes one instrument in two modes —
 > **Scope** and **SDR** — riding `Acquisition::Stream` and the shared engine
 > (recorder/timeline, phosphor, decode, control socket, MCP). RTL-SDR drives
-> through librtlsdr bindings *presumed* for V3 compatibility; the exact crate is
-> settled by the P0.1 spike on the on-hand V3 dongle. A new
+> through the in-tree `neowon-sdr::rtl` (RTL2832U + R82xx on `nusb`, ported from
+> `librtlsdr-rs`; D2). A new
 > engine-free `neowon-catalog` holds the persistent signal/source/emitter catalog
 > with full management.
 >
@@ -607,10 +712,13 @@ Auto-cal port (compensation pass descending ranges @ DC, amplitude pass ascendin
 > runnable and sim-tested; do not begin without
 > reading the spec's Purpose, decisions (D0–D9), D1b spike and gates (SDR-G1/SDR-G2).
 
-**Done when:** the spec's phase "Done when" is met — all mechanical criteria pass,
-gates SDR-G1/SDR-G2 are recorded, both modes run against sim, every SDR control is script-
-and MCP-reachable, the catalog survives restart with full management, and the
-recorded manual hardware smoke run (V3 dongle) is filed in `docs/protocol-rtlsdr.md`.
+**Done when:** the spec's phase "Done when" is met — all mechanical criteria pass
+(10.14's RF reference included: `--test sdr_refmap` and the refdb suites), the
+gates are recorded — SDR-G1/SDR-G2 and DAB-G1/DAB-G2 (DAB-G1 met on 11C,
+2026-09-20; DAB-G2 decided 2026-09-20); both modes run against sim, every SDR
+control is script- and MCP-reachable, the catalog survives restart with full
+management, and the recorded manual hardware smoke run (V3 dongle) is filed in
+`docs/protocol-rtlsdr.md`.
 
 ### Phase 11 — Flipper Zero (exploratory)
 
@@ -669,12 +777,38 @@ recorded manual hardware smoke run (V3 dongle) is filed in `docs/protocol-rtlsdr
 
 Deferred findings, with the reason (the home the critic skill's `defer` writes to).
 
-- (none currently. The Phase 10 classification corpus is no longer deferred: D9 collects it
-  from 10.0, from a public over-the-air dataset or a live capture.)
-- **Per-frame SDR DSP churn** (phase10-implementation round 1, M25): a fresh `FftPlanner` per
-  `stft` call, per-call block matrices, and a full 1.3 MB waterfall texture re-upload per row.
-  Deferred because no rig prices the frame loop yet — revisit once M16's headless `frame_cost`
-  example measures each stage against the 32 ms period.
+- **M9 hardware smoke readout** (2026-09-23) — the 99.4 MHz WFM run failed all four rules:
+  the 99 % occupied-band midpoint of programme-modulated WFM sits ~15 kHz off the carrier,
+  and the classifier reads broadcast FM as `unknown`. Needs either a run on an AM or narrow
+  digital station, or an operator decision on the contract for WFM
+  (`docs/protocol-rtlsdr.md`, smoke readout).
+- **Scope frames' drop count has no readout** (2026-09-23) — frames carry `dropped_before()`;
+  it belongs in `get status` and the scope bar beside the SDR's `dropped_pairs`.
+- **SDR dock sections have no script action** (2026-09-23) — the `dock` verb reaches only the
+  scope's sections; a script-parity gap under `AGENTS.md`.
+- **An identical app-bar error does not reappear** after its 15 s window (2026-09-23) — needs
+  a repeat counter on `Link`.
+- **`neowon-vds1022/src/device.rs` is 884 lines** (2026-09-23) — over the hard budget; split
+  it in a session with the scope attached, where the driver can be verified.
+- **`neowon-mcp` ignores SIGTERM** (2026-09-23) — a killed server leaves its spawned app to
+  the 30 s orphan watchdog; handling it needs tokio's `signal` feature (new dependency).
+- **Per-frame SDR DSP churn** (phase10-implementation round 1, M25) — **re-deferred 2026-09-23
+  with the measurement, and half of it closed.** M16's rig now exists, so the old reason ("no rig
+  prices the frame loop yet") is retired. Measured by
+  `cargo run --release -p neowon-dsp --example frame_cost` (release, M-series laptop, 102 400
+  pairs = 50 ms of 2.048 MS/s signal, 20 reps): `iq_spectrum` 0.76, `detect`+tracker 1.39,
+  `survey::feed` 0.87, demod 1.08, DAB `push_iq` 0.71 ms — 3.02 ms for the display path and
+  4.81 ms with every consumer on, i.e. **6.6x inside the 32 ms reference and 10x inside the
+  50 ms frame period**.
+  - **The `FftPlanner` half is closed, not deferred:** the fresh planner per `stft` call is
+    **0.017 ms**, 2.2% of the `iq_spectrum` call and 0.03% of the frame period. Caching the plan
+    would buy nothing measurable; the entry no longer claims otherwise. Per-call block matrices
+    are inside the same 0.76 ms and are not separately worth chasing.
+  - **Still deferred: the waterfall texture re-upload** (D25 owns the fix). Every row re-uploads
+    the whole `WF_W × WF_H` RGBA texture: 1024 × 320 × 4 = 1 310 720 B = 1.25 MiB per row, and at
+    2.048 MS/s the frame cadence is 20 rows/s, so **~25 MiB/s of upload where one 4 KiB row would
+    do**. Its CPU half is inside the numbers above; the GPU half is not measurable headless, which
+    is why this waits on a windowed probe rather than on the `frame_cost` rig.
 
 ---
 
